@@ -89,7 +89,7 @@ jobs:
             "Rock.Tests.UnitTests\Rock.Tests.UnitTests.csproj",
             "Rock.Update\Rock.Update.csproj",
             "Rock.Version\Rock.Version.csproj",
-            "Rock.ViewModel\Rock.ViewModel.csproj",
+            "Rock.ViewModels\Rock.ViewModels.csproj",
             "Rock.WebStartup\Rock.WebStartup.csproj",
             "Rock\Rock.csproj",
             "SignNowSDK\SignNowSDK.csproj")
