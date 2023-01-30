@@ -1,0 +1,119 @@
+name: .NET Deploy to IIS
+
+on: 
+  push:
+    branches:
+      - "pcc-staging"
+      - "pcc-release"
+
+env:
+  ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+  SOLUTION_NAME: "Rock.sln"
+  ARTIFACT_NAME: "rockweb-staging.zip" # The artifact name is a zipped archive of all the web files
+  S3_BUCKET_NAME: "s3://connect-deployments" # Make sure this (and the archive loc) matche the AMI User Data script.
+  ASG_NAME: "test-connect-asg"
+
+jobs:
+  build-and-deploy:
+
+    runs-on: windows-2019
+    
+    steps:
+      - uses: actions/checkout@v2
+
+      # Ensure there are secrets (https://github.com/passiondev/rock/settings/secrets/actions) in the Github Repo 
+      # to provide access to AWS. The IAM user needs to have permissions to upload files to the applicable S3 bucket.
+      - name: Set AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: setup-msbuild
+        uses: microsoft/setup-msbuild@v1
+
+      - name: Setup Nuget.exe for use with actions
+        uses: Nuget/Setup-nuget@v1.0.5
+
+      - name: Restore Nuget Packages
+        run: nuget restore $env:SOLUTION_NAME
+
+      # In the build, it is necessary to update the build / output location of all the generated .bin files
+      # This is done automatically when building via Visual Studio, however as we are building manually
+      # we need to make sure the .bins are copied.
+      - name: Build Solution
+        run: |
+          dir env:
+          $env:DevEnvDir = 'C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\MSBuild\Current\'
+
+          $paths = @("Applications\Wpf\CheckScannerUtility\AXInteropBuilder\AXInteropBuilder.csproj",
+            "Applications\Wpf\CheckScannerUtility\CheckScannerUtility\CheckScannerUtility.csproj",
+            "Applications\Wpf\Rock.Wpf\Rock.Wpf.csproj",
+            "Applications\Wpf\StatementGenerator\StatementGenerator.csproj",
+            "Dev Tools\Applications\CheckVariableNaming\CheckVariableNaming.csproj",
+            "Dev Tools\Applications\EnsureCopyrightHeader\EnsureCopyrightHeader.csproj",
+            "Dev Tools\Applications\GuidToClipboard\GuidToClipboard.csproj",
+            "DotLiquid\DotLiquid.csproj",
+            "Installers\RockInstaller\InstallTools\InstallTools.csproj",
+            "Installers\RockInstaller\RockInstallTools\RockInstallTools.csproj",
+            "Quartz\Quartz.csproj",
+            "Rock.Blocks\Rock.Blocks.csproj",
+            "Rock.Checkr\Rock.Checkr.csproj",
+            "Rock.Client\Rock.Client.csproj",
+            "Rock.CodeGeneration\Rock.CodeGeneration.csproj",
+            "Rock.Common.Web\Rock.Common.Web.csproj",
+            "Rock.Common\Rock.Common.csproj",
+            "Rock.DownhillCss\Rock.DownhillCss.csproj",
+            "Rock.Lava.DotLiquid\Rock.Lava.DotLiquid.csproj",
+            "Rock.Lava.Fluid\Rock.Lava.Fluid.csproj",
+            "Rock.Lava.Shared\Rock.Lava.Shared.csproj",
+            "Rock.Lava\Rock.Lava.csproj",
+            "Rock.Mailgun\Rock.Mailgun.csproj",
+            "Rock.Mandrill\Rock.Mandrill.csproj",
+            "Rock.Migrations\Rock.Migrations.csproj",
+            "Rock.MyWell\Rock.MyWell.csproj",
+            "Rock.NMI\Rock.NMI.csproj",
+            "Rock.Oidc\Rock.Oidc.csproj",
+            "Rock.PayFlowPro\Rock.PayFlowPro.csproj",
+            "Rock.Rest\Rock.Rest.csproj",
+            "Rock.RestClient\Rock.RestClient.csproj",
+            "Rock.Security.Authentication.Auth0\Rock.Security.Authentication.Auth0.csproj",
+            "Rock.SendGrid\Rock.SendGrid.csproj",
+            "Rock.SignNow\Rock.SignNow.csproj",
+            "Rock.Slingshot.Model\Rock.Slingshot.Model.csproj",
+            "Rock.Slingshot\Rock.Slingshot.csproj",
+            "Rock.StatementGenerator\Rock.StatementGenerator.csproj",
+            "Rock.Tests.Integration\Rock.Tests.Integration.csproj",
+            "Rock.Tests.Shared\Rock.Tests.Shared.csproj",
+            "Rock.Tests.UnitTests\Rock.Tests.UnitTests.csproj",
+            "Rock.Update\Rock.Update.csproj",
+            "Rock.Version\Rock.Version.csproj",
+            "Rock.ViewModel\Rock.ViewModel.csproj",
+            "Rock.WebStartup\Rock.WebStartup.csproj",
+            "Rock\Rock.csproj",
+            "SignNowSDK\SignNowSDK.csproj")
+
+          $searchDebug = "<OutputPath>bin\\Debug\\<\/OutputPath>"
+          $searchRelease = "<OutputPath>bin\\Release\\<\/OutputPath>"
+          $replace = "<OutputPath>..\RockWeb\Bin\</OutputPath>"
+
+          ForEach ($path in $paths) {
+            $thePath = "$env:GITHUB_WORKSPACE\$path"
+            ((Get-Content -path $thePath -Raw) -replace $searchDebug,$replace) | Set-Content -Path $thePath
+            ((Get-Content -path $thePath -Raw) -replace $searchRelease,$replace) | Set-Content -Path $thePath
+          }
+
+          msbuild $env:SOLUTION_NAME /p:Configuration=Release /t:Rebuild
+
+      - name: Upload archive
+        run: |
+          # List env vars
+          # dir env:
+          Compress-Archive -Path $env:GITHUB_WORKSPACE\RockWeb\* -DestinationPath $env:GITHUB_WORKSPACE\$env:ARTIFACT_NAME -Force
+          aws s3 cp $env:GITHUB_WORKSPACE\$env:ARTIFACT_NAME $env:S3_BUCKET_NAME
+
+      - name: Deploy website archive
+        run: |
+          aws autoscaling start-instance-refresh --auto-scaling-group-name $env:ASG_NAME
+
