@@ -86,7 +86,7 @@
 
               <span class="text-muted small text-center">
                 <i class="fa fa-clock-o"></i>
-                {{ Schedule.Name }}
+                {{ ScheduleDate | Date:"st" }}
               </span>
             {%- else -%}
                 <span class="text-muted small text-center">

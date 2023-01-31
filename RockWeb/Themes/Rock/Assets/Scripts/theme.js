@@ -102,62 +102,12 @@ function PreventNumberScroll() {
             e.preventDefault();
         }
     });
-  });
 
-  $('.js-note-editor .meta-body').on("focusin", function() {
-    var noteBody = $(this);
-    // calculate height of noteBody
-    var height = noteBody.prop('scrollHeight');
-    noteBody.addClass("focus-within").css('height', height);
-    
-    
-    noteBody.on('webkitTransitionEnd otransitionend oTransitionEnd msTransitionEnd transitionend', function(e) {
-      if ($(this).hasClass("focus-within")) {
-        noteBody.addClass("overflow-visible");
-      }
-    });
-
-    ResizeTextarea();
-
-    unfocusOnClickOutside(this, function() {
-        noteBody.removeClass("focus-within overflow-visible").css('height', '');
+    $('.js-notetext').on("blur", function() {
+      $(this).parent().removeClass("focus-within");
     })
-  })
-}
-
-function unfocusOnClickOutside(element, callback) {
-    $(document).on("click.unfocus", function(e) {
-        if (!$(element).is(e.target) && $(element).has(e.target).length === 0) {
-            callback();
-            // disable the event handler to avoid unwanted behaviours
-            $(document).off(".unfocus");
-        }
+    .on("focus", function() {
+      $(this).parent().addClass("focus-within")
     });
-}
-
-// use mutuation observer to resize textarea
-function ResizeTextarea() {
-    $('.js-notetext').on("input", function() {
-        // resize textarea
-        var textarea = $(this);
-        textarea.css('height', 'auto').css('height', textarea.prop('scrollHeight'));
-        // get closest note-editor and resize it
-        var noteEditor = textarea.closest('.focus-within').addClass("no-transition");
-        noteEditor.css('height', 'auto').css('height', noteEditor.prop('scrollHeight'));
-    });
-}
-
-// Fixes an issue with the wait spinner caused by browser Back/Forward caching.
-function HandleBackForwardCache() {
-
-    // Forcibly hide the wait spinner if the page is being reloaded from cache.
-    // Browsers that implement back/forward caching may otherwise continue to display the wait spinner when the page is restored.
-    // This fix is not effective for Safari browsers prior to v13, due to a known bug in the bfcache implementation.
-    // (https://bugs.webkit.org/show_bug.cgi?id=156356)
-    $(window).bind('pageshow', function (e) {
-        if ( e.originalEvent.persisted )
-        {
-            $('#updateProgress').hide();
-        }
-    });
+  });
 }

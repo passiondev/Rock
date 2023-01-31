@@ -738,14 +738,14 @@ td.grid-actions {
   display: inline-block;
   width: 100%;
   padding: 7px 14px;
-  color: @navbar-top-color;
+  color: @navbartop-color;
   background: transparent;
-  border: 1px solid @navbar-top-color;
+  border: 1px solid @navbartop-color;
   border-radius: @btn-border-radius-base;
 
   &:hover,
   &:focus {
-    color: @navbar-top-color;
+    color: @navbartop-color;
     background: fade(@white, 10%);
   }
 }
@@ -1298,8 +1298,7 @@ td.grid-actions {
   .picker-label {
     display: flex;
     align-items: center;
-    width: auto !important;
-    max-width: 325px;
+    width: auto;
     max-width: none;
     padding-left: 4px;
     margin-left: -4px;
@@ -1325,31 +1324,13 @@ td.grid-actions {
     }
   }
 
-  .selected-names {
-    font-size: 24px;
-    font-weight: 700;
-  }
-
-  @media screen and (max-width: @screen-sm-max) {
-    .dropdown-menu {
-      position: absolute !important;
-      max-width: ~"calc(100vw - 40px)";
-    }
-  }
-}
-
-.picker-noclear {
   .picker-select-none {
     display: none !important;
   }
-}
 
-@media (min-width: 430px) and (max-width: 840px) {
-  .picker-schedule {
-    .dropdown-menu {
-      right: 0;
-      left: auto;
-    }
+  .selected-names {
+    font-size: 24px;
+    font-weight: 700;
   }
 }
 

@@ -14,10 +14,6 @@
   border: 1px solid @smartsearch-border-color;
   border-radius: @border-radius-base;
 
-  &:focus-within {
-    background: @smartsearch-focus-bg;
-  }
-
   input::-moz-placeholder,
   input::-webkit-input-placeholder {
     color: darken(@smartsearch-input-text-color, 25%);
@@ -83,7 +79,7 @@
 
   input.searchinput {
     width: 100%;
-    padding: @smartsearch-input-padding;
+    padding: 4px 4px 4px 25px;
     color: @smartsearch-input-text-color;
     border: 0 !important;
     box-shadow: none !important;
@@ -94,7 +90,6 @@
       width: 100%;
       color: @smartsearch-text-color;
       text-align: right;
-      white-space: nowrap;
       cursor: pointer;
 
       span {
@@ -104,11 +99,6 @@
       &:hover,
       &:focus {
         background-color: transparent;
-      }
-
-      b {
-        display: inline-block;
-        width: .625em;
       }
     }
 
