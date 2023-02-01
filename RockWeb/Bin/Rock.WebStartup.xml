@@ -1,0 +1,226 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Rock.WebStartup</name>
+    </assembly>
+    <members>
+        <member name="T:Rock.AssemblyInitializer">
+            <summary>
+            Initializer that runs prior to RockWeb's Global.Application_Start. (see comments on PreApplicationStartMethod in AssemblyInfo.cs)
+            This calls <seealso cref="M:Rock.WebStartup.RockApplicationStartupHelper.RunApplicationStartup"/> to take care of most for all startup logic relating to the web project.
+            </summary>
+        </member>
+        <member name="P:Rock.AssemblyInitializer.AssemblyInitializerException">
+            <summary>
+            Contains any Exception that occurred during <see cref="M:Rock.AssemblyInitializer.Initialize"/>
+            </summary>
+            <value>
+            The assembly initializer exception.
+            </value>
+        </member>
+        <member name="M:Rock.AssemblyInitializer.Initialize">
+            <summary>
+            Initializes this instance.
+            </summary>
+        </member>
+        <member name="T:Rock.WebStartup.RockApplicationStartupHelper">
+            <summary>
+            Helper that manages startup operations that need to run prior to RockWeb startup
+            </summary>
+        </member>
+        <member name="P:Rock.WebStartup.RockApplicationStartupHelper.StartDateTime">
+            <summary>
+            Gets the DateTime that <seealso cref="M:Rock.WebStartup.RockApplicationStartupHelper.RunApplicationStartup"/> started
+            </summary>
+            <value>
+            The start date time.
+            </value>
+        </member>
+        <member name="P:Rock.WebStartup.RockApplicationStartupHelper.QuartzScheduler">
+            <summary>
+            Global Quartz scheduler for jobs 
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.TaskScheduler_UnobservedTaskException(System.Object,System.Threading.Tasks.UnobservedTaskExceptionEventArgs)">
+            <summary>
+            If there are Task.Runs that don't handle their exceptions, this will catch those
+            so that we can log it.
+            </summary>
+            <param name="sender">The source of the event.</param>
+            <param name="e">The <see cref="T:System.Threading.Tasks.UnobservedTaskExceptionEventArgs"/> instance containing the event data.</param>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.RunApplicationStartup">
+            <summary>
+            Runs various startup operations that need to run prior to RockWeb startup
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.InitializeRockOrgTimeZone">
+            <summary>
+            Initializes the Rock organization time zone.
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.InitializeRockGraduationDate">
+            <summary>
+            Initializes the rock graduation date.
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.RegisterHttpModules">
+            <summary>
+            Registers the HTTP modules.
+            see http://blog.davidebbo.com/2011/02/register-your-http-modules-at-runtime.html
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.LoadCacheObjects(Rock.Data.RockContext)">
+            <summary>
+            Loads the cache objects.
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.UpdateAttributesFromRockConfig(Rock.Data.RockContext)">
+            <summary>
+            Adds/Updates any attributes that were defined in web.config 's rockConfig section
+            This is usually used for Plugin Components that need to get any changed values from web.config before startup
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.SendVersionUpdateNotifications">
+            <summary>
+            Sends a message to Spark with version info, etc
+            If any exceptions occur, they will be logged and ignored
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.HasPendingEFMigrations">
+            <summary>
+            uses Reflection and a query on __MigrationHistory to determine whether we need to check for pending EF Migrations
+            </summary>
+            <returns>
+              <c>true</c> if [has pending ef migrations]; otherwise, <c>false</c>.
+            </returns>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.MigrateDatabase(System.Boolean)">
+            <summary>
+            If EF migrations need to be done, does MF Migrations on the database 
+            </summary>
+            <returns>True if at least one migration was run</returns>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.ConfigureEntitySaveHooks">
+            <summary>
+            Searches all assemblies for <see cref="T:Rock.Data.IEntitySaveHook"/> subclasses
+            that need to be registered in the default save hook provider.
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.MigratePlugins">
+            <summary>
+            Migrates the plugins.
+            </summary>
+            <returns></returns>
+            <exception cref="T:System.Exception">Could not connect to the SQL database! Please check the 'RockContext' connection string in the web.ConnectionString.config file.
+            or</exception>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.RunPluginMigrations(System.Reflection.Assembly)">
+            <summary>
+            Runs the plugin migrations for the specified plugin assembly
+            </summary>
+            <param name="pluginAssembly">The plugin assembly.</param>
+            <returns></returns>
+            <exception cref="T:Rock.WebStartup.RockStartupException">
+            The '{assemblyName}' plugin assembly contains duplicate migration numbers ({ migrationNumberAttr.Number}).
+            or
+            ##Plugin Migration error occurred in {assemblyMigrations.Key}, {migrationType.Value.Name}##
+            </exception>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.InitializeLava">
+            <summary>
+            Initializes Rock's Lava system (which uses DotLiquid)
+            Doing this in startup will force the static Liquid class to get instantiated
+            so that the standard filters are loaded prior to the custom RockFilter.
+            This is to allow the custom 'Date' filter to replace the standard Date filter.
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.InitializeLavaSafeTypes(Rock.Lava.ILavaEngine)">
+            <summary>
+            Initializes the lava safe types on the engine. This takes care
+            of special types that we don't have direct access to so we can't
+            add the proper interfaces to them.
+            </summary>
+            <param name="engine">The engine.</param>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.InitializeJobScheduler">
+            <summary>
+            Initialize the job scheduler.
+            </summary>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.LogError(System.Exception,System.Web.HttpContext)">
+            <summary>
+            Logs the error to database (or filesystem if database isn't available)
+            </summary>
+            <param name="ex">The ex.</param>
+            <param name="context">The context.</param>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.LogShutdownMessage(System.String)">
+            <summary>
+            Logs the shutdown message to App_Data\Logs
+            </summary>
+            <param name="message">The message.</param>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.ShowDebugTimingMessage(System.String)">
+            <summary>
+            Shows the debug timing message if running in a development environment
+            </summary>
+            <param name="message">The message.</param>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.LogStartupMessage(System.String)">
+            <summary>
+            Logs the startup message to App_Data\Logs
+            </summary>
+            <param name="message">The message.</param>
+        </member>
+        <member name="M:Rock.WebStartup.RockApplicationStartupHelper.LogMessage(System.String)">
+            <summary>
+            Logs the message to App_Data\Logs
+            </summary>
+            <param name="message">The message.</param>
+        </member>
+        <member name="T:Rock.WebStartup.RockStartupException">
+            <summary>
+            
+            </summary>
+            <seealso cref="T:System.Exception" />
+        </member>
+        <member name="M:Rock.WebStartup.RockStartupException.#ctor(System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Rock.WebStartup.RockStartupException"/> class.
+            </summary>
+            <param name="message">The message that describes the error.</param>
+        </member>
+        <member name="M:Rock.WebStartup.RockStartupException.#ctor(System.String,System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Rock.WebStartup.RockStartupException" /> class.
+            </summary>
+            <param name="message">The error message that explains the reason for the exception.</param>
+            <param name="exception">The exception.</param>
+        </member>
+        <member name="P:Rock.WebStartup.RockStartupException.Message">
+            <summary>
+            Gets a message that describes the current exception.
+            </summary>
+        </member>
+        <member name="P:Rock.WebStartup.RockStartupException.StackTrace">
+            <summary>
+            Gets a string representation of the immediate frames on the call stack.
+            </summary>
+        </member>
+        <member name="T:Rock.WebStartup.UnobservedTaskException">
+            <summary>
+            Class UnobservedTaskException.
+            Implements the <see cref="T:System.Exception" />
+            </summary>
+            <seealso cref="T:System.Exception" />
+        </member>
+        <member name="M:Rock.WebStartup.UnobservedTaskException.#ctor(System.String,System.Exception)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Rock.WebStartup.UnobservedTaskException"/> class.
+            </summary>
+            <param name="message">The message.</param>
+            <param name="exception">The exception.</param>
+        </member>
+    </members>
+</doc>
