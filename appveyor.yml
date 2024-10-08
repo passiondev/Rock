@@ -4,8 +4,6 @@ clone_folder: C:\project\rock-source
 branches:
   only:
     - develop-pcc
-    - stagion-pcc
-    - production-pcc
 skip_tags: true
 skip_branch_with_pr: true
 install:
