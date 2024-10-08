@@ -1,0 +1,27 @@
+version: 1.0.{build}
+image: Visual Studio 2019
+clone_folder: C:\project\rock-source
+branches:
+  only:
+    - develop-pcc
+    - stagion-pcc
+    - production-pcc
+skip_tags: true
+skip_branch_with_pr: true
+install:
+  - cmd: git config --global core.autocrlf true
+build_script:
+  - cmd: >-
+      echo "Moving Plugins Folder"
+      move C:\project\rock-source\RockWeb\Plugins C:\ 
+      echo "Starting Nuget Restore"
+      nuget restore -verbosity normal -NonInteractive -Recursive "C:\project\rock-source\Rock.sln"
+      echo "Nuget Packages Restored"
+      "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\Common7\IDE\devenv" "C:\project\rock-source\Rock.sln" /build Release
+      echo "Moving Plugins Folder"
+      move C:\Plugins C:\project\rock-source\RockWeb
+      echo "Build Complete"
+test: off
+artifacts:
+  - path: /RockWeb
+    name: WebSitePkg
