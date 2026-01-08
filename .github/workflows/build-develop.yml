@@ -30,7 +30,10 @@ jobs:
         run: nuget restore -verbosity normal -NonInteractive -Recursive Rock.sln
 
       - name: Create ConnectionStrings Config
-        run: New-Item -Path "path\app.ConnectionStrings.config" -ItemType File
+        shell: pwsh
+        working-directory: .
+        run: |
+          New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
 
       - name: MSBuild (VS2022 equiv)
         run: |
