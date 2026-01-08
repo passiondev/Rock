@@ -209,9 +209,6 @@
                       The value you enter here will be used for the &lt;source&gt; as described in [Content-Security-Policy frame-ancestors directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/frame-ancestors#Syntax).
                       Be sure to include your own server domain(s) in the list to prevent locking yourself out from modal use.
                       If left blank, Rock will inject properties into the HTTP Header which modern web browsers will use to prevent site embedding and it will use a frame-ancestors value of 'self'." />
-                </div>
-
-                <div class="col-md-6">
 
                     <CheckBox v-model="allowIndexing"
                               label="Allow Indexing" />
