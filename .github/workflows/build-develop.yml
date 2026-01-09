@@ -20,6 +20,13 @@ jobs:
         with:
           dotnet-version: "8.0.x" # VS2022 .NET
 
+      - name: NuGet Cache
+        uses: actions/cache@v4
+        with:
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Rock.sln') }}
+          path: ~/.nuget/packages
+          lookup-only: false
+
       - name: Move Plugins Folder
         shell: pwsh
         run: |
