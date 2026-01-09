@@ -25,10 +25,5 @@ jobs:
         working-directory: "./Dev Tools/obsidian-style-checker"
 
       - name: Run Obsidian Style Checker
-        run: npx obsidian-style-checker --from "${{ github.event.before }}" --to "${{ github.event.after }}" --asana
+        run: npx obsidian-style-checker --from "${{ github.event.before }}" --to "${{ github.event.after }}"
         working-directory: "./Dev Tools/obsidian-style-checker"
-        env:
-          ASANA_ACCESS_TOKEN: "${{ secrets.ASANA_ACCESS_TOKEN }}"
-          ASANA_WORKSPACE: "${{ vars.ASANA_WORKSPACE }}"
-          ASANA_PROJECT: "${{ vars.ASANA_STYLE_CHECKER_PROJECT }}"
-          ASANA_SECTION: "${{ vars.ASANA_STYLE_CHECKER_SECTION }}"
