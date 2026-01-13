@@ -15,6 +15,11 @@ jobs:
       - name: Setup Git CRLF
         run: git config --global core.autocrlf true
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
       - name: Setup NuGet
         uses: actions/setup-dotnet@v4
         with:
@@ -26,6 +31,31 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/Rock.sln') }}
           path: ~/.nuget/packages
           lookup-only: false
+
+      - name: NPM Install for JavaScript Projects
+        run: |
+          npm install
+        working-directory: Rock.JavaScript.Obsidian
+
+      - name: NPM Install for EditorJS
+        run: |
+          npm install
+        working-directory: Rock.JavaScript.EditorJs
+
+      - name: NPM Install for Main JavaScript
+        run: |
+          npm install
+        working-directory: Rock.JavaScript
+
+      - name: NPM Install for Obsidian Reporting
+        run: |
+          npm install
+        working-directory: Rock.JavaScript.Obsidian.Reporting
+
+      - name: NPM Install for Obsidian Blocks
+        run: |
+          npm install
+        working-directory: Rock.JavaScript.Obsidian.Blocks
 
       - name: Move Plugins Folder
         shell: pwsh
