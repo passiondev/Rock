@@ -1,7 +1,7 @@
 name: Rock Build Pipeline
 on:
   push:
-    branches: [develop]
+    branches: [staging]
   workflow_dispatch:
 jobs:
   build:
@@ -61,3 +61,37 @@ jobs:
           name: RockWeb-Deployable-${{ github.run_number }}
           path: RockWeb/
           retention-days: 30
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Create Connection Strings Config
+        run: |
+          $connectionString = @"
+          <!-- Rock RMS Connection Strings for Cloud SQL -->
+          <connectionStrings>
+            <add
+              name="RockContext"
+              connectionString="
+                Data Source=${{ secrets.CLOUD_SQL_CONNECTION_NAME }};
+                Initial Catalog=${{ secrets.DB_NAME }};
+                User Id=${{ secrets.DB_USER }};
+                password=${{ secrets.DB_PASSWORD }};
+                MultipleActiveResultSets=true;
+                Encrypt=true;
+                TrustServerCertificate=false;
+                Connection Timeout=30;"
+              providerName="System.Data.SqlClient"/>
+          </connectionStrings>
+          "@
+          $connectionString | Out-File -FilePath "RockWeb/web.ConnectionStrings.config" -Encoding UTF8
+
+      - name: Deploy to GCP Compute Engine
+        run: |
+          gcloud compute scp --recurse RockWeb/ ${{ secrets.GCP_VM_NAME }}:/c/RockWeb/ --zone=${{ secrets.GCP_ZONE }}
+          gcloud compute ssh ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --command="iisreset"
