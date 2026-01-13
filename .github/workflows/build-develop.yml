@@ -42,8 +42,9 @@ jobs:
         run: |
           New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
 
-      - name: Build Solution
-        run: dotnet build Rock.sln --configuration Release --verbosity minimal
+      - name: MSBuild (VS2022 equiv)
+        run: |
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock.sln /p:Configuration=Release /p:Platform="Any CPU" /t:Rebuild /verbosity:minimal
 
       - name: Restore Plugins Folder
         shell: pwsh
