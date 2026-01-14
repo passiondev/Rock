@@ -113,15 +113,25 @@ jobs:
           destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/
           credentials: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Deploy to GCP Compute Engine
+      - name: Deploy via WinRM (Windows Remote Management)
         run: |
-          # Download latest deployment from Cloud Storage
-          gcloud compute ssh ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --command="gsutil -m cp -r gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/* /c/RockWeb/ && iisreset"
+          # Use PowerShell remoting for Windows deployment
+          powershell.exe -Command "
+            # Enable WinRM on local machine for remoting
+            Enable-PSRemoting -Force -SkipNetworkProfileCheck
 
-      - name: Update VM Startup Script for Auto-Deployment
-        run: |
-          # Set startup script to pull latest deployment on VM restart
-          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata=windows-startup-script-ps1="gsutil -m cp -r gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/* /c/RockWeb/; iisreset"
+            # Create secure credential
+            $securePassword = ConvertTo-SecureString '${{ secrets.WINDOWS_PASSWORD }}' -AsPlainText -Force
+            $credential = New-Object System.Management.Automation.PSCredential('${{ secrets.WINDOWS_USERNAME }}', $securePassword)
+
+            # Connect and deploy
+            Invoke-Command -ComputerName ${{ secrets.GCP_VM_EXTERNAL_IP }} -Credential $credential -ScriptBlock {
+              param($bucketName, $runNumber)
+              # Download from Cloud Storage and deploy
+              gsutil -m cp -r gs://$bucketName/$runNumber/* /c/RockWeb/
+              iisreset
+            } -ArgumentList 'rock-deployments-${{ secrets.GCP_PROJECT_ID }}', '${{ github.run_number }}'
+          "
 
       - name: Create Health Check
         run: |
