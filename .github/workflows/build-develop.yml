@@ -104,7 +104,7 @@ jobs:
 
       - name: Create Cloud Storage Bucket
         run: |
-          gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }} || echo "Bucket may already exist"
+          gsutil ls gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }} >nul 2>&1 || gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}
 
       - name: Upload to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
