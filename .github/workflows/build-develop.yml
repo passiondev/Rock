@@ -102,22 +102,26 @@ jobs:
           "@
           $connectionString | Out-File -FilePath "RockWeb/web.ConnectionStrings.config" -Encoding UTF8
 
+      - name: Create Cloud Storage Bucket
+        run: |
+          gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }} || echo "Bucket may already exist"
+
       - name: Upload to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: RockWeb/
-          destination: rock-deployments/${{ github.run_number }}/
+          destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/
           credentials: ${{ secrets.GCP_SA_KEY }}
 
       - name: Deploy to GCP Compute Engine
         run: |
           # Download latest deployment from Cloud Storage
-          gcloud compute ssh ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --command="gsutil -m cp -r gs://rock-deployments/${{ github.run_number }}/* /c/RockWeb/ && iisreset"
+          gcloud compute ssh ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --command="gsutil -m cp -r gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/* /c/RockWeb/ && iisreset"
 
       - name: Update VM Startup Script for Auto-Deployment
         run: |
           # Set startup script to pull latest deployment on VM restart
-          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata=windows-startup-script-ps1="gsutil -m cp -r gs://rock-deployments/${{ github.run_number }}/* /c/RockWeb/; iisreset"
+          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata=windows-startup-script-ps1="gsutil -m cp -r gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/* /c/RockWeb/; iisreset"
 
       - name: Create Health Check
         run: |
