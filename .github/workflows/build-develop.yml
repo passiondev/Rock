@@ -113,23 +113,31 @@ jobs:
           destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/
           credentials: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Deploy via WinRM (Windows Remote Management)
-        shell: pwsh
+      - name: Configure Auto-Deployment (Startup Script)
         run: |
-          # Use PowerShell remoting for Windows deployment
-          $securePassword = ConvertTo-SecureString '${{ secrets.WINDOWS_PASSWORD }}' -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential('${{ secrets.WINDOWS_USERNAME }}', $securePassword)
+          # Set startup script to auto-deploy on VM restart
+          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata=windows-startup-script-ps1="
+            # Auto-deployment script
+            \$bucketName = 'rock-deployments-${{ secrets.GCP_PROJECT_ID }}'
+            \$runNumber = '${{ github.run_number }}'
 
-          # Add VM to TrustedHosts for WinRM
-          Set-Item WSMan:\localhost\Client\TrustedHosts -Value ${{ secrets.GCP_VM_EXTERNAL_IP }} -Concatenate -Force
+            Write-Host 'Checking for deployment \$runNumber...'
+            gsutil -m cp -r gs://\$bucketName/\$runNumber/* /c/RockWeb/ 2>\$null
+            if (\$LASTEXITCODE -eq 0) {
+              Write-Host 'Deployment downloaded, restarting IIS...'
+              iisreset
+              Write-Host 'Deployment completed successfully!'
+            } else {
+              Write-Host 'No new deployment found or download failed.'
+            }
+          "
 
-          # Connect and deploy
-          Invoke-Command -ComputerName ${{ secrets.GCP_VM_EXTERNAL_IP }} -Credential $credential -ScriptBlock {
-            param($bucketName, $runNumber)
-            # Download from Cloud Storage and deploy
-            gsutil -m cp -r gs://$bucketName/$runNumber/* /c/RockWeb/
-            iisreset
-          } -ArgumentList 'rock-deployments-${{ secrets.GCP_PROJECT_ID }}', '${{ github.run_number }}'
+      - name: Trigger Deployment (VM Restart)
+        run: |
+          # Restart VM to execute startup script and deploy
+          gcloud compute instances stop ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }}
+          Start-Sleep -Seconds 10
+          gcloud compute instances start ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }}
 
       - name: Create Health Check
         run: |
