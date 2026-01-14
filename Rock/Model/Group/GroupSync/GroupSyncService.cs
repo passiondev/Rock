@@ -331,7 +331,7 @@ namespace Rock.Model
                                         if ( createLogin && !person.Users.Any() && !string.IsNullOrWhiteSpace( person.NickName ) && !string.IsNullOrWhiteSpace( person.LastName ) )
                                         {
                                             newPassword = System.Web.Security.Membership.GeneratePassword( 9, 1 );
-                                            var username = Rock.Security.Authentication.Database.GenerateUsername( person.NickName, person.LastName );
+                                            var username = GenerateUsernameFromName( person.NickName, person.LastName );
 
                                             var login = UserLoginService.Create(
                                                 groupMemberContext,
@@ -400,6 +400,36 @@ namespace Rock.Model
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Generates a username from first and last name in firstname.lastname format
+        /// </summary>
+        /// <param name="firstName">The first name</param>
+        /// <param name="lastName">The last name</param>
+        /// <param name="tryCount">The attempt count for handling duplicates</param>
+        /// <returns>A unique username</returns>
+        private static string GenerateUsernameFromName( string firstName, string lastName, int tryCount = 0 )
+        {
+            // create username
+            string username = ( firstName + "." + lastName ).ToLower();
+
+            if ( tryCount != 0 )
+            {
+                username = username + tryCount.ToString();
+            }
+
+            // check if username exists
+            UserLoginService userService = new UserLoginService( new RockContext() );
+            var loginExists = userService.Queryable().Where( l => l.UserName == username ).Any();
+            if ( !loginExists )
+            {
+                return username;
+            }
+            else
+            {
+                return GenerateUsernameFromName( firstName, lastName, tryCount + 1 );
+            }
         }
     }
 }
