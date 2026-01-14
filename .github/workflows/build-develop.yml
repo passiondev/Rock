@@ -102,8 +102,45 @@ jobs:
           "@
           $connectionString | Out-File -FilePath "RockWeb/web.ConnectionStrings.config" -Encoding UTF8
 
+      - name: Upload to Cloud Storage
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: RockWeb/
+          destination: rock-deployments/${{ github.run_number }}/
+          credentials: ${{ secrets.GCP_SA_KEY }}
+
       - name: Deploy to GCP Compute Engine
         run: |
-          gcloud compute scp --recurse RockWeb/ ${{ secrets.GCP_VM_NAME }}:/c/RockWeb/ --zone=${{ secrets.GCP_ZONE }}
-          gcloud compute ssh ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --command="iisreset"
+          # Download latest deployment from Cloud Storage
+          gcloud compute ssh ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --command="gsutil -m cp -r gs://rock-deployments/${{ github.run_number }}/* /c/RockWeb/ && iisreset"
 
+      - name: Update VM Startup Script for Auto-Deployment
+        run: |
+          # Set startup script to pull latest deployment on VM restart
+          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata=windows-startup-script-ps1="gsutil -m cp -r gs://rock-deployments/${{ github.run_number }}/* /c/RockWeb/; iisreset"
+
+      - name: Create Health Check
+        run: |
+          gcloud compute health-checks create http rock-health-check \
+            --port=80 \
+            --request-path="/default.aspx" \
+            --check-interval=30 \
+            --timeout=10 \
+            --unhealthy-threshold=3 \
+            --healthy-threshold=2
+
+      # Instance group creation removed - focus on core deployment
+
+      - name: Enable Cloud Monitoring
+        run: |
+          # Enable Cloud Operations monitoring
+          gcloud services enable monitoring.googleapis.com
+          gcloud services enable logging.googleapis.com
+
+      - name: Create Firewall Rule for Monitoring
+        run: |
+          # Allow monitoring agents (if not already exists)
+          gcloud compute firewall-rules create allow-monitoring \
+            --allow tcp:80,tcp:443 \
+            --source-ranges 35.191.0.0/16,130.211.0.0/22 \
+            --description "Allow Google Cloud monitoring" || echo "Firewall rule may already exist"
