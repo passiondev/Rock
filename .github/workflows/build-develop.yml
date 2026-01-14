@@ -114,24 +114,19 @@ jobs:
           credentials: ${{ secrets.GCP_SA_KEY }}
 
       - name: Deploy via WinRM (Windows Remote Management)
+        shell: pwsh
         run: |
           # Use PowerShell remoting for Windows deployment
-          powershell.exe -Command "
-            # Enable WinRM on local machine for remoting
-            Enable-PSRemoting -Force -SkipNetworkProfileCheck
+          $securePassword = ConvertTo-SecureString '${{ secrets.WINDOWS_PASSWORD }}' -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential('${{ secrets.WINDOWS_USERNAME }}', $securePassword)
 
-            # Create secure credential
-            $securePassword = ConvertTo-SecureString '${{ secrets.WINDOWS_PASSWORD }}' -AsPlainText -Force
-            $credential = New-Object System.Management.Automation.PSCredential('${{ secrets.WINDOWS_USERNAME }}', $securePassword)
-
-            # Connect and deploy
-            Invoke-Command -ComputerName ${{ secrets.GCP_VM_EXTERNAL_IP }} -Credential $credential -ScriptBlock {
-              param($bucketName, $runNumber)
-              # Download from Cloud Storage and deploy
-              gsutil -m cp -r gs://$bucketName/$runNumber/* /c/RockWeb/
-              iisreset
-            } -ArgumentList 'rock-deployments-${{ secrets.GCP_PROJECT_ID }}', '${{ github.run_number }}'
-          "
+          # Connect and deploy
+          Invoke-Command -ComputerName ${{ secrets.GCP_VM_EXTERNAL_IP }} -Credential $credential -ScriptBlock {
+            param($bucketName, $runNumber)
+            # Download from Cloud Storage and deploy
+            gsutil -m cp -r gs://$bucketName/$runNumber/* /c/RockWeb/
+            iisreset
+          } -ArgumentList 'rock-deployments-${{ secrets.GCP_PROJECT_ID }}', '${{ github.run_number }}'
 
       - name: Create Health Check
         run: |
