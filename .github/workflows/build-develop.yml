@@ -49,6 +49,20 @@ jobs:
         run: |
           Move-Item C:\Plugins RockWeb\
           Write-Output "Plugins restored"
+
+      - name: Ensure Assemblies in RockWeb Bin
+        shell: pwsh
+        run: |
+          # Copy all built assemblies to RockWeb bin folder
+          if (!(Test-Path "RockWeb\bin")) {
+            New-Item -ItemType Directory -Path "RockWeb\bin" -Force
+          }
+          Copy-Item "Rock\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          Copy-Item "Rock.*\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          Copy-Item "DotLiquid\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          Copy-Item "SignNowSDK\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          Write-Output "Assemblies copied to RockWeb\bin"
+
       - name: Cleanup tsconfig.json
         run: del RockWeb\tsconfig.json
 
