@@ -120,6 +120,9 @@ jobs:
           $securePassword = ConvertTo-SecureString '${{ secrets.WINDOWS_PASSWORD }}' -AsPlainText -Force
           $credential = New-Object System.Management.Automation.PSCredential('${{ secrets.WINDOWS_USERNAME }}', $securePassword)
 
+          # Add VM to TrustedHosts for WinRM
+          Set-Item WSMan:\localhost\Client\TrustedHosts -Value ${{ secrets.GCP_VM_EXTERNAL_IP }} -Concatenate -Force
+
           # Connect and deploy
           Invoke-Command -ComputerName ${{ secrets.GCP_VM_EXTERNAL_IP }} -Credential $credential -ScriptBlock {
             param($bucketName, $runNumber)
