@@ -36,13 +36,12 @@ jobs:
         run: nuget restore -verbosity normal -NonInteractive -Recursive Rock.sln
 
       - name: Create ConnectionStrings Config
-        shell: pwsh
-        working-directory: .
         run: |
-          New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
+          # Create empty connection strings file like AppVeyor does
+          echo . > RockWeb\path\app.ConnectionStrings.config
       - name: MSBuild (VS2022 equiv)
-        continue-on-error: true
         run: |
+          # Build the full solution like AppVeyor does (it works there)
           & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\devenv.com" Rock.sln /build Release
       - name: Restore Plugins Folder
         shell: pwsh
@@ -57,20 +56,73 @@ jobs:
           if (!(Test-Path "RockWeb\bin")) {
             New-Item -ItemType Directory -Path "RockWeb\bin" -Force
           }
-          Copy-Item "Rock\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
-          Copy-Item "Rock.*\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
-          Copy-Item "DotLiquid\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
-          Copy-Item "SignNowSDK\bin\Release\*.dll" "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          # Copy from Release directories
+          Get-ChildItem "Rock\bin\Release\*.dll" | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          Get-ChildItem "Rock.*\bin\Release\*.dll" -Recurse | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          Get-ChildItem "DotLiquid\bin\Release\*.dll" | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
+          Get-ChildItem "SignNowSDK\bin\Release\*.dll" | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
           Write-Output "Assemblies copied to RockWeb\bin"
 
       - name: Cleanup tsconfig.json
         run: del RockWeb\tsconfig.json
 
+      - name: Verify Build Artifacts
+        shell: pwsh
+        run: |
+          # Verify we have essential Rock assemblies
+          $essentialDlls = @(
+            "Rock.dll",
+            "Rock.Web.dll",
+            "Rock.Model.dll",
+            "Rock.Data.dll"
+          )
+
+          $missingDlls = @()
+          foreach ($dll in $essentialDlls) {
+            if (!(Test-Path "RockWeb\bin\$dll")) {
+              $missingDlls += $dll
+            }
+          }
+
+          if ($missingDlls.Count -gt 0) {
+            Write-Host "Missing essential DLLs: $($missingDlls -join ', ')"
+            exit 1
+          } else {
+          Write-Host "All essential DLLs present ✓"
+
+          # Count total files for verification
+          $totalFiles = (Get-ChildItem RockWeb -Recurse -File).Count
+          $binFiles = (Get-ChildItem RockWeb\bin -File).Count
+          Write-Host "Total files in RockWeb: $totalFiles"
+          Write-Host "DLLs in bin folder: $binFiles"
+
+          # Show deployment summary like GitLab CI
+          Write-Host "=== DEPLOYMENT SUMMARY ==="
+          Write-Host "Branch: ${{ github.ref_name }}"
+          Write-Host "Commit: ${{ github.sha }}"
+          Write-Host "Run: ${{ github.run_number }}"
+          Write-Host "Bucket: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}"
+          Write-Host "========================"
+
+      - name: Create Deployment Package
+        shell: pwsh
+        run: |
+          # Create ZIP package like GitLab CI does
+          $zipName = "RockWeb-${{ github.run_number }}.zip"
+          Compress-Archive -Path RockWeb\* -DestinationPath $zipName -Force
+          Write-Host "Created deployment package: $zipName"
+
+          # Calculate hash for verification like GitLab CI
+          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
+          Write-Host "Package SHA256: $hash"
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: RockWeb-Deployable-${{ github.run_number }}
-          path: RockWeb/
+          path: |
+            RockWeb/
+            RockWeb-*.zip
           retention-days: 30
 
       - name: Authenticate to Google Cloud
@@ -137,29 +189,4 @@ jobs:
 
       # Instance group creation removed - focus on core deployment
 
-      - name: Enable Cloud Monitoring
-        shell: bash
-        run: |
-          # Enable Cloud Operations monitoring
-          gcloud services enable monitoring.googleapis.com
-          gcloud services enable logging.googleapis.com
-
-      - name: Create Health Check
-        shell: bash
-        run: |
-          gcloud compute health-checks create http rock-health-check \
-            --port=80 \
-            --request-path="/default.aspx" \
-            --check-interval=30 \
-            --timeout=10 \
-            --unhealthy-threshold=3 \
-            --healthy-threshold=2 2>/dev/null || echo "Health check may already exist"
-
-      - name: Create Firewall Rule for Monitoring
-        shell: bash
-        run: |
-          # Allow monitoring agents (if not already exists)
-          gcloud compute firewall-rules create allow-monitoring \
-            --allow tcp:80,tcp:443 \
-            --source-ranges 35.191.0.0/16,130.211.0.0/22 \
-            --description "Allow Google Cloud monitoring" || echo "Firewall rule may already exist"
+      # Monitoring features removed for simplicity
