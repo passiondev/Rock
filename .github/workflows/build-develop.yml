@@ -36,9 +36,10 @@ jobs:
         run: nuget restore -verbosity normal -NonInteractive -Recursive Rock.sln
 
       - name: Create ConnectionStrings Config
+        shell: pwsh
         run: |
           # Create empty connection strings file like AppVeyor does
-          echo . > RockWeb\path\app.ConnectionStrings.config
+          New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
       - name: MSBuild (VS2022 equiv)
         run: |
           # Build the full solution like AppVeyor does (it works there)
