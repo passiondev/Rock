@@ -34,10 +34,10 @@ jobs:
           Write-Output "Plugins moved"
       - name: NuGet Restore
         run: |
-          # Restore packages explicitly like AppVeyor does
-          nuget restore -verbosity normal -NonInteractive -Recursive Rock.sln
-          # Also try dotnet restore for good measure
-          dotnet restore Rock.sln
+          # Restore packages for individual projects to avoid RockWeb solution issues
+          nuget restore Rock\Rock.csproj -verbosity quiet -NonInteractive
+          nuget restore Rock.*\*.csproj -verbosity quiet -NonInteractive
+          nuget restore DotLiquid\DotLiquid.csproj -verbosity quiet -NonInteractive
 
       - name: Create ConnectionStrings Config
         shell: pwsh
