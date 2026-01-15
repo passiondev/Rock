@@ -138,12 +138,25 @@ jobs:
       # Instance group creation removed - focus on core deployment
 
       - name: Enable Cloud Monitoring
+        shell: bash
         run: |
           # Enable Cloud Operations monitoring
           gcloud services enable monitoring.googleapis.com
           gcloud services enable logging.googleapis.com
 
+      - name: Create Health Check
+        shell: bash
+        run: |
+          gcloud compute health-checks create http rock-health-check \
+            --port=80 \
+            --request-path="/default.aspx" \
+            --check-interval=30 \
+            --timeout=10 \
+            --unhealthy-threshold=3 \
+            --healthy-threshold=2 2>/dev/null || echo "Health check may already exist"
+
       - name: Create Firewall Rule for Monitoring
+        shell: bash
         run: |
           # Allow monitoring agents (if not already exists)
           gcloud compute firewall-rules create allow-monitoring \
