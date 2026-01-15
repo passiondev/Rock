@@ -116,21 +116,7 @@ jobs:
       - name: Configure Auto-Deployment (Startup Script)
         run: |
           # Set startup script to auto-deploy on VM restart
-          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata=windows-startup-script-ps1="
-            # Auto-deployment script
-            \$bucketName = 'rock-deployments-${{ secrets.GCP_PROJECT_ID }}'
-            \$runNumber = '${{ github.run_number }}'
-
-            Write-Host 'Checking for deployment \$runNumber...'
-            gsutil -m cp -r gs://\$bucketName/\$runNumber/* /c/RockWeb/ 2>\$null
-            if (\$LASTEXITCODE -eq 0) {
-              Write-Host 'Deployment downloaded, restarting IIS...'
-              iisreset
-              Write-Host 'Deployment completed successfully!'
-            } else {
-              Write-Host 'No new deployment found or download failed.'
-            }
-          "
+          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata="windows-startup-script-ps1=Write-Host 'Starting deployment...'; gsutil -m cp -r gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/* /c/RockWeb/ 2>nul; if (%errorlevel% equ 0) (iisreset) else (Write-Host 'Deployment failed')"
 
       - name: Trigger Deployment (VM Restart)
         run: |
