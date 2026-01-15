@@ -46,8 +46,8 @@ jobs:
           New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
       - name: MSBuild (VS2022 equiv)
         run: |
-          # Use MSBuild with explicit parameters to resolve references properly
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock.sln /p:Configuration=Release /p:Platform="Any CPU" /t:Rebuild /verbosity:minimal /p:RestorePackages=true
+          # Use devenv.com like AppVeyor does - it has the ASP.NET compiler
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\devenv.com" "Rock.sln" /build Release
       - name: Restore Plugins Folder
         shell: pwsh
         run: |
