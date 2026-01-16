@@ -141,12 +141,9 @@ jobs:
       - name: Verify Build Artifacts
         shell: pwsh
         run: |
-          # Verify we have essential Rock assemblies
+          # Verify we have the main Rock assembly (other components are namespaces within it)
           $essentialDlls = @(
-            "Rock.dll",
-            "Rock.Web.dll",
-            "Rock.Model.dll",
-            "Rock.Data.dll"
+            "Rock.dll"
           )
 
           $missingDlls = @()
