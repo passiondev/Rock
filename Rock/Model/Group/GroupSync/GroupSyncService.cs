@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Data.Entity;
 using System.Diagnostics;
 using System.Linq;
+
 using Rock.Attribute;
 using Rock.Communication;
 using Rock.Data;
@@ -327,11 +328,11 @@ namespace Rock.Model
                                         var newPassword = string.Empty;
                                         var createLogin = sync.AddUserAccountsDuringSync;
 
-                                        // Only create a login if requested, no logins exist and we have enough information to generate a user name.
-                                        if ( createLogin && !person.Users.Any() && !string.IsNullOrWhiteSpace( person.NickName ) && !string.IsNullOrWhiteSpace( person.LastName ) )
+                                        // Only create a login if requested, no logins exist and the person has an email address.
+                                        if ( createLogin && !person.Users.Any() && !string.IsNullOrWhiteSpace( person.Email ) )
                                         {
                                             newPassword = System.Web.Security.Membership.GeneratePassword( 9, 1 );
-                                            var username = GenerateUsernameFromName( person.NickName, person.LastName );
+                                            var username = person.Email;
 
                                             var login = UserLoginService.Create(
                                                 groupMemberContext,
@@ -402,34 +403,6 @@ namespace Rock.Model
             return result;
         }
 
-        /// <summary>
-        /// Generates a username from first and last name in firstname.lastname format
-        /// </summary>
-        /// <param name="firstName">The first name</param>
-        /// <param name="lastName">The last name</param>
-        /// <param name="tryCount">The attempt count for handling duplicates</param>
-        /// <returns>A unique username</returns>
-        private static string GenerateUsernameFromName( string firstName, string lastName, int tryCount = 0 )
-        {
-            // create username
-            string username = ( firstName + "." + lastName ).ToLower();
 
-            if ( tryCount != 0 )
-            {
-                username = username + tryCount.ToString();
-            }
-
-            // check if username exists
-            UserLoginService userService = new UserLoginService( new RockContext() );
-            var loginExists = userService.Queryable().Where( l => l.UserName == username ).Any();
-            if ( !loginExists )
-            {
-                return username;
-            }
-            else
-            {
-                return GenerateUsernameFromName( firstName, lastName, tryCount + 1 );
-            }
-        }
     }
 }
