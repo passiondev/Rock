@@ -43,13 +43,19 @@ jobs:
           # Create empty connection strings file like AppVeyor does
           New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
       - name: Build Rock Assemblies Only
+        shell: pwsh
         run: |
           # Build only the class library projects to avoid RockWeb issues
           & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock\Rock.csproj /p:Configuration=Release /verbosity:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock.*\*.csproj /p:Configuration=Release /verbosity:minimal
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Build all Rock.* projects
+          $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse
+          foreach ($project in $rockProjects) {
+            Write-Host "Building $($project.FullName)"
+            & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /verbosity:minimal
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
           & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" DotLiquid\DotLiquid.csproj /p:Configuration=Release /verbosity:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
