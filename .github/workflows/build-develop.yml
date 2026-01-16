@@ -42,10 +42,42 @@ jobs:
         run: |
           # Create empty connection strings file like AppVeyor does
           New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
-      - name: Build Solution (Skip RockWeb)
+      - name: Build Rock Projects (Dependency Order)
+        shell: pwsh
         run: |
-          # Build the entire solution with MSBuild - it handles dependencies properly
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock.sln /p:Configuration=Release /verbosity:minimal /p:BuildProjectReferences=true
+          # Build projects in dependency order to avoid reference issues
+
+          # First, build base dependencies
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" DotLiquid\DotLiquid.csproj /p:Configuration=Release /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Build core Rock projects
+          $coreProjects = @(
+            "Rock.Enums\Rock.Enums.csproj",
+            "Rock.Common\Rock.Common.csproj",
+            "Rock.Version\Rock.Version.csproj",
+            "Rock.ViewModels\Rock.ViewModels.csproj"
+          )
+
+          foreach ($project in $coreProjects) {
+            if (Test-Path $project) {
+              Write-Host "Building core project: $project"
+              & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project /p:Configuration=Release /verbosity:minimal
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+
+          # Build Rock.dll (main assembly)
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock\Rock.csproj /p:Configuration=Release /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Build remaining Rock.* projects (excluding RockWeb)
+          $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object { $_.FullName -notlike "*RockWeb*" }
+          foreach ($project in $rockProjects) {
+            Write-Host "Building $($project.Name)"
+            & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /verbosity:minimal
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Restore Plugins Folder
         shell: pwsh
         run: |
