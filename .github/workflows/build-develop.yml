@@ -233,7 +233,6 @@ jobs:
         with:
           path: RockWeb/
           destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/
-          credentials: ${{ secrets.GCP_SA_KEY }}
 
       - name: Configure Auto-Deployment (Startup Script)
         run: |
