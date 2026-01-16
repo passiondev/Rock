@@ -46,10 +46,15 @@ jobs:
           New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
       - name: Build Rock Assemblies Only
         run: |
-          # Build only the class library projects to avoid RockWeb ASP.NET compiler issues
+          # Build only the class library projects to avoid RockWeb issues
           & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock\Rock.csproj /p:Configuration=Release /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock.*\*.csproj /p:Configuration=Release /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" DotLiquid\DotLiquid.csproj /p:Configuration=Release /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Restore Plugins Folder
         shell: pwsh
         run: |
@@ -63,12 +68,36 @@ jobs:
           if (!(Test-Path "RockWeb\bin")) {
             New-Item -ItemType Directory -Path "RockWeb\bin" -Force
           }
-          # Copy from Release directories
-          Get-ChildItem "Rock\bin\Release\*.dll" | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
-          Get-ChildItem "Rock.*\bin\Release\*.dll" -Recurse | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
-          Get-ChildItem "DotLiquid\bin\Release\*.dll" | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
-          Get-ChildItem "SignNowSDK\bin\Release\*.dll" | Copy-Item -Destination "RockWeb\bin\" -Force -ErrorAction SilentlyContinue
-          Write-Output "Assemblies copied to RockWeb\bin"
+
+          # Copy from Release directories with error handling
+          Write-Host "Checking for built assemblies..."
+
+          # Find and copy all .dll files from Release directories
+          $releaseDirs = Get-ChildItem -Path "." -Directory -Recurse | Where-Object { $_.Name -eq "Release" }
+          foreach ($dir in $releaseDirs) {
+            $dllFiles = Get-ChildItem -Path $dir.FullName -Filter "*.dll" -ErrorAction SilentlyContinue
+            if ($dllFiles) {
+              Write-Host "Copying $($dllFiles.Count) DLLs from $($dir.FullName)"
+              $dllFiles | Copy-Item -Destination "RockWeb\bin\" -Force
+            }
+          }
+
+          # Also try specific known locations
+          $knownPaths = @(
+            "Rock\bin\Release",
+            "DotLiquid\bin\Release",
+            "SignNowSDK\bin\Release"
+          )
+
+          foreach ($path in $knownPaths) {
+            if (Test-Path $path) {
+              Get-ChildItem "$path\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "RockWeb\bin\" -Force
+              Write-Host "Copied DLLs from $path"
+            }
+          }
+
+          $totalDlls = (Get-ChildItem "RockWeb\bin\*.dll").Count
+          Write-Host "Total DLLs in RockWeb\bin: $totalDlls"
 
       - name: Cleanup tsconfig.json
         run: del RockWeb\tsconfig.json
