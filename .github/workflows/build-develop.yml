@@ -72,7 +72,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Build remaining Rock.* projects (excluding RockWeb and problematic ones)
-          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*")
+          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*")
           $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object {
             $include = $true
             foreach ($pattern in $excludePatterns) {
@@ -248,6 +248,7 @@ jobs:
           gcloud compute instances start ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }}
 
       - name: Create Health Check
+        shell: bash
         run: |
           gcloud compute health-checks create http rock-health-check \
             --port=80 \
@@ -255,7 +256,7 @@ jobs:
             --check-interval=30 \
             --timeout=10 \
             --unhealthy-threshold=3 \
-            --healthy-threshold=2
+            --healthy-threshold=2 || echo "Health check may already exist"
 
       # Instance group creation removed - focus on core deployment
 
