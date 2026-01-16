@@ -72,7 +72,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Build remaining Rock.* projects (excluding RockWeb and problematic ones)
-          $excludePatterns = @("*RockWeb*", "*Rock.Client*")
+          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*")
           $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object {
             $include = $true
             foreach ($pattern in $excludePatterns) {
@@ -160,7 +160,8 @@ jobs:
             Write-Host "Missing essential DLLs: $($missingDlls -join ', ')"
             exit 1
           } else {
-          Write-Host "All essential DLLs present ✓"
+            Write-Host "All essential DLLs present ✓"
+          }
 
           # Count total files for verification
           $totalFiles = (Get-ChildItem RockWeb -Recurse -File).Count
