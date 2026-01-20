@@ -90,13 +90,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               Write-Host "Warning: Failed to build $($project.Name), continuing with other projects..."
             }
-          }
-
-          # Build RockWeb (main web application) - continue on errors as it's known to have issues
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" RockWeb\RockWeb.csproj /p:Configuration=Release /verbosity:minimal /p:TreatWarningsAsErrors=false /m:1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Warning: RockWeb build failed, but continuing deployment..."
-          }
+            }
       - name: Restore Plugins Folder
         shell: pwsh
         run: |
