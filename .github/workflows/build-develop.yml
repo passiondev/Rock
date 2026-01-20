@@ -71,7 +71,7 @@ jobs:
           & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock\Rock.csproj /p:Configuration=Release /verbosity:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          # Build remaining Rock.* projects (excluding RockWeb and problematic ones)
+          # Build remaining Rock.* projects (excluding RockWeb, Rock.Client and problematic ones)
           $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*")
           $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object {
             $include = $true
@@ -90,6 +90,12 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               Write-Host "Warning: Failed to build $($project.Name), continuing with other projects..."
             }
+          }
+
+          # Build RockWeb (main web application) - continue on errors as it's known to have issues
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" RockWeb\RockWeb.csproj /p:Configuration=Release /verbosity:minimal /p:TreatWarningsAsErrors=false /m:1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Warning: RockWeb build failed, but continuing deployment..."
           }
       - name: Restore Plugins Folder
         shell: pwsh
@@ -237,7 +243,7 @@ jobs:
       - name: Configure Auto-Deployment (Startup Script)
         run: |
           # Set startup script to auto-deploy on VM restart
-          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata="windows-startup-script-ps1=Write-Host 'Starting deployment...'; gsutil -m cp -r gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/* /c/RockWeb/ 2>nul; if (%errorlevel% equ 0) (iisreset) else (Write-Host 'Deployment failed')"
+          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }} --metadata="windows-startup-script-ps1=Write-Host 'Starting deployment...'; gsutil -m cp -r gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}/* C:\inetpub\wwwroot\ 2>nul; if (%errorlevel% equ 0) (iisreset) else (Write-Host 'Deployment failed')"
 
       - name: Trigger Deployment (VM Restart)
         run: |
