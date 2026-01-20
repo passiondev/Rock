@@ -45,7 +45,7 @@ jobs:
 
       - name: Build Rock Projects
         run: |
-          dotnet build Rock.sln --configuration Release --verbosity minimal /m:4 /p:BuildRockWeb=false /p:BuildRockClient=false /p:BuildRockPlugins=false
+          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock.sln /p:Configuration=Release /verbosity:minimal /m:4 /p:BuildRockWeb=false /p:BuildRockClient=false /p:BuildRockPlugins=false
       - name: Restore Plugins Folder
         shell: pwsh
         run: |
