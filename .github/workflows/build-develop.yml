@@ -133,6 +133,30 @@ jobs:
               Write-Host "Warning: Failed to build $($project.Name), continuing with other projects..."
             }
             }
+
+          # Build plugin projects (they depend on Rock.dll being built first)
+          $pluginProjects = Get-ChildItem "RockWeb\Plugins\**\*.csproj" -Recurse
+          foreach ($project in $pluginProjects) {
+            Write-Host "Building plugin project: $($project.Name)"
+            & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /verbosity:minimal
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Warning: Failed to build plugin $($project.Name), continuing..."
+            }
+          }
+
+          # Copy plugin assemblies to RockWeb\bin (plugins folder is moved out during build)
+          foreach ($project in $pluginProjects) {
+            $projectDir = Split-Path $project.FullName -Parent
+            $binPath = Join-Path $projectDir "bin\Release"
+            if (Test-Path $binPath) {
+              $dllFiles = Get-ChildItem "$binPath\*.dll" -ErrorAction SilentlyContinue
+              if ($dllFiles) {
+                Write-Host "Copying $($dllFiles.Count) plugin DLLs from $($project.Name)"
+                $dllFiles | Copy-Item -Destination "RockWeb\bin\" -Force
+              }
+            }
+          }
+
       - name: Restore Plugins Folder
         shell: pwsh
         run: |
