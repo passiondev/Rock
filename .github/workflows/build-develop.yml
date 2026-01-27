@@ -138,7 +138,7 @@ jobs:
            $pluginProjects = Get-ChildItem "C:\Plugins\**\*.csproj" -Recurse
            foreach ($project in $pluginProjects) {
              Write-Host "Building plugin project: $($project.Name)"
-             & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /p:SolutionDir="$PWD\" /verbosity:minimal
+             & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /p:ReferencePath="$PWD\Rock\bin\Release;$PWD\DotLiquid\bin\Release" /verbosity:minimal
              if ($LASTEXITCODE -ne 0) {
                Write-Host "Warning: Failed to build plugin $($project.Name), continuing..."
              }
