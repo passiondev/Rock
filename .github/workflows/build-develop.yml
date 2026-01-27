@@ -27,11 +27,52 @@ jobs:
           path: ~/.nuget/packages
           lookup-only: false
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Cache JavaScript Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            Rock.JavaScript/node_modules
+            Rock.JavaScript.Obsidian/node_modules
+            Rock.JavaScript.EditorJs/node_modules
+          key: js-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            js-${{ runner.os }}-
+
+      - name: Install Rock.JavaScript Dependencies
+        working-directory: Rock.JavaScript
+        run: npm ci
+
+      - name: Build Rock.JavaScript
+        working-directory: Rock.JavaScript
+        run: npm run build
+
+      - name: Install Rock.JavaScript.EditorJs Dependencies
+        working-directory: Rock.JavaScript.EditorJs
+        run: npm ci
+
+      - name: Build Rock.JavaScript.EditorJs
+        working-directory: Rock.JavaScript.EditorJs
+        run: npm run build
+
+      - name: Install Rock.JavaScript.Obsidian Dependencies
+        working-directory: Rock.JavaScript.Obsidian
+        run: npm ci
+
+      - name: Build Rock.JavaScript.Obsidian
+        working-directory: Rock.JavaScript.Obsidian
+        run: npm run build
+
       - name: Move Plugins Folder
         shell: pwsh
         run: |
           Move-Item RockWeb\Plugins C:\
           Write-Output "Plugins moved"
+
       - name: NuGet Restore
         run: |
           # Restore packages for the solution like AppVeyor does
