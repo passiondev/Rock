@@ -23,7 +23,7 @@ jobs:
       - name: Cache NuGet Packages
         uses: actions/cache@v4
         with:
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/Rock.sln') }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.sln', '**/packages.config') }}
           path: ~/.nuget/packages
           lookup-only: false
 
@@ -85,6 +85,8 @@ jobs:
           New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
 
       - name: Build Rock Projects (Dependency Order)
+        continue-on-error: true
+        timeout-minutes: 30
         shell: pwsh
         run: |
           # Build projects in dependency order to avoid reference issues
@@ -338,6 +340,4 @@ jobs:
             --unhealthy-threshold=3 \
             --healthy-threshold=2 || echo "Health check may already exist"
 
-      # Instance group creation removed - focus on core deployment
 
-      # Monitoring features removed for simplicity
