@@ -124,31 +124,30 @@ jobs:
               }
             }
             $include
-          }
+           }
 
           foreach ($project in $rockProjects) {
-            Write-Host "Building $($project.Name)"
-            & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /verbosity:minimal /m:4
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "Warning: Failed to build $($project.Name), continuing with other projects..."
-            }
-            }
+             Write-Host "Building $($project.Name)"
+             & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /verbosity:minimal /m:4
+             if ($LASTEXITCODE -ne 0) {
+               Write-Host "Warning: Failed to build $($project.Name), continuing with other projects..."
+             }
+           }
 
-            # Build plugin projects (they depend on Rock.dll being built first)
-            $pluginProjects = Get-ChildItem "C:\Plugins\**\*.csproj" -Recurse
-            foreach ($project in $pluginProjects) {
-              Write-Host "Building plugin project: $($project.Name)"
-              $rockPath = Join-Path $PWD "Rock\bin\Release"
-              $dotLiquidPath = Join-Path $PWD "DotLiquid\bin\Release"
-              $referencePath = "$rockPath;$dotLiquidPath"
-              & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName "/p:Configuration=Release" "/p:ReferencePath=$referencePath" "/verbosity:minimal"
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "Warning: Failed to build plugin $($project.Name), continuing..."
-              }
-            }
-            }
+           # Build plugin projects (they depend on Rock.dll being built first)
+           $pluginProjects = Get-ChildItem "C:\Plugins\**\*.csproj" -Recurse
+           foreach ($project in $pluginProjects) {
+             Write-Host "Building plugin project: $($project.Name)"
+             $rockPath = Join-Path $PWD "Rock\bin\Release"
+             $dotLiquidPath = Join-Path $PWD "DotLiquid\bin\Release"
+             $referencePath = "$rockPath;$dotLiquidPath"
+             & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName "/p:Configuration=Release" "/p:ReferencePath=$referencePath" "/verbosity:minimal"
+             if ($LASTEXITCODE -ne 0) {
+               Write-Host "Warning: Failed to build plugin $($project.Name), continuing..."
+             }
+           }
 
-            # Copy plugin assemblies to RockWeb\bin (plugins folder is moved out during build)
+           # Copy plugin assemblies to RockWeb\bin (plugins folder is moved out during build)
            foreach ($project in $pluginProjects) {
              $projectDir = Split-Path $project.FullName -Parent
              $binPath = Join-Path $projectDir "bin\Release"
