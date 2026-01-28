@@ -24,6 +24,7 @@ using Rock.Security;
 using Rock.Model;
 using System.Security.Cryptography;
 using Rock;
+using Rock.Utility;
 
 namespace org.secc.Authentication
 {
