@@ -138,11 +138,13 @@ jobs:
             $pluginProjects = Get-ChildItem "C:\Plugins\**\*.csproj" -Recurse
             foreach ($project in $pluginProjects) {
               Write-Host "Building plugin project: $($project.Name)"
-              $referencePath = "$PWD\Rock\bin\Release;$PWD\DotLiquid\bin\Release"
+              $rockPath = Join-Path $PWD "Rock\bin\Release"
+              $dotLiquidPath = Join-Path $PWD "DotLiquid\bin\Release"
+              $referencePath = "$rockPath;$dotLiquidPath"
               $msbuildArgs = @(
                 $project.FullName,
                 "/p:Configuration=Release",
-                "/p:ReferencePath=$referencePath",
+                "/p:ReferencePath=`"$referencePath`"",
                 "/verbosity:minimal"
               )
               & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $msbuildArgs
