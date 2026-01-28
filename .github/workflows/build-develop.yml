@@ -141,16 +141,11 @@ jobs:
               $rockPath = Join-Path $PWD "Rock\bin\Release"
               $dotLiquidPath = Join-Path $PWD "DotLiquid\bin\Release"
               $referencePath = "$rockPath;$dotLiquidPath"
-              $msbuildArgs = @(
-                $project.FullName,
-                "/p:Configuration=Release",
-                "/p:ReferencePath=`"$referencePath`"",
-                "/verbosity:minimal"
-              )
-              & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $msbuildArgs
+              & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName "/p:Configuration=Release" "/p:ReferencePath=$referencePath" "/verbosity:minimal"
               if ($LASTEXITCODE -ne 0) {
                 Write-Host "Warning: Failed to build plugin $($project.Name), continuing..."
               }
+            }
             }
 
             # Copy plugin assemblies to RockWeb\bin (plugins folder is moved out during build)
