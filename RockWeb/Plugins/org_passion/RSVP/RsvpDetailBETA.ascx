@@ -10,6 +10,7 @@
             var isVisible = !$('.js-additional-fields').is(':visible');
             $('.js-show-additional-fields').text(isVisible ? 'Hide Additional Fields' : 'Show Additional Fields');
             $('.js-additional-fields').slideToggle();
+
             return false;
         });
 
