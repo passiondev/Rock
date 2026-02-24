@@ -251,11 +251,13 @@ $(document).ready(function () {
                         {
                             WriteEmailAcceptResponse(attendanceOccurrenceId.Value, person);
                             ShowSingleOccurrence_Accept( attendanceOccurrenceId.Value, person );
+                            ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
                         }
                     }
                     else if ( isDecline )
                     {
                         ShowSingleOccurrence_Decline( attendanceOccurrenceId.Value, person );
+                        ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
                     }
                     else
                     {
@@ -337,8 +339,7 @@ $(document).ready(function () {
             //}
 
             ShowSingleOccurrence_Accept( attendanceOccurrenceId.Value, person );
-
-            
+            ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
         }
         
         protected void lbDecline_Single_Click( object sender, EventArgs e )
@@ -353,6 +354,7 @@ $(document).ready(function () {
             }
 
             ShowSingleOccurrence_Decline( attendanceOccurrenceId.Value, person );
+            ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
         }
 
         protected void lbAccept_Multiple_Click( object sender, EventArgs e )
@@ -369,6 +371,7 @@ $(document).ready(function () {
             
 
             ShowMultipleOccurrence_Accept( attendanceOccurrenceIdList, person );
+            ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
         }
 
         protected void lbSaveDeclineReason_Click( object sender, EventArgs e )
@@ -387,6 +390,7 @@ $(document).ready(function () {
                 }
                 pnlDeclineReasons.Visible = false;
                 pnlDeclineReasonConfirmation.Visible = true;
+                ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
             }
         }
         #endregion

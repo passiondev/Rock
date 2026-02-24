@@ -20,34 +20,8 @@
 
             <div class="fieldgroup-personentry">
                 <div class="row">
-                    <div class="col-md-6">
+                    <div class="col-md-12">
                         <PersonBasicEditor v-model="personValues"
-                                           showInOneColumn
-                                           hideTitle
-                                           hideSuffix
-                                           hideConnectionStatus
-                                           hidePersonRole
-                                           hideGrade
-                                           hideMaritalStatus
-                                           :hideBirthdate="!isFieldVisible(configuration.birthDateOption)"
-                                           :requireBirthdate="isFieldRequired(configuration.birthDateOption)"
-                                           :showEmail="isFieldVisible(configuration.emailOption)"
-                                           :requireEmail="isFieldRequired(configuration.emailOption)"
-                                           :hideGender="!isFieldVisible(configuration.genderOption)"
-                                           :requireGender="isFieldRequired(configuration.genderOption)"
-                                           :showMobilePhone="isFieldVisible(configuration.mobilePhoneOption)"
-                                           :requireMobilePhone="isFieldRequired(configuration.mobilePhoneOption)"
-                                           :showSmsOptIn="configuration.isSmsVisible"
-                                           :hideRace="!isFieldVisible(configuration.raceOption)"
-                                           :requireRace="isFieldRequired(configuration.raceOption)"
-                                           :hideEthnicity="!isFieldVisible(configuration.ethnicityOption)"
-                                           :requireEthnicity="isFieldRequired(configuration.ethnicityOption)" />
-                    </div>
-
-                    <div v-if="showSpouse"
-                         class="col-md-6">
-                        <PersonBasicEditor v-model="spouseValues"
-                                           :personLabelPrefix="spouseLabel"
                                            showInOneColumn
                                            hideTitle
                                            hideSuffix
@@ -76,6 +50,34 @@
                             v-model="showSpouse"
                             :label="showSpouseLabel"
                             class="show-spouse mt-3 mb-4" />
+
+            <div v-if="showSpouse"
+                class="row">
+                <div class="col-md-12">
+                    <PersonBasicEditor v-model="spouseValues"
+                                       :personLabelPrefix="spouseLabel"
+                                       showInOneColumn
+                                       hideTitle
+                                       hideSuffix
+                                       hideConnectionStatus
+                                       hidePersonRole
+                                       hideGrade
+                                       hideMaritalStatus
+                                       :hideBirthdate="!isFieldVisible(configuration.birthDateOption)"
+                                       :requireBirthdate="isFieldRequired(configuration.birthDateOption)"
+                                       :showEmail="isFieldVisible(configuration.emailOption)"
+                                       :requireEmail="isFieldRequired(configuration.emailOption)"
+                                       :hideGender="!isFieldVisible(configuration.genderOption)"
+                                       :requireGender="isFieldRequired(configuration.genderOption)"
+                                       :showMobilePhone="isFieldVisible(configuration.mobilePhoneOption)"
+                                       :requireMobilePhone="isFieldRequired(configuration.mobilePhoneOption)"
+                                       :showSmsOptIn="configuration.isSmsVisible"
+                                       :hideRace="!isFieldVisible(configuration.raceOption)"
+                                       :requireRace="isFieldRequired(configuration.raceOption)"
+                                       :hideEthnicity="!isFieldVisible(configuration.ethnicityOption)"
+                                       :requireEthnicity="isFieldRequired(configuration.ethnicityOption)" />
+                </div>
+            </div>
 
             <div class="row">
                 <div class="col-md-6">
