@@ -421,6 +421,11 @@ namespace RockWeb.Plugins.rocks_pillars.ServiceReservation
                         if ( workflowType != null && option != null && ( !option.SpotsLeft.HasValue || option.SpotsLeft.Value >= 1 ) )
                         {
                             var pageParams = new Dictionary<string, string>( QryParameters );
+                            var personId = PageParameter( "PersonId" );
+                            if ( personId.IsNotNullOrWhiteSpace() && !pageParams.ContainsKey( "PersonId" ) )
+                            {
+                                pageParams.Add( "PersonId", personId );
+                            }
                             pageParams.Add( "Campus", hfCampusGuid.Value );
                             pageParams.Add( "Date", hfDate.Value );
                             pageParams.Add( "Location", hfLocationGuid.Value );
@@ -895,6 +900,11 @@ namespace RockWeb.Plugins.rocks_pillars.ServiceReservation
                                 { "Location", hfLocationGuid.Value },
                                 { "Schedule", scheduleGuid.ToString() }
                             };
+                            var personId = PageParameter( "PersonId" );
+                            if ( personId.IsNotNullOrWhiteSpace() )
+                            {
+                                pageParams.Add( "PersonId", personId );
+                            }
                             NavigateToLinkedPage( "WorkflowEntryPage", pageParams );
                         }
                         else
