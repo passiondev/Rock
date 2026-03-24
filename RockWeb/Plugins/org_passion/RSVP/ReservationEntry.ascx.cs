@@ -280,6 +280,12 @@ namespace RockWeb.Plugins.rocks_pillars.ServiceReservation
             set { ViewState["QryParameters"] = value; }
         }
 
+        public string PersonIdParam
+        {
+            get { return ViewState["PersonIdParam"] as string ?? string.Empty; }
+            set { ViewState["PersonIdParam"] = value; }
+        }
+
         #endregion
 
         #region Base Control Methods
@@ -323,6 +329,8 @@ namespace RockWeb.Plugins.rocks_pillars.ServiceReservation
 
             if ( !Page.IsPostBack )
             {
+                PersonIdParam = PageParameter( "PersonId" );
+
                 if ( _options.Any() )
                 {
                     var modalTitle = GetAttributeValue( "ModalTitle" ).ResolveMergeFields( _commonMergeFields, _enabledLavaCommands );
@@ -419,6 +427,15 @@ namespace RockWeb.Plugins.rocks_pillars.ServiceReservation
                         {
                             var pageParams = new Dictionary<string, string>( QryParameters );
                             var teamSeating = GetAttributeValue("TeamSeating");
+
+                            var personId = PersonIdParam.IsNotNullOrWhiteSpace()
+                                ? PersonIdParam
+                                : PageParameter( "PersonId" );
+                            if ( personId.IsNotNullOrWhiteSpace() && !pageParams.ContainsKey( "PersonId" ) )
+                            {
+                                pageParams.Add( "PersonId", personId );
+                            }
+
                             pageParams.Add( "Campus", hfCampusGuid.Value );
                             pageParams.Add( "Date", hfDate.Value );
                             pageParams.Add( "Location", hfLocationGuid.Value );
@@ -455,7 +472,7 @@ namespace RockWeb.Plugins.rocks_pillars.ServiceReservation
 
         private void LoadData()
         {
-            _commonMergeFields = Rock.Lava.LavaHelper.GetCommonMergeFields( this.RockPage, null, new Rock.Lava.CommonMergeFieldsOptions { GetLegacyGlobalMergeFields = false } );
+            _commonMergeFields = Rock.Lava.LavaHelper.GetCommonMergeFields( this.RockPage, null, new Rock.Lava.CommonMergeFieldsOptions() );
 
             var schedulesAttribute = AttributeCache.Get( rocks.pillars.ServiceReservation.SystemGuid.Attribute.LOCATION_SCHEDULES );
             if ( schedulesAttribute == null )
