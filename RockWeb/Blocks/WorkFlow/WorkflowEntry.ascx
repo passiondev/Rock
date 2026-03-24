@@ -43,22 +43,21 @@
                                 <div class="fieldgroup-personentry">
                                     <asp:Panel ID="pnlPersonEntryRow1" runat="server" CssClass="row">
                                         <%-- Person 1 --%>
-                                        <asp:Panel ID="pnlPersonEntryRow1Column1" runat="server" CssClass="col-md-6">
+                                        <asp:Panel ID="pnlPersonEntryRow1Column1" runat="server" CssClass="col-md-12">
                                             <div class="fieldgroup-person">
                                                 <Rock:PersonBasicEditor ID="pePerson1" runat="server" />
-                                            </div>
-                                        </asp:Panel>
-
-                                        <%-- Person 2 (Spouse) --%>
-                                        <asp:Panel ID="pnlPersonEntryRow1Column2" runat="server" CssClass="col-md-6">
-                                            <div class="fieldgroup-spouse">
-                                                <Rock:PersonBasicEditor ID="pePerson2" runat="server" />
                                             </div>
                                         </asp:Panel>
                                     </asp:Panel>
                                 </div>
 
                                 <Rock:RockCheckBox ID="cbShowPerson2" runat="server" Text="Show Person2" Checked="false" AutoPostBack="true" OnCheckedChanged="cbShowPerson2_CheckedChanged" />
+
+                                <asp:Panel ID="pnlPersonEntryRow1Column2" runat="server" CssClass="col-md-12">
+                                    <div class="fieldgroup-spouse">
+                                        <Rock:PersonBasicEditor ID="pePerson2" runat="server" />
+                                    </div>
+                                </asp:Panel>
 
                                 <%-- Person Entry Address and Marital Status --%>
                                 <asp:Panel ID="pnlPersonEntryRow2" CssClass="row" runat="server">
