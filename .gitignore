@@ -48,6 +48,10 @@ Packages/*
 node_modules
 .cache
 *.map
+
+# local dev build artifacts
+.local-build/
+
 /packages/
 /Installers/CheckScannerInstall/UpgradeLog.htm
 /Installers/CheckScannerInstall/UpgradeLog2.htm

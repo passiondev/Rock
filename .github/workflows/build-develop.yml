@@ -1,7 +1,7 @@
 name: Rock Build Pipeline
 on:
   push:
-    branches: [staging]
+    branches: ["**"]
   workflow_dispatch:
 jobs:
   build:
@@ -159,9 +159,8 @@ jobs:
                  Write-Host "Warning: Failed to build plugin $($project.Name), continuing..."
                }
              }
-             exit 0
 
-           # Copy plugin assemblies to RockWeb\bin (plugins folder is moved out during build)
+           # Copy plugin assemblies to RockWeb\bin
            foreach ($project in $pluginProjects) {
              $projectDir = Split-Path $project.FullName -Parent
              $binPath = Join-Path $projectDir "bin\Release"
@@ -240,7 +239,7 @@ jobs:
             Write-Host "Missing essential DLLs: $($missingDlls -join ', ')"
             exit 1
           } else {
-            Write-Host "All essential DLLs present ✓"
+            Write-Host "All essential DLLs present"
           }
 
           # Count total files for verification
@@ -249,34 +248,41 @@ jobs:
           Write-Host "Total files in RockWeb: $totalFiles"
           Write-Host "DLLs in bin folder: $binFiles"
 
-          # Show deployment summary like GitLab CI
-          Write-Host "=== DEPLOYMENT SUMMARY ==="
+          Write-Host "=== BUILD SUMMARY ==="
           Write-Host "Branch: ${{ github.ref_name }}"
           Write-Host "Commit: ${{ github.sha }}"
           Write-Host "Run: ${{ github.run_number }}"
-          Write-Host "Bucket: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ github.run_number }}"
-          Write-Host "========================"
+          Write-Host "====================="
 
       - name: Create Deployment Package
         shell: pwsh
         run: |
-          # Create ZIP package like GitLab CI does
           $zipName = "RockWeb-${{ github.run_number }}.zip"
           Compress-Archive -Path RockWeb\* -DestinationPath $zipName -Force
           Write-Host "Created deployment package: $zipName"
 
-          # Calculate hash for verification like GitLab CI
           $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
           Write-Host "Package SHA256: $hash"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: RockWeb-Deployable-${{ github.run_number }}
+          name: RockWeb-${{ github.ref_name }}-${{ github.run_number }}
           path: |
             RockWeb/
             RockWeb-*.zip
           retention-days: 30
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/staging'
+    runs-on: windows-latest
+
+    steps:
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: RockWeb-${{ github.ref_name }}-${{ github.run_number }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -339,5 +345,3 @@ jobs:
             --timeout=10 \
             --unhealthy-threshold=3 \
             --healthy-threshold=2 || echo "Health check may already exist"
-
-
