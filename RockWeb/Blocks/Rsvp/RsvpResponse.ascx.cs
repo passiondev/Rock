@@ -245,6 +245,11 @@ $(document).ready(function () {
             }
             else
             {
+                if ( HasPersonActionIdentifier() )
+                {
+                    PopulatePersonIdentityFields( person, true );
+                }
+
                 var attendanceOccurrenceId = PageParameter( PageParameterKey.AttendanceOccurrenceId ).AsIntegerOrNull();
                 if ( attendanceOccurrenceId != null )
                 {
@@ -422,6 +427,37 @@ $(document).ready(function () {
         }
 
         /// <summary>
+        /// Determines if this RSVP request is using a PersonActionIdentifier from an email link.
+        /// </summary>
+        private bool HasPersonActionIdentifier()
+        {
+            return !PageParameter( PageParameterKey.PersonActionIdentifier ).IsNullOrWhiteSpace();
+        }
+
+        /// <summary>
+        /// Populates the person identity controls and optionally locks them for email-based RSVP responses.
+        /// </summary>
+        private void PopulatePersonIdentityFields( Person person, bool isLocked )
+        {
+            if ( person == null )
+            {
+                return;
+            }
+
+            rtbFirstName.Text = person.FirstName;
+            rtbLastName.Text = person.LastName;
+            rebEmail.Text = person.Email;
+
+            rtbFirstName.ReadOnly = false;
+            rtbLastName.ReadOnly = false;
+            rebEmail.ReadOnly = false;
+
+            rtbFirstName.Enabled = !isLocked;
+            rtbLastName.Enabled = !isLocked;
+            rebEmail.Enabled = !isLocked;
+        }
+
+        /// <summary>
         /// Display a "not found" message for actions which cannot be performed.
         /// </summary>
         /// <param name="PageTitle">The optional page title to display.</param>
@@ -537,16 +573,7 @@ $(document).ready(function () {
                 bool displayForm = GetAttributeValue( AttributeKey.DisplayFormWhenSignedIn ).AsBoolean();
                 pnlForm.Visible = ( CurrentPersonId == null || displayForm );
 
-                if ( !string.IsNullOrWhiteSpace( PageParameter( PageParameterKey.PersonActionIdentifier ) ) )
-                {
-                    rtbFirstName.Enabled = false;
-                    rtbLastName.Enabled = false;
-                    rebEmail.Enabled = false;
-                }
-
-                rtbFirstName.Text = person.FirstName;
-                rtbLastName.Text = person.LastName;
-                rebEmail.Text = person.Email;
+                PopulatePersonIdentityFields( person, HasPersonActionIdentifier() );
 
                 groupMember.LoadAttributes();
 
@@ -808,16 +835,7 @@ $(document).ready(function () {
             bool displayForm = GetAttributeValue( AttributeKey.DisplayFormWhenSignedIn ).AsBoolean();
             pnlForm.Visible = ( CurrentPersonId == null || displayForm );
 
-            if ( !string.IsNullOrWhiteSpace( PageParameter( PageParameterKey.PersonActionIdentifier ) ) )
-            {
-                rtbFirstName.Enabled = false;
-                rtbLastName.Enabled = false;
-                rebEmail.Enabled = false;
-            }
-
-            rtbFirstName.Text = person.FirstName;
-            rtbLastName.Text = person.LastName;
-            rebEmail.Text = person.Email;
+            PopulatePersonIdentityFields( person, HasPersonActionIdentifier() );
 
             bool hasValidOccurrences = false;
             bool isExpired = false;

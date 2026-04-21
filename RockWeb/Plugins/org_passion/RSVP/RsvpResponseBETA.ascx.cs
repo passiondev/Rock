@@ -243,7 +243,11 @@ $(document).ready(function () {
                     // Using a single occurrece.
                     if ( isAccept )
                     {
-                        if ( GroupHasAttributes() )
+                        if ( !HasPersonActionIdentifier() && CurrentPerson == null )
+                        {
+                            ShowSingleOccurrence_Choice( attendanceOccurrenceId.Value, person );
+                        }
+                        else if ( GroupHasAttributes() )
                         {
                             ShowSingleOccurrence_Choice( attendanceOccurrenceId.Value, person );
                         }
@@ -280,14 +284,21 @@ $(document).ready(function () {
             }
             else
             {
+                if ( HasPersonActionIdentifier() )
+                {
+                    PopulatePersonIdentityFields( person, true );
+                }
+
                 var attendanceOccurrenceId = PageParameter( PageParameterKey.AttendanceOccurrenceId ).AsIntegerOrNull();
                 if ( attendanceOccurrenceId != null )
                 {
+                    ConfigurePhoneFieldForOccurrence( attendanceOccurrenceId.Value, person );
                     BuildAttributeControls();
                 }
                 var attendanceOccurrenceIdList = GetMultipleOccurrenceIds();
                 if ( attendanceOccurrenceIdList.Any() )
                 {
+                    ConfigurePhoneFieldForOccurrences( attendanceOccurrenceIdList, person );
                     RebuildMultipleOccurrenceDataItems( attendanceOccurrenceIdList, person );
                 }
             }
@@ -329,8 +340,16 @@ $(document).ready(function () {
             valDecline.Visible = false;
             valDecline.Text = string.Empty;
 
-            var person = GetPerson();
             var attendanceOccurrenceId = PageParameter( PageParameterKey.AttendanceOccurrenceId ).AsIntegerOrNull();
+
+            if ( !HasPersonActionIdentifier() && CurrentPerson == null && !HasRequiredPersonIdentityFields() )
+            {
+                valDecline.Text = "You must provide your name/email before accepting.";
+                valDecline.Visible = true;
+                return;
+            }
+
+            var person = GetPerson();
             if ( person == null || attendanceOccurrenceId == null )
             {
                 // Invalid person action identifier.
@@ -372,10 +391,9 @@ $(document).ready(function () {
             valDecline.Visible = false;
             valDecline.Text = string.Empty;
 
-            var person = GetPerson();
             var attendanceOccurrenceId = PageParameter( PageParameterKey.AttendanceOccurrenceId ).AsIntegerOrNull();
 
-            if ( rtbFirstName.Text.IsNullOrWhiteSpace() || rtbLastName.Text.IsNullOrWhiteSpace() || rebEmail.Text.IsNullOrWhiteSpace() )
+            if ( !HasPersonActionIdentifier() && CurrentPerson == null && !HasRequiredPersonIdentityFields() )
             {
                 // User did not fulfill Name & Email fields
                 valDecline.Text = "You must provide your name/email before declining.";
@@ -405,6 +423,13 @@ $(document).ready(function () {
                 return;
             }
 
+            var person = GetPerson();
+            if ( person == null )
+            {
+                nbNotAuthorized.Visible = true;
+                return;
+            }
+
 
 
             ShowSingleOccurrence_Decline( attendanceOccurrenceId.Value, person );
@@ -413,6 +438,13 @@ $(document).ready(function () {
 
         protected void lbAccept_Multiple_Click( object sender, EventArgs e )
         {
+            if ( !HasPersonActionIdentifier() && CurrentPerson == null && !HasRequiredPersonIdentityFields() )
+            {
+                nbNoOccurrencesSelected.Text = "You must provide your name/email before accepting.";
+                nbNoOccurrencesSelected.Visible = true;
+                return;
+            }
+
             var person = GetPerson();
             var attendanceOccurrenceIdList = GetMultipleOccurrenceIds();
             if ( person == null || !attendanceOccurrenceIdList.Any() )
@@ -486,7 +518,7 @@ $(document).ready(function () {
         }
 
         /// <summary>
-        /// Returns a Person record for a PersonActionIdentifier for the action type "RSVP", or the currently logged in person if no PersonActionIdentifier is present.
+        /// Returns a Person record for a PersonActionIdentifier for the action type "RSVP", the logged-in person, or a public RSVP form identity.
         /// </summary>
         /// <returns></returns>
         private Person GetPerson()
@@ -503,16 +535,196 @@ $(document).ready(function () {
             }
             else
             {
-                if (!Page.IsPostBack)
+                if ( CurrentPerson != null )
+                {
+                    return CurrentPerson;
+                }
+
+                if ( !Page.IsPostBack || !HasRequiredPersonIdentityFields() )
                 {
                     return new Person();
                 }
-                else
+
+                return CreatePerson();
+            }
+
+        }
+
+        /// <summary>
+        /// Determines if this RSVP request is using a PersonActionIdentifier from an email link.
+        /// </summary>
+        private bool HasPersonActionIdentifier()
+        {
+            return !PageParameter( PageParameterKey.PersonActionIdentifier ).IsNullOrWhiteSpace();
+        }
+
+        /// <summary>
+        /// Determines if the public RSVP identity fields are complete enough to create or match a person.
+        /// </summary>
+        private bool HasRequiredPersonIdentityFields()
+        {
+            return rtbFirstName.Text.IsNotNullOrWhiteSpace()
+                && rtbLastName.Text.IsNotNullOrWhiteSpace()
+                && rebEmail.Text.IsNotNullOrWhiteSpace();
+        }
+
+        /// <summary>
+        /// Populates the name and email controls and optionally locks them for email-based RSVP responses.
+        /// </summary>
+        private void PopulatePersonIdentityFields( Person person, bool isLocked )
+        {
+            if ( person == null )
+            {
+                return;
+            }
+
+            rtbFirstName.Text = person.FirstName;
+            rtbLastName.Text = person.LastName;
+            rebEmail.Text = person.Email;
+
+            rtbFirstName.ReadOnly = false;
+            rtbLastName.ReadOnly = false;
+            rebEmail.ReadOnly = false;
+
+            rtbFirstName.Enabled = !isLocked;
+            rtbLastName.Enabled = !isLocked;
+            rebEmail.Enabled = !isLocked;
+        }
+
+        /// <summary>
+        /// Determines if the phone field should be shown for the group. Non-176 group types always show phone,
+        /// while 176 uses the group's Info_PhoneNumber flag.
+        /// </summary>
+        private bool ShouldShowPhoneField( Group group )
+        {
+            if ( group == null )
+            {
+                return false;
+            }
+
+            group.LoadAttributes();
+
+            return group.GroupTypeId != 176 || group.GetAttributeValue( "Info_PhoneNumber" ).AsBoolean();
+        }
+
+        /// <summary>
+        /// Applies phone field visibility/required state and prefills the person's phone when shown.
+        /// </summary>
+        private void ConfigurePhoneField( bool showPhoneField, Person person )
+        {
+            pnbPhone.Visible = showPhoneField;
+            pnbPhone.Required = showPhoneField;
+
+            if ( !showPhoneField || person == null )
+            {
+                return;
+            }
+
+            try
+            {
+                var phoneNumber = new PhoneNumberService( new RockContext() )
+                    .GetNumberByPersonIdAndType( person.Id, "407E7E45-7B2E-4FCD-9605-ECB1339F2453" );
+
+                if ( phoneNumber != null )
                 {
-                    return CreatePerson();
+                    pnbPhone.Number = phoneNumber.NumberFormatted;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Determines whether an attendance row belongs to the supplied person.
+        /// </summary>
+        private bool AttendanceBelongsToPerson( Attendance attendance, Person person )
+        {
+            if ( attendance == null || person == null )
+            {
+                return false;
+            }
+
+            if ( person.PrimaryAliasId.HasValue && attendance.PersonAliasId.HasValue )
+            {
+                return attendance.PersonAliasId.Value == person.PrimaryAliasId.Value;
+            }
+
+            return person.Aliases != null
+                && attendance.PersonAlias != null
+                && person.Aliases.Contains( attendance.PersonAlias );
+        }
+
+        /// <summary>
+        /// Gets the attendance row for the supplied person.
+        /// </summary>
+        private Attendance GetAttendanceForPerson( AttendanceOccurrence occurrence, Person person )
+        {
+            if ( occurrence == null || person == null )
+            {
+                return null;
+            }
+
+            return occurrence.Attendees.FirstOrDefault( a => AttendanceBelongsToPerson( a, person ) );
+        }
+
+        /// <summary>
+        /// Gets the occurrence start time text, falling back to the occurrence if an attendance row has not been materialized yet.
+        /// </summary>
+        private string GetOccurrenceTimeText( AttendanceOccurrence occurrence, Attendance attendance )
+        {
+            if ( attendance != null )
+            {
+                return attendance.StartDateTime.ToShortTimeString();
+            }
+
+            if ( occurrence == null )
+            {
+                return string.Empty;
+            }
+
+            var startDateTime = occurrence.Schedule != null && occurrence.Schedule.HasSchedule()
+                ? occurrence.OccurrenceDate.Date.Add( occurrence.Schedule.StartTimeOfDay )
+                : occurrence.OccurrenceDate;
+
+            return startDateTime.ToShortTimeString();
+        }
+
+        /// <summary>
+        /// Configures the phone field for a single occurrence RSVP.
+        /// </summary>
+        private void ConfigurePhoneFieldForOccurrence( int occurrenceId, Person person )
+        {
+            using ( var rockContext = new RockContext() )
+            {
+                var occurrence = new AttendanceOccurrenceService( rockContext ).Get( occurrenceId );
+                ConfigurePhoneField( ShouldShowPhoneField( occurrence?.Group ), person );
+            }
+        }
+
+        /// <summary>
+        /// Configures the phone field for a multi-occurrence RSVP if any valid occurrence requires it.
+        /// </summary>
+        private void ConfigurePhoneFieldForOccurrences( List<int> occurrenceIds, Person person )
+        {
+            bool showPhoneField = false;
+
+            using ( var rockContext = new RockContext() )
+            {
+                var occurrenceService = new AttendanceOccurrenceService( rockContext );
+
+                foreach ( var occurrenceId in occurrenceIds )
+                {
+                    var occurrence = occurrenceService.Get( occurrenceId );
+                    if ( occurrence?.Group != null && ShouldShowPhoneField( occurrence.Group ) )
+                    {
+                        showPhoneField = true;
+                        break;
+                    }
                 }
             }
 
+            ConfigurePhoneField( showPhoneField, person );
         }
 
         /// <summary>
@@ -760,7 +972,7 @@ $(document).ready(function () {
                         {
                             gm.LoadAttributes();
                             int gc = gm.GetAttributeValue("GuestCount1").ToIntSafe();
-                            if (gm.Person.Aliases.Contains(a.PersonAlias))
+                            if ( AttendanceBelongsToPerson( a, gm.Person ) )
                             {
                                 totalGuests += gc;
                                 if (gm.PersonId == person.Id)
@@ -808,16 +1020,7 @@ $(document).ready(function () {
                 bool displayForm = GetAttributeValue(AttributeKey.DisplayFormWhenSignedIn).AsBoolean();
                 pnlForm.Visible = (CurrentPersonId == null || displayForm);
 
-                if (!string.IsNullOrWhiteSpace(PageParameter(PageParameterKey.PersonActionIdentifier)))
-                {
-                    rtbFirstName.Enabled = false;
-                    rtbLastName.Enabled = false;
-                    rebEmail.Enabled = false;
-                }
-
-                rtbFirstName.Text = person.FirstName;
-                rtbLastName.Text = person.LastName;
-                rebEmail.Text = person.Email;
+                PopulatePersonIdentityFields( person, HasPersonActionIdentifier() );
 
 
 
@@ -833,29 +1036,17 @@ $(document).ready(function () {
                 // This collection object is created to find which person fields are enabled through group attributes marked as boolean 'true'
 
 
-                var pncheck = group.GetAttributeValue("Info_PhoneNumber");
-                var adrcheck = group.GetAttributeValue("Info_Address");
-                var gndcheck = group.GetAttributeValue("Info_Gender");
-                var mscheck = group.GetAttributeValue("Info_MaritalStatus");
-                var bdcheck = group.GetAttributeValue("Info_BirthDate");
+                var pncheck = ShouldShowPhoneField( group );
+                var adrcheck = group.GetAttributeValue( "Info_Address" ).AsBoolean();
+                var gndcheck = group.GetAttributeValue( "Info_Gender" ).AsBoolean();
+                var mscheck = group.GetAttributeValue( "Info_MaritalStatus" ).AsBoolean();
+                var bdcheck = group.GetAttributeValue( "Info_BirthDate" ).AsBoolean();
                 //var allowGuest = group.GetAttributeValue("AllowForGuests");
 
 
-                if (pncheck == "True")
-                {
-                    pnbPhone.Visible = true;
-                    pnbPhone.Required = true;
-                    try
-                    {
-                        pnbPhone.Number = new PhoneNumberService(new RockContext()).GetNumberByPersonIdAndType(person.Id, "407E7E45-7B2E-4FCD-9605-ECB1339F2453").NumberFormatted;
-                    }
-                    catch
-                    {
-
-                    }
-                }
+                ConfigurePhoneField( pncheck, person );
                 
-                if (adrcheck == "True")
+                if ( adrcheck )
                 {
                     acAddress.Visible = true;
                     acAddress.Required = true;
@@ -935,7 +1126,7 @@ $(document).ready(function () {
                     }
                 }
                 
-                    if (gndcheck == "True")
+                    if ( gndcheck )
                     {
                         rblGender.Visible = true;
                         rblGender.Required = true;
@@ -944,7 +1135,7 @@ $(document).ready(function () {
 
                     }
 
-                    if (mscheck == "True")
+                    if ( mscheck )
                     {
                         dvpMaritalStatus1.Visible = true;
                         dvpMaritalStatus1.Required = true;
@@ -958,7 +1149,7 @@ $(document).ready(function () {
                         }
                     }
 
-                    if (bdcheck == "True")
+                    if ( bdcheck )
                     {
                         dpBirthDate1.Visible = true;
                         dpBirthDate1.Required = true;
@@ -1045,10 +1236,22 @@ $(document).ready(function () {
             {
                 var attendanceOccurrenceService = new AttendanceOccurrenceService( rockContext );
                 var occurrence = attendanceOccurrenceService.Get( occurrenceId );
+                if ( occurrence == null )
+                {
+                    Show404();
+                    return;
+                }
+
                 var group = occurrence.Group;
+                if ( group == null )
+                {
+                    Show404();
+                    return;
+                }
+
                 group.LoadAttributes();
                 var groupMember = occurrence.Group.Members.Where(gm => gm.PersonId == person.Id).FirstOrDefault();
-                // Set Closed Date based on occurrence info 
+                // Set Closed Date based on occurrence info
                 occurrence.LoadAttributes();
                 var occClosedDate = occurrence.GetAttributeValue("ClosedDate")?.AsDateTime();
                 if (occClosedDate == null)
@@ -1075,7 +1278,7 @@ $(document).ready(function () {
                         {
                             gm.LoadAttributes();
                             int gc = gm.GetAttributeValue("GuestCount1").ToIntSafe();
-                            if (gm.Person.Aliases.Contains(a.PersonAlias))
+                            if ( AttendanceBelongsToPerson( a, gm.Person ) )
                             {
                                 totalGuests += gc;
                                 // If person already exists, don't count their guest count attribute
@@ -1119,19 +1322,23 @@ $(document).ready(function () {
 
                 person = new PersonService( rockContext ).Get( person.Guid );
                 UpdateOrCreateAttendanceRecord( occurrence, person, rockContext, Rock.Model.RSVP.Yes, phAttributes );
-                
-                var attendance = occurrence.Attendees.Where(a => person.Aliases.Contains(a.PersonAlias)).FirstOrDefault();
+
+                var attendance = GetAttendanceForPerson( occurrence, person );
 
                 // Show Single Occurrence Accept message.
                 pnlSingle_Accept.Visible = true;
                 pnlSingle_Choice.Visible = false;
                 pnlForm.Visible = false;
 
+                var occurrenceDateText = occurrence.OccurrenceDate.ToShortDateString();
+                var occurrenceTimeText = GetOccurrenceTimeText( occurrence, attendance );
                 var mergeFields = Rock.Lava.LavaHelper.GetCommonMergeFields( RockPage, person );
                 mergeFields.Add("OccurrenceName", occurrence.Name);
                 mergeFields.Add("Person", person);
-                mergeFields.Add("OccurrenceDate", occurrence.OccurrenceDate.ToShortDateString());
-                mergeFields.Add("OccurrenceTime", attendance.StartDateTime.ToShortTimeString());
+                mergeFields.Add("OccurrenceDate", occurrenceDateText);
+                mergeFields.Add("OccurrenceTime", occurrenceTimeText);
+                mergeFields.Add("OccurrenceStartDate", occurrenceDateText);
+                mergeFields.Add("OccurrenceStartTime", occurrenceTimeText);
                 if (allowGuest == true)
                 {
                 mergeFields.Add("GuestCount", rnbGuestCount.IntegerValue);
@@ -1176,35 +1383,53 @@ $(document).ready(function () {
                 }
                 else
                 {
-                    var templateGuid = group.GetAttributeValue("EmailTemplate");
-                    var template = new CommunicationTemplateService(rockContext).Get(templateGuid.AsGuid());
-
-                    if (!string.IsNullOrEmpty(templateGuid))
+                    var emailTemplate = group.GetAttributeValue("EmailTemplate");
+                    if (!string.IsNullOrEmpty(emailTemplate))
                     {
+                        var communicationTemplate = new CommunicationTemplateService( rockContext ).Get( emailTemplate.AsGuid() );
                         var message = new RockEmailMessage();
                         message.AddRecipient(new RockEmailMessageRecipient(person, mergeFields));
-                        message.Message = template.Message;
                         message.AdditionalMergeFields = mergeFields;
-                        message.FromEmail = template.FromEmail;
-                        if (string.IsNullOrEmpty(message.FromEmail))
+
+                        if ( communicationTemplate != null )
                         {
+                            message.Message = communicationTemplate.Message;
+                            message.FromEmail = communicationTemplate.FromEmail;
+                            if (string.IsNullOrEmpty(message.FromEmail))
+                            {
+                                message.FromEmail = "connect@passioncitychurch.com";
+                            }
+                            message.FromName = communicationTemplate.FromName;
+                            if (string.IsNullOrEmpty(message.FromName))
+                            {
+                                message.FromName = "Passion City Church";
+                            }
+                            message.Subject = communicationTemplate.Subject;
+                            if (string.IsNullOrEmpty(message.Subject))
+                            {
+                                message.Subject = occurrence.Name;
+                            }
+                        }
+                        else
+                        {
+                            message.Message = emailTemplate.ResolveMergeFields( mergeFields );
                             message.FromEmail = "connect@passioncitychurch.com";
-                        }
-                        message.FromName = template.FromName;
-                        if (string.IsNullOrEmpty(message.FromName))
-                        {
                             message.FromName = "Passion City Church";
+                            message.Subject = group.GetAttributeValue("EmailSubjectLine").ResolveMergeFields( mergeFields );
+                            if (string.IsNullOrEmpty(message.Subject))
+                            {
+                                message.Subject = occurrence.Name;
+                            }
                         }
-                        message.Subject = template.Subject;
-                        if (string.IsNullOrEmpty(message.Subject))
+
+                        if (!string.IsNullOrEmpty(message.Message))
                         {
-                            message.Subject = occurrence.Name;
+                            message.AppRoot = ResolveRockUrl("~/");
+                            message.ThemeRoot = ResolveRockUrl("~~/");
+                            message.CreateCommunicationRecord = true;
+                            message.Send();
+                            rockContext.SaveChanges();
                         }
-                        message.AppRoot = ResolveRockUrl("~/");
-                        message.ThemeRoot = ResolveRockUrl("~~/");
-                        message.CreateCommunicationRecord = true;
-                        message.Send();
-                        rockContext.SaveChanges();
                     }
                 }
 
@@ -1233,7 +1458,7 @@ $(document).ready(function () {
         /// <param name="declineNote">(Optional) An explanation of the reason for declining.  Only used if rsvpStatus is No.</param>
         private void UpdateOrCreateAttendanceRecord( AttendanceOccurrence occurrence, Person person, RockContext rockContext, Rock.Model.RSVP rsvpStatus, PlaceHolder attributePlaceHolder = null, int declineReasonId = 0, string declineNote = "" )
         {
-            var attendance = occurrence.Attendees.Where(a => person.Aliases.Contains(a.PersonAlias)).FirstOrDefault();
+            var attendance = GetAttendanceForPerson( occurrence, person );
             if (attendance == null)
             {
                 attendance = new Attendance();
@@ -1299,7 +1524,11 @@ $(document).ready(function () {
                 groupMember.SaveAttributeValues();
             }
 
-            UpdatePersonRecord(person);
+            if ( !HasPersonActionIdentifier() )
+            {
+                UpdatePersonRecord( person );
+            }
+
             rockContext.SaveChanges();
         }
 
@@ -1402,26 +1631,10 @@ $(document).ready(function () {
             bool displayForm = GetAttributeValue( AttributeKey.DisplayFormWhenSignedIn ).AsBoolean();
             pnlForm.Visible = ( CurrentPersonId == null || displayForm );
 
-            if ( !string.IsNullOrWhiteSpace( PageParameter( PageParameterKey.PersonActionIdentifier ) ) )
-            {
-                rtbFirstName.Enabled = false;
-                rtbLastName.Enabled = false;
-                rebEmail.Enabled = false;
-            }
-
-            rtbFirstName.Text = person.FirstName;
-            rtbLastName.Text = person.LastName;
-            rebEmail.Text = person.Email;
+            PopulatePersonIdentityFields( person, HasPersonActionIdentifier() );
             
             
-            try
-            {
-                pnbPhone.Number = new PhoneNumberService(new RockContext()).GetNumberByPersonIdAndType(person.Id, "407E7E45-7B2E-4FCD-9605-ECB1339F2453").NumberFormatted;
-            }
-            catch
-            {
-                
-            }
+            ConfigurePhoneFieldForOccurrences( occurrenceIds, person );
             
             bool hasValidOccurrences = false;
             bool isExpired = false;
@@ -1625,9 +1838,20 @@ $(document).ready(function () {
         {
             using ( var rockContext = new RockContext() )
             {
-                CurrentPerson.FirstName = rtbFirstName.Text;
-                CurrentPerson.LastName = rtbLastName.Text;
-                CurrentPerson.Email = rebEmail.Text;
+                if ( rtbFirstName.Text.IsNotNullOrWhiteSpace() )
+                {
+                    CurrentPerson.FirstName = rtbFirstName.Text;
+                }
+
+                if ( rtbLastName.Text.IsNotNullOrWhiteSpace() )
+                {
+                    CurrentPerson.LastName = rtbLastName.Text;
+                }
+
+                if ( rebEmail.Text.IsNotNullOrWhiteSpace() )
+                {
+                    CurrentPerson.Email = rebEmail.Text;
+                }
                 
 
 

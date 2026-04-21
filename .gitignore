@@ -40,6 +40,7 @@ RockWeb/Scripts/Rock/UI/structuredcontenteditor/
 .vshistory/
 .localhistory/
 .vshistory/
+.omx/
 TestResults/
 
 Packages/*
