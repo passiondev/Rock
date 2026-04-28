@@ -1,0 +1,232 @@
+name: PR Test Environment Deploy
+
+"on":
+  pull_request_target:
+    types: [labeled, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Internal pull request number to deploy.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: pr-test-deploy-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Validate PR command
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.prepare.outputs.should_deploy }}
+      pr_number: ${{ steps.prepare.outputs.pr_number }}
+      head_sha: ${{ steps.prepare.outputs.head_sha }}
+      host_name: ${{ steps.prepare.outputs.host_name }}
+    steps:
+      - name: Validate label command and reconcile queued state
+        id: prepare
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const commandLabel = 'rock-test:start';
+            const autoLabel = 'rock-test:auto';
+            const stateLabels = [
+              'rock-test:queued',
+              'rock-test:building',
+              'rock-test:deploying',
+              'rock-test:deployed',
+              'rock-test:stopped',
+              'rock-test:failed'
+            ];
+
+            let pull;
+            if (context.eventName === 'workflow_dispatch') {
+              const prNumber = Number(core.getInput('pr_number'));
+              const response = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+              pull = response.data;
+            } else {
+              pull = context.payload.pull_request;
+              if (context.payload.action === 'synchronize') {
+                const hasAutoRedeploy = pull.labels.some(label => label.name === autoLabel);
+                if (!hasAutoRedeploy) {
+                  core.info(`PR does not have rock-test:auto; skipping automatic redeploy for ${pull.number}.`);
+                  core.setOutput('should_deploy', 'false');
+                  return;
+                }
+              } else {
+                const labelName = context.payload.label?.name;
+                if (labelName !== commandLabel) {
+                  core.info(`Ignoring label ${labelName}; waiting for ${commandLabel}.`);
+                  core.setOutput('should_deploy', 'false');
+                  return;
+                }
+              }
+            }
+
+            const configResponse = await github.rest.repos.getContent({
+              owner,
+              repo,
+              path: '.github/pr-test-environments.json',
+              ref: pull.base.ref
+            });
+            const config = JSON.parse(Buffer.from(configResponse.data.content, 'base64').toString('utf8'));
+            const configuredBaseBranch = config.baseBranch || 'develop-17.6.1';
+            const environmentDomain = config.environmentDomain || 'rock-dev.connect.passion.team';
+            if (pull.base.ref !== configuredBaseBranch) {
+              core.info(`PR ${pull.number} targets ${pull.base.ref}; PR test environments are configured for ${configuredBaseBranch}.`);
+              core.setOutput('should_deploy', 'false');
+              return;
+            }
+
+            const head = pull.head;
+            if (head.repo.full_name !== context.payload.repository.full_name) {
+              core.warning(`Skipping forked PR ${pull.number} from ${head.repo.full_name}. Only branches from ${context.payload.repository.full_name} can deploy to shared infrastructure.`);
+              core.setOutput('should_deploy', 'false');
+              return;
+            }
+
+            for (const label of [commandLabel, ...stateLabels]) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: pull.number, name: label });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number: pull.number, labels: ['rock-test:queued'] });
+
+            const hostName = `pr-${pull.number}.${environmentDomain}`;
+            core.setOutput('should_deploy', 'true');
+            core.setOutput('pr_number', String(pull.number));
+            core.setOutput('head_sha', head.sha);
+            core.setOutput('host_name', hostName);
+
+  mark-building:
+    name: Mark PR as building
+    needs: prepare
+    if: needs.prepare.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move PR from queued to building
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = Number('${{ needs.prepare.outputs.pr_number }}');
+            for (const label of ['rock-test:queued', 'rock-test:deployed', 'rock-test:failed']) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
+              catch (error) { if (error.status !== 404) throw error; }
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock-test:building'] });
+
+  build:
+    name: Build deployable artifact
+    needs: [prepare, mark-building]
+    if: needs.prepare.outputs.should_deploy == 'true'
+    uses: ./.github/workflows/pr-test-artifact.yml
+    with:
+      pr_number: ${{ needs.prepare.outputs.pr_number }}
+      head_sha: ${{ needs.prepare.outputs.head_sha }}
+      host_name: ${{ needs.prepare.outputs.host_name }}
+    secrets: inherit
+
+  mark-deploying:
+    name: Mark PR as deploying
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move PR from building to deploying
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = Number('${{ needs.prepare.outputs.pr_number }}');
+            for (const label of ['rock-test:queued', 'rock-test:building', 'rock-test:deployed', 'rock-test:failed']) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
+              catch (error) { if (error.status !== 404) throw error; }
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock-test:deploying'] });
+
+  deploy:
+    name: Deploy over SSH
+    needs: [prepare, build, mark-deploying]
+    if: needs.prepare.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+      HOST_NAME: ${{ needs.prepare.outputs.host_name }}
+      ARTIFACT_GCS_PATH: ${{ needs.build.outputs.artifact_gcs_path }}
+      WINDOWS_HOST: ${{ secrets.GCP_VM_EXTERNAL_IP }}
+      WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
+      WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
+      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments/Deploy-PrEnvironment.ps1
+            Deployment/PrTestEnvironments/Set-PrEnvironmentRuntimeConfiguration.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Install SSH password helper
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Copy deployment script to Windows host
+        run: |
+          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\RockDeploy -Force | Out-Null"'
+          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Deploy-PrEnvironment.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Deploy-PrEnvironment.ps1"
+          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Set-PrEnvironmentRuntimeConfiguration.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Set-PrEnvironmentRuntimeConfiguration.ps1"
+
+      - name: Invoke deployment script
+        run: |
+          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Deploy-PrEnvironment.ps1 -PrNumber '$PR_NUMBER' -Sha '$HEAD_SHA' -ArtifactGcsPath '$ARTIFACT_GCS_PATH' -HostName '$HOST_NAME' -SandboxConnectionString '$SANDBOX_CONNECTION_STRING'"
+
+  finalize:
+    name: Reconcile final PR state
+    needs: [prepare, build, deploy]
+    if: always() && needs.prepare.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts/pr-test-status.js
+          sparse-checkout-cone-mode: false
+
+      - name: Mark PR deployment result
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { updatePrTestStatus } = require('./.github/scripts/pr-test-status.js');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const success = '${{ needs.deploy.result }}' === 'success';
+            const logsUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            await updatePrTestStatus({
+              github,
+              context,
+              owner,
+              repo,
+              prNumber: '${{ needs.prepare.outputs.pr_number }}',
+              status: success ? 'deployed' : 'failed',
+              hostName: '${{ needs.prepare.outputs.host_name }}',
+              sha: '${{ needs.prepare.outputs.head_sha }}',
+              artifactGcsPath: '${{ needs.build.outputs.artifact_gcs_path }}',
+              logsUrl
+            });

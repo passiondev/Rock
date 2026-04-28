@@ -55,3 +55,7 @@ node_modules
 
 # Dev Tools
 Dev Tools/Scripts/obsidian-backend-watch/logs/
+
+# Python test cache
+__pycache__/
+*.py[cod]
