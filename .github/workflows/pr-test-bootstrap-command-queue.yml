@@ -42,6 +42,17 @@ jobs:
         shell: pwsh
         run: |
           $bucketName = "rock-deployments-${{ secrets.GCP_PROJECT_ID }}"
+          $vmName = "${{ secrets.GCP_VM_NAME }}"
+          $vmZone = "${{ secrets.GCP_ZONE }}"
+
+          $vmByIp = gcloud compute instances list --filter="networkInterfaces.accessConfigs.natIP=${{ secrets.GCP_VM_EXTERNAL_IP }}" --format="csv[no-heading](name,zone)" | Select-Object -First 1
+          if (![string]::IsNullOrWhiteSpace($vmByIp)) {
+            $parts = $vmByIp.Split(',')
+            $vmName = $parts[0]
+            $vmZone = ($parts[1] -split '/')[-1]
+          }
+
+          Write-Host "Bootstrapping PR command queue on VM $vmName in zone $vmZone"
           $startupScript = @"
           `$ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
@@ -53,10 +64,10 @@ jobs:
           $scriptFile = Join-Path $env:RUNNER_TEMP 'pr-test-bootstrap-startup.ps1'
           $startupScript | Out-File -FilePath $scriptFile -Encoding utf8
 
-          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} `
-            --zone=${{ secrets.GCP_ZONE }} `
+          gcloud compute instances add-metadata $vmName `
+            --zone=$vmZone `
             --metadata-from-file=windows-startup-script-ps1=$scriptFile
 
-          gcloud compute instances stop ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }}
+          gcloud compute instances stop $vmName --zone=$vmZone
           Start-Sleep -Seconds 10
-          gcloud compute instances start ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }}
+          gcloud compute instances start $vmName --zone=$vmZone
