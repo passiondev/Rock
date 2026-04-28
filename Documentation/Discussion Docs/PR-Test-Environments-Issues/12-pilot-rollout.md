@@ -15,17 +15,19 @@ Run the complete PR test environment workflow against one internal PR and verify
   - Result: closed because it targeted `develop` instead of the configured base branch.
 - Current pilot PR: https://github.com/passiondev/Rock/pull/3
   - Branch: `pilot/pr-test-env-doc-smoke-v1761`
-  - Base branch: `develop-17.6.1`
+  - Base branch: `develop-17.6.1` as configured in `.github/pr-test-environments.json`
   - Change type: documentation-only smoke change
   - Applied label: `rock-test:start`
-  - Current result: no GitHub Actions run started yet because `pull_request_target` workflows are loaded from the base branch, so the PR test environment implementation and `.github/pr-test-environments.json` must exist on `develop-17.6.1` before the label-triggered pilot can execute.
+  - Current result: GitHub Actions now triggers from `rock-test:start`, builds the latest PR head, packages and uploads the PR/SHA-specific artifact to GCS, updates the sticky PR comment, and fails at the SSH deployment step because the Google Windows VM is not reachable from GitHub-hosted runners on port 22.
+  - Latest run: https://github.com/passiondev/Rock/actions/runs/25059249875
+  - Artifact: `gs://rock-deployments-connect-test-471613/pr-environments/pr-3/aea0dba5c8aea556e62fb2767d4e5260360a48d7/RockWeb-pr-3-aea0dba.zip`
 
 ## Acceptance criteria
 
 - [x] An internal PR can be labeled with `rock-test:start`.
-- [ ] GitHub Actions builds the latest PR head and uploads a PR/SHA-specific artifact to GCS.
+- [x] GitHub Actions builds the latest PR head and uploads a PR/SHA-specific artifact to GCS.
 - [ ] The Google Windows server deploys the artifact into a PR-specific IIS site/app pool.
-- [ ] The sticky PR comment shows the correct URL, SHA, status, and instructions.
+- [x] The sticky PR comment shows the correct URL, SHA, status, and instructions.
 - [ ] The PR URL is reachable over VPN and not reachable from an unapproved network.
 - [ ] Rock loads successfully in a browser and can be functionally tested.
 - [ ] Re-adding `rock-test:start` redeploys or restarts as expected.
