@@ -19,9 +19,9 @@ name: PR Test Environment Artifact
       artifact_name:
         description: GitHub artifact name for the deployable zip.
         value: ${{ jobs.package.outputs.artifact_name }}
-      artifact_gcs_path:
-        description: GCS URI for the deployable zip.
-        value: ${{ jobs.package.outputs.artifact_gcs_path }}
+      artifact_gcs_object_path:
+        description: GCS object path for the deployable zip, relative to the deployment bucket.
+        value: ${{ jobs.package.outputs.artifact_gcs_object_path }}
       host_name:
         description: Intended PR test environment host name.
         value: ${{ jobs.package.outputs.host_name }}
@@ -65,7 +65,7 @@ jobs:
       HOST_NAME: ${{ inputs.host_name }}
     outputs:
       artifact_name: ${{ steps.package-metadata.outputs.artifact_name }}
-      artifact_gcs_path: ${{ steps.package-metadata.outputs.artifact_gcs_path }}
+      artifact_gcs_object_path: ${{ steps.package-metadata.outputs.artifact_gcs_object_path }}
       host_name: ${{ steps.package-metadata.outputs.host_name }}
       pr_number: ${{ steps.package-metadata.outputs.pr_number }}
       sha: ${{ steps.package-metadata.outputs.sha }}
@@ -268,7 +268,8 @@ jobs:
         run: |
           $artifactName = "RockWeb-pr-${{ env.PR_NUMBER }}-${{ env.SHORT_SHA }}.zip"
           $gcsPrefix = "pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}"
-          $gcsPath = "gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/$gcsPrefix/$artifactName"
+          $gcsObjectPath = "$gcsPrefix/$artifactName"
+          $gcsPath = "gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/$gcsObjectPath"
 
           Compress-Archive -Path RockWeb\* -DestinationPath $artifactName -Force
           $hash = (Get-FileHash $artifactName -Algorithm SHA256).Hash
@@ -285,7 +286,7 @@ jobs:
           $metadata | ConvertTo-Json | Out-File -FilePath pr-test-artifact.json -Encoding utf8
 
           "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "artifact_gcs_path=$gcsPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "artifact_gcs_object_path=$gcsObjectPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "host_name=${{ env.HOST_NAME }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "pr_number=${{ env.PR_NUMBER }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "sha=${{ env.HEAD_SHA }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -307,10 +308,14 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Upload package to Cloud Storage
+      - name: Upload package zip to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
-          path: |
-            RockWeb-pr-${{ env.PR_NUMBER }}-${{ env.SHORT_SHA }}.zip
-            pr-test-artifact.json
+          path: ${{ steps.package-metadata.outputs.artifact_name }}
+          destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}
+
+      - name: Upload package metadata to Cloud Storage
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: pr-test-artifact.json
           destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}
