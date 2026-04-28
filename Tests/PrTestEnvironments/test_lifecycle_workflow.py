@@ -35,8 +35,9 @@ class PrTestLifecycleTests(unittest.TestCase):
         self.assertIn('rock-test:stop', text)
         self.assertIn('rock-test:destroy', text)
         self.assertIn('merged', text)
-        self.assertIn('Stop-PrEnvironment.ps1', text)
-        self.assertIn('Destroy-PrEnvironment.ps1', text)
+        self.assertIn('commands/pending', text)
+        self.assertIn('commands/results', text)
+        self.assertIn('Poll PR environment command result', text)
         self.assertIn('updatePrTestStatus', text)
         self.assertIn('removeLabel', text)
 

@@ -92,43 +92,50 @@ jobs:
             core.setOutput('sha', pull.head.sha);
 
   lifecycle:
-    name: Run lifecycle command on Windows host
+    name: Queue lifecycle command
     needs: prepare
     if: needs.prepare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     env:
+      COMMAND_ID: lifecycle-${{ needs.prepare.outputs.pr_number }}-${{ github.run_id }}
       PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
       COMMAND: ${{ needs.prepare.outputs.command }}
-      WINDOWS_HOST: ${{ secrets.GCP_VM_EXTERNAL_IP }}
-      WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
-      WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          sparse-checkout: |
-            Deployment/PrTestEnvironments/Stop-PrEnvironment.ps1
-            Deployment/PrTestEnvironments/Destroy-PrEnvironment.ps1
-          sparse-checkout-cone-mode: false
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Install SSH password helper
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-      - name: Copy lifecycle scripts to Windows host
+      - name: Queue PR environment lifecycle command
+        shell: pwsh
         run: |
-          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\RockDeploy -Force | Out-Null"'
-          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Stop-PrEnvironment.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Stop-PrEnvironment.ps1"
-          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Destroy-PrEnvironment.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Destroy-PrEnvironment.ps1"
+          $command = [ordered]@{
+            commandId = $env:COMMAND_ID
+            command = $env:COMMAND
+            prNumber = [int]$env:PR_NUMBER
+            requestedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
+          gsutil cp command.json gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/commands/pending/$env:COMMAND_ID.json
 
-      - name: Invoke lifecycle script
+      - name: Poll PR environment command result
+        shell: pwsh
         run: |
-          if [ "$COMMAND" = "destroy" ]; then
-            SCRIPT="Destroy-PrEnvironment.ps1"
-          else
-            SCRIPT="Stop-PrEnvironment.ps1"
-          fi
-          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\$SCRIPT -PrNumber '$PR_NUMBER'"
+          $resultUri = "gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/commands/results/$env:COMMAND_ID.json"
+          for ($i = 0; $i -lt 60; $i++) {
+            gsutil cp $resultUri result.json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $result = Get-Content result.json -Raw | ConvertFrom-Json
+              $result | ConvertTo-Json -Depth 10
+              if ($result.status -eq "succeeded") { exit 0 }
+              exit 1
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw "Timed out waiting for PR environment command result: $resultUri"
 
   finalize:
     name: Update sticky PR status

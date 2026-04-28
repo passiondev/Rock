@@ -19,17 +19,17 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
         self.assertIn("head.repo.full_name !== context.payload.repository.full_name", text)
         self.assertIn("Skipping forked PR", text)
 
-    def test_workflow_builds_artifact_then_invokes_windows_deploy_script_over_ssh(self):
+    def test_workflow_builds_artifact_then_queues_deploy_command(self):
         text = WORKFLOW_PATH.read_text()
 
         self.assertIn("./.github/workflows/pr-test-artifact.yml", text)
         self.assertIn("secrets: inherit", text)
-        self.assertIn("sshpass", text)
-        self.assertIn("GCP_VM_EXTERNAL_IP", text)
-        self.assertIn("WINDOWS_USERNAME", text)
-        self.assertIn("WINDOWS_PASSWORD", text)
-        self.assertIn("Deploy-PrEnvironment.ps1", text)
+        self.assertIn("commands/pending", text)
+        self.assertIn("commands/results", text)
+        self.assertIn("Poll PR environment command result", text)
+        self.assertIn("artifactGcsPath", text)
         self.assertIn("rock-dev.connect.passion.team", text)
+        self.assertNotIn("sshpass", text)
 
     def test_workflow_reconciles_command_and_state_labels(self):
         text = WORKFLOW_PATH.read_text()
