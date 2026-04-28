@@ -33,6 +33,7 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("artifact_gcs_object_path", workflow_text)
         self.assertIn("actions/upload-artifact@v4", workflow_text)
         self.assertIn("google-github-actions/upload-cloud-storage@v2", workflow_text)
+        self.assertIn("gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}", workflow_text)
 
         forbidden_secret_names = ["DB_PASSWORD", "DB_USER", "DB_NAME", "CLOUD_SQL_CONNECTION_NAME"]
         for secret_name in forbidden_secret_names:

@@ -308,6 +308,13 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Ensure Cloud Storage bucket exists
+        run: |
+          gsutil ls gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }} *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}
+          }
+
       - name: Upload package zip to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
