@@ -1,0 +1,62 @@
+name: PR Test Environment Bootstrap Command Queue
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Install PR environment command queue on Windows VM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Ensure Cloud Storage bucket exists
+        shell: pwsh
+        run: |
+          gsutil ls gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }} *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}
+          }
+
+      - name: Upload deployment scripts to bootstrap location
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: Deployment/PrTestEnvironments
+          destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/bootstrap/latest
+
+      - name: Install command queue scheduled task through VM startup script
+        shell: pwsh
+        run: |
+          $bucketName = "rock-deployments-${{ secrets.GCP_PROJECT_ID }}"
+          $startupScript = @"
+          `$ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
+          gsutil -m cp -r gs://$bucketName/pr-environments/bootstrap/latest/PrTestEnvironments/* C:\RockDeploy\
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
+          "@
+
+          $scriptFile = Join-Path $env:RUNNER_TEMP 'pr-test-bootstrap-startup.ps1'
+          $startupScript | Out-File -FilePath $scriptFile -Encoding utf8
+
+          gcloud compute instances add-metadata ${{ secrets.GCP_VM_NAME }} `
+            --zone=${{ secrets.GCP_ZONE }} `
+            --metadata-from-file=windows-startup-script-ps1=$scriptFile
+
+          gcloud compute instances stop ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }}
+          Start-Sleep -Seconds 10
+          gcloud compute instances start ${{ secrets.GCP_VM_NAME }} --zone=${{ secrets.GCP_ZONE }}
