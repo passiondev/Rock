@@ -10,3 +10,4 @@ If you're looking for support for Rock there are a lot of options, check out:
 * Full Service, Paid Support &mdash; [Rock Partners](https://www.rockrms.com/Partners?Category=13)
 
 On the Q&A and in the Rock Slack, there are a ton of helpful community members that should be willing to point you in the right direction.
+<!-- PR test environment pilot smoke change: 2026-04-28T13:43:26Z -->
