@@ -160,41 +160,57 @@ jobs:
             await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock-test:deploying'] });
 
   deploy:
-    name: Deploy over SSH
+    name: Queue deployment command
     needs: [prepare, build, mark-deploying]
     if: needs.prepare.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     env:
+      COMMAND_ID: deploy-${{ needs.prepare.outputs.pr_number }}-${{ github.run_id }}
       PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
       HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
       HOST_NAME: ${{ needs.prepare.outputs.host_name }}
       ARTIFACT_GCS_PATH: gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ needs.build.outputs.artifact_gcs_object_path }}
-      WINDOWS_HOST: ${{ secrets.GCP_VM_EXTERNAL_IP }}
-      WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
-      WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
       SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;
     steps:
-      - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          sparse-checkout: |
-            Deployment/PrTestEnvironments/Deploy-PrEnvironment.ps1
-            Deployment/PrTestEnvironments/Set-PrEnvironmentRuntimeConfiguration.ps1
-          sparse-checkout-cone-mode: false
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Install SSH password helper
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-      - name: Copy deployment script to Windows host
+      - name: Queue PR environment deploy command
+        shell: pwsh
         run: |
-          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\RockDeploy -Force | Out-Null"'
-          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Deploy-PrEnvironment.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Deploy-PrEnvironment.ps1"
-          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Set-PrEnvironmentRuntimeConfiguration.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Set-PrEnvironmentRuntimeConfiguration.ps1"
+          $command = [ordered]@{
+            commandId = $env:COMMAND_ID
+            command = "deploy"
+            prNumber = [int]$env:PR_NUMBER
+            sha = $env:HEAD_SHA
+            hostName = $env:HOST_NAME
+            artifactGcsPath = $env:ARTIFACT_GCS_PATH
+            sandboxConnectionString = $env:SANDBOX_CONNECTION_STRING
+            requestedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
+          gsutil cp command.json gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/commands/pending/$env:COMMAND_ID.json
 
-      - name: Invoke deployment script
+      - name: Poll PR environment command result
+        shell: pwsh
         run: |
-          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Deploy-PrEnvironment.ps1 -PrNumber '$PR_NUMBER' -Sha '$HEAD_SHA' -ArtifactGcsPath '$ARTIFACT_GCS_PATH' -HostName '$HOST_NAME' -SandboxConnectionString '$SANDBOX_CONNECTION_STRING'"
+          $resultUri = "gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/commands/results/$env:COMMAND_ID.json"
+          for ($i = 0; $i -lt 60; $i++) {
+            gsutil cp $resultUri result.json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $result = Get-Content result.json -Raw | ConvertFrom-Json
+              $result | ConvertTo-Json -Depth 10
+              if ($result.status -eq "succeeded") { exit 0 }
+              exit 1
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw "Timed out waiting for PR environment command result: $resultUri"
 
   finalize:
     name: Reconcile final PR state
