@@ -1,0 +1,168 @@
+name: PR Test Environment Lifecycle
+
+"on":
+  pull_request_target:
+    types: [labeled, closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to manage.
+        required: true
+        type: string
+      command:
+        description: Lifecycle command to run.
+        required: true
+        type: choice
+        options: [stop, destroy]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: pr-test-lifecycle-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve lifecycle command
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.prepare.outputs.should_run }}
+      pr_number: ${{ steps.prepare.outputs.pr_number }}
+      command: ${{ steps.prepare.outputs.command }}
+      host_name: ${{ steps.prepare.outputs.host_name }}
+      sha: ${{ steps.prepare.outputs.sha }}
+    steps:
+      - name: Resolve stop/destroy request
+        id: prepare
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const commandLabels = ['rock-test:stop', 'rock-test:destroy'];
+            let pull;
+            let command;
+
+            if (context.eventName === 'workflow_dispatch') {
+              const prNumber = Number(core.getInput('pr_number'));
+              command = core.getInput('command');
+              pull = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+            } else {
+              pull = context.payload.pull_request;
+              if (context.payload.action === 'closed') {
+                command = pull.merged ? 'destroy' : 'stop';
+              } else {
+                const labelName = context.payload.label?.name;
+                if (!commandLabels.includes(labelName)) {
+                  core.info(`Ignoring label ${labelName}; waiting for ${commandLabels.join(' or ')}.`);
+                  core.setOutput('should_run', 'false');
+                  return;
+                }
+                command = labelName === 'rock-test:destroy' ? 'destroy' : 'stop';
+              }
+            }
+
+            const configResponse = await github.rest.repos.getContent({
+              owner,
+              repo,
+              path: '.github/pr-test-environments.json',
+              ref: pull.base.ref
+            });
+            const config = JSON.parse(Buffer.from(configResponse.data.content, 'base64').toString('utf8'));
+            const configuredBaseBranch = config.baseBranch || 'develop-17.6.1';
+            const environmentDomain = config.environmentDomain || 'rock-dev.connect.passion.team';
+            if (pull.base.ref !== configuredBaseBranch) {
+              core.info(`PR ${pull.number} targets ${pull.base.ref}; PR test environments are configured for ${configuredBaseBranch}.`);
+              core.setOutput('should_run', 'false');
+              return;
+            }
+
+            for (const label of commandLabels) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pull.number, name: label }); }
+              catch (error) { if (error.status !== 404) throw error; }
+            }
+
+            core.setOutput('should_run', 'true');
+            core.setOutput('pr_number', String(pull.number));
+            core.setOutput('command', command);
+            core.setOutput('host_name', `pr-${pull.number}.${environmentDomain}`);
+            core.setOutput('sha', pull.head.sha);
+
+  lifecycle:
+    name: Run lifecycle command on Windows host
+    needs: prepare
+    if: needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+      COMMAND: ${{ needs.prepare.outputs.command }}
+      WINDOWS_HOST: ${{ secrets.GCP_VM_EXTERNAL_IP }}
+      WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
+      WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments/Stop-PrEnvironment.ps1
+            Deployment/PrTestEnvironments/Destroy-PrEnvironment.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Install SSH password helper
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Copy lifecycle scripts to Windows host
+        run: |
+          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\RockDeploy -Force | Out-Null"'
+          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Stop-PrEnvironment.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Stop-PrEnvironment.ps1"
+          sshpass -p "$WINDOWS_PASSWORD" scp -o StrictHostKeyChecking=no Deployment/PrTestEnvironments/Destroy-PrEnvironment.ps1 "$WINDOWS_USERNAME@$WINDOWS_HOST:C:/RockDeploy/Destroy-PrEnvironment.ps1"
+
+      - name: Invoke lifecycle script
+        run: |
+          if [ "$COMMAND" = "destroy" ]; then
+            SCRIPT="Destroy-PrEnvironment.ps1"
+          else
+            SCRIPT="Stop-PrEnvironment.ps1"
+          fi
+          sshpass -p "$WINDOWS_PASSWORD" ssh -o StrictHostKeyChecking=no "$WINDOWS_USERNAME@$WINDOWS_HOST" "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\$SCRIPT -PrNumber '$PR_NUMBER'"
+
+  finalize:
+    name: Update sticky PR status
+    needs: [prepare, lifecycle]
+    if: always() && needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts/pr-test-status.js
+          sparse-checkout-cone-mode: false
+
+      - name: Reconcile lifecycle result
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { updatePrTestStatus } = require('./.github/scripts/pr-test-status.js');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const requested = '${{ needs.prepare.outputs.command }}';
+            const success = '${{ needs.lifecycle.result }}' === 'success';
+            const status = success ? (requested === 'destroy' ? 'destroyed' : 'stopped') : 'failed';
+            const logsUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            await updatePrTestStatus({
+              github,
+              context,
+              owner,
+              repo,
+              prNumber: '${{ needs.prepare.outputs.pr_number }}',
+              status,
+              hostName: '${{ needs.prepare.outputs.host_name }}',
+              sha: '${{ needs.prepare.outputs.sha }}',
+              artifactGcsPath: '',
+              logsUrl
+            });
