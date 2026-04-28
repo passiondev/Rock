@@ -168,7 +168,7 @@ jobs:
       PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
       HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
       HOST_NAME: ${{ needs.prepare.outputs.host_name }}
-      ARTIFACT_GCS_PATH: ${{ needs.build.outputs.artifact_gcs_path }}
+      ARTIFACT_GCS_PATH: gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ needs.build.outputs.artifact_gcs_object_path }}
       WINDOWS_HOST: ${{ secrets.GCP_VM_EXTERNAL_IP }}
       WINDOWS_USERNAME: ${{ secrets.WINDOWS_USERNAME }}
       WINDOWS_PASSWORD: ${{ secrets.WINDOWS_PASSWORD }}
@@ -227,6 +227,6 @@ jobs:
               status: success ? 'deployed' : 'failed',
               hostName: '${{ needs.prepare.outputs.host_name }}',
               sha: '${{ needs.prepare.outputs.head_sha }}',
-              artifactGcsPath: '${{ needs.build.outputs.artifact_gcs_path }}',
+              artifactGcsPath: 'gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ needs.build.outputs.artifact_gcs_object_path }}',
               logsUrl
             });

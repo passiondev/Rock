@@ -30,6 +30,7 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", workflow["on"])
         self.assertRegex(workflow_text, r"RockWeb-pr-\$\{\{\s*env\.PR_NUMBER\s*\}\}-\$\{\{\s*env\.SHORT_SHA\s*\}\}\.zip")
         self.assertIn("pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}", workflow_text)
+        self.assertIn("artifact_gcs_object_path", workflow_text)
         self.assertIn("actions/upload-artifact@v4", workflow_text)
         self.assertIn("google-github-actions/upload-cloud-storage@v2", workflow_text)
 
