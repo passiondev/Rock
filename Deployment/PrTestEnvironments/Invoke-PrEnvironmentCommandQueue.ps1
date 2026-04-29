@@ -79,7 +79,7 @@ foreach ($commandObject in $commands) {
         $commandJson = Read-GcsObjectText -ObjectName $commandObject
         $command = $commandJson | ConvertFrom-Json
         $CommandId = $command.commandId
-        Write-Host "Processing PR environment command $CommandId: $($command.command)"
+        Write-Host "Processing PR environment command ${CommandId}: $($command.command)"
 
         switch ($command.command) {
             "deploy" {
