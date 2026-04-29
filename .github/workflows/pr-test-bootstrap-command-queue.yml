@@ -27,21 +27,22 @@ jobs:
       - name: Ensure Cloud Storage bucket exists
         shell: pwsh
         run: |
-          gsutil ls gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }} *> $null
+          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          gsutil ls gs://$bucketName *> $null
           if ($LASTEXITCODE -ne 0) {
-            gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}
+            gsutil mb -p ${{ secrets.GCP_PROJECT_ID }} gs://$bucketName
           }
 
       - name: Upload deployment scripts to bootstrap location
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: Deployment/PrTestEnvironments
-          destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/bootstrap/latest
+          destination: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/pr-environments/bootstrap/latest
 
       - name: Install command queue scheduled task through VM startup script
         shell: pwsh
         run: |
-          $bucketName = "rock-deployments-${{ secrets.GCP_PROJECT_ID }}"
+          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
           $vmName = "${{ secrets.GCP_VM_NAME }}"
           $vmZone = "${{ secrets.GCP_ZONE }}"
 

@@ -63,6 +63,7 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       HEAD_SHA: ${{ inputs.head_sha || github.sha }}
       HOST_NAME: ${{ inputs.host_name }}
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     outputs:
       artifact_name: ${{ steps.package-metadata.outputs.artifact_name }}
       artifact_gcs_object_path: ${{ steps.package-metadata.outputs.artifact_gcs_object_path }}
@@ -269,7 +270,7 @@ jobs:
           $artifactName = "RockWeb-pr-${{ env.PR_NUMBER }}-${{ env.SHORT_SHA }}.zip"
           $gcsPrefix = "pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}"
           $gcsObjectPath = "$gcsPrefix/$artifactName"
-          $gcsPath = "gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/$gcsObjectPath"
+          $gcsPath = "gs://$env:PR_TEST_GCS_BUCKET/$gcsObjectPath"
 
           Compress-Archive -Path RockWeb\* -DestinationPath $artifactName -Force
           $hash = (Get-FileHash $artifactName -Algorithm SHA256).Hash
@@ -310,19 +311,19 @@ jobs:
 
       - name: Ensure Cloud Storage bucket exists
         run: |
-          gsutil ls gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }} *> $null
+          gsutil ls gs://$env:PR_TEST_GCS_BUCKET *> $null
           if ($LASTEXITCODE -ne 0) {
-            gsutil mb gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}
+            gsutil mb -p ${{ secrets.GCP_PROJECT_ID }} gs://$env:PR_TEST_GCS_BUCKET
           }
 
       - name: Upload package zip to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: ${{ steps.package-metadata.outputs.artifact_name }}
-          destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}
+          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}
 
       - name: Upload package metadata to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: pr-test-artifact.json
-          destination: rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}
+          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}

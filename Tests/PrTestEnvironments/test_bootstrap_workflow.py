@@ -22,7 +22,8 @@ class BootstrapCommandQueueWorkflowTests(unittest.TestCase):
         self.assertIn("gcloud compute instances start", text)
         self.assertIn("Install-PrEnvironmentCommandQueueTask.ps1", text)
         self.assertIn("Invoke-PrEnvironmentCommandQueue.ps1", text)
-        self.assertIn("rock-deployments-${{ secrets.GCP_PROJECT_ID }}", text)
+        self.assertIn("PR_TEST_GCS_BUCKET", text)
+        self.assertIn("rock-pr-env-{0}-{1}", text)
         self.assertNotIn("sshpass", text)
         self.assertNotIn("scp ", text)
 
