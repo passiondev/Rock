@@ -56,8 +56,23 @@ jobs:
           Write-Host "Bootstrapping PR command queue on VM $vmName in zone $vmZone"
           $startupScript = @"
           `$ErrorActionPreference = 'Stop'
+          function Get-GcsAccessToken {
+            `$headers = @{ 'Metadata-Flavor' = 'Google' }
+            `$tokenResponse = Invoke-RestMethod -Headers `$headers -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
+            return `$tokenResponse.access_token
+          }
+          function Copy-GcsObjectToFile {
+            param([string]`$ObjectName, [string]`$DestinationPath)
+            `$encodedObjectName = [System.Uri]::EscapeDataString(`$ObjectName)
+            `$headers = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
+            `$uri = "https://storage.googleapis.com/storage/v1/b/$bucketName/o/`$encodedObjectName``?alt=media"
+            Invoke-WebRequest -Headers `$headers -Uri `$uri -OutFile `$DestinationPath
+          }
           New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
-          gsutil -m cp gs://$bucketName/pr-environments/bootstrap/latest/*.ps1 C:\RockDeploy\
+          `$scripts = @('Deploy-PrEnvironment.ps1','Destroy-PrEnvironment.ps1','Install-PrEnvironmentCommandQueueTask.ps1','Invoke-PrEnvironmentCleanup.ps1','Invoke-PrEnvironmentCommandQueue.ps1','Invoke-SandboxRefreshWithPrEnvironments.ps1','Set-PrEnvironmentRuntimeConfiguration.ps1','Stop-PrEnvironment.ps1')
+          foreach (`$script in `$scripts) {
+            Copy-GcsObjectToFile -ObjectName "pr-environments/bootstrap/latest/`$script" -DestinationPath "C:\RockDeploy\`$script"
+          }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
           "@

@@ -11,7 +11,7 @@ class CommandQueueTests(unittest.TestCase):
     def test_queue_processor_pulls_commands_from_gcs_and_runs_local_scripts(self):
         text = QUEUE_SCRIPT.read_text()
         for expected in [
-            "gsutil ls", "gsutil cp", "commands/pending", "commands/processing", "commands/results",
+            "Get-GcsAccessToken", "Invoke-GcsRequest", "commands/pending", "commands/processing", "commands/results",
             "Deploy-PrEnvironment.ps1", "Stop-PrEnvironment.ps1", "Destroy-PrEnvironment.ps1",
             "ConvertFrom-Json", "ConvertTo-Json", "CommandId", "status = \"succeeded\"", "status = \"failed\""
         ]:

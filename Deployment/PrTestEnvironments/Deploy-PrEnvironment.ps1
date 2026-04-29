@@ -119,6 +119,31 @@ function Ensure-Website {
     }
 }
 
+function Get-GcsAccessToken {
+    $headers = @{ 'Metadata-Flavor' = 'Google' }
+    $tokenResponse = Invoke-RestMethod -Headers $headers -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
+    return $tokenResponse.access_token
+}
+
+function Copy-GcsObjectToFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$GcsUri,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    if ($GcsUri -notmatch '^gs://([^/]+)/(.+)$') {
+        throw "Invalid GCS URI: $GcsUri"
+    }
+
+    $bucket = $Matches[1]
+    $objectName = $Matches[2]
+    $encodedObjectName = [System.Uri]::EscapeDataString($objectName)
+    $token = Get-GcsAccessToken
+    $headers = @{ Authorization = "Bearer $token" }
+    $uri = "https://storage.googleapis.com/storage/v1/b/$bucket/o/$encodedObjectName`?alt=media"
+    Invoke-WebRequest -Headers $headers -Uri $uri -OutFile $DestinationPath
+}
+
 function Write-EnvironmentManifest {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -153,10 +178,7 @@ try {
         Remove-Item $ArtifactPath -Force
     }
 
-    & gsutil cp $ArtifactGcsPath $ArtifactPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to download artifact from $ArtifactGcsPath."
-    }
+    Copy-GcsObjectToFile -GcsUri $ArtifactGcsPath -DestinationPath $ArtifactPath
 
     if (Test-Path $ExtractPath) {
         Remove-Item $ExtractPath -Recurse -Force

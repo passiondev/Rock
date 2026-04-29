@@ -7,25 +7,77 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$PendingPrefix = "gs://$BucketName/pr-environments/commands/pending"
-$ProcessingPrefix = "gs://$BucketName/pr-environments/commands/processing"
-$ResultsPrefix = "gs://$BucketName/pr-environments/commands/results"
+$PendingPrefix = "pr-environments/commands/pending/"
+$ProcessingPrefix = "pr-environments/commands/processing/"
+$ResultsPrefix = "pr-environments/commands/results/"
 $LocalQueue = Join-Path $DeployRoot "queue"
 New-Item -ItemType Directory -Path $LocalQueue -Force | Out-Null
 
-$commands = (& gsutil ls "$PendingPrefix/*.json" 2>$null)
-foreach ($commandUri in $commands) {
-    if ([string]::IsNullOrWhiteSpace($commandUri)) { continue }
-    $fileName = Split-Path $commandUri -Leaf
-    $localCommand = Join-Path $LocalQueue $fileName
-    $processingUri = "$ProcessingPrefix/$fileName"
-    $resultUri = "$ResultsPrefix/$fileName"
+function Get-GcsAccessToken {
+    $headers = @{ 'Metadata-Flavor' = 'Google' }
+    $tokenResponse = Invoke-RestMethod -Headers $headers -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
+    return $tokenResponse.access_token
+}
+
+function Invoke-GcsRequest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $false)][string]$Method = 'GET',
+        [Parameter(Mandatory = $false)]$Body,
+        [Parameter(Mandatory = $false)][string]$ContentType = 'application/json'
+    )
+
+    $headers = @{ Authorization = "Bearer $(Get-GcsAccessToken)" }
+    if ($null -ne $Body) {
+        return Invoke-RestMethod -Headers $headers -Method $Method -Uri $Uri -Body $Body -ContentType $ContentType
+    }
+    return Invoke-RestMethod -Headers $headers -Method $Method -Uri $Uri
+}
+
+function Get-GcsObjectList {
+    param([Parameter(Mandatory = $true)][string]$Prefix)
+    $encodedPrefix = [System.Uri]::EscapeDataString($Prefix)
+    $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o?prefix=$encodedPrefix"
+    $response = Invoke-GcsRequest -Uri $uri
+    if ($null -eq $response.items) { return @() }
+    return @($response.items | ForEach-Object { $_.name })
+}
+
+function Read-GcsObjectText {
+    param([Parameter(Mandatory = $true)][string]$ObjectName)
+    $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
+    $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName`?alt=media"
+    $headers = @{ Authorization = "Bearer $(Get-GcsAccessToken)" }
+    return (Invoke-WebRequest -Headers $headers -Uri $uri).Content
+}
+
+function Write-GcsObjectText {
+    param(
+        [Parameter(Mandatory = $true)][string]$ObjectName,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+    $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
+    $uri = "https://storage.googleapis.com/upload/storage/v1/b/$BucketName/o?uploadType=media&name=$encodedObjectName"
+    Invoke-GcsRequest -Uri $uri -Method POST -Body ([System.Text.Encoding]::UTF8.GetBytes($Text)) -ContentType 'application/json' | Out-Null
+}
+
+function Remove-GcsObject {
+    param([Parameter(Mandatory = $true)][string]$ObjectName)
+    $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
+    $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName"
+    try { Invoke-GcsRequest -Uri $uri -Method DELETE | Out-Null } catch { Write-Warning $_.Exception.Message }
+}
+
+$commands = Get-GcsObjectList -Prefix $PendingPrefix | Where-Object { $_ -like '*.json' }
+foreach ($commandObject in $commands) {
+    $fileName = Split-Path $commandObject -Leaf
+    $resultObject = "$ResultsPrefix$fileName"
+    $CommandId = $fileName
     $result = $null
 
     try {
-        & gsutil mv $commandUri $processingUri | Out-Host
-        & gsutil cp $processingUri $localCommand | Out-Host
-        $command = Get-Content $localCommand -Raw | ConvertFrom-Json
+        $commandJson = Read-GcsObjectText -ObjectName $commandObject
+        $command = $commandJson | ConvertFrom-Json
         $CommandId = $command.commandId
         Write-Host "Processing PR environment command $CommandId: $($command.command)"
 
@@ -51,12 +103,11 @@ foreach ($commandUri in $commands) {
         $result = [ordered]@{ commandId = $CommandId; prNumber = $command.prNumber; command = $command.command; status = "succeeded"; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
     }
     catch {
-        $result = [ordered]@{ commandId = if ($CommandId) { $CommandId } else { $fileName }; status = "failed"; error = $_.Exception.Message; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
+        $result = [ordered]@{ commandId = $CommandId; status = "failed"; error = $_.Exception.Message; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
     }
     finally {
-        $localResult = Join-Path $LocalQueue $fileName
-        $result | ConvertTo-Json -Depth 10 | Out-File -FilePath $localResult -Encoding UTF8 -Force
-        & gsutil cp $localResult $resultUri | Out-Host
-        & gsutil rm $processingUri 2>$null | Out-Host
+        $resultJson = $result | ConvertTo-Json -Depth 10
+        Write-GcsObjectText -ObjectName $resultObject -Text $resultJson
+        Remove-GcsObject -ObjectName $commandObject
     }
 }
