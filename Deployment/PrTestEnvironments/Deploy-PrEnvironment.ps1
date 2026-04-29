@@ -141,7 +141,7 @@ function Copy-GcsObjectToFile {
     $token = Get-GcsAccessToken
     $headers = @{ Authorization = "Bearer $token" }
     $uri = "https://storage.googleapis.com/storage/v1/b/$bucket/o/$encodedObjectName`?alt=media"
-    Invoke-WebRequest -Headers $headers -Uri $uri -OutFile $DestinationPath
+    Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri -OutFile $DestinationPath
 }
 
 function Write-EnvironmentManifest {

@@ -48,7 +48,7 @@ function Read-GcsObjectText {
     $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
     $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName`?alt=media"
     $headers = @{ Authorization = "Bearer $(Get-GcsAccessToken)" }
-    return (Invoke-WebRequest -Headers $headers -Uri $uri).Content
+    return (Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri).Content
 }
 
 function Write-GcsObjectText {

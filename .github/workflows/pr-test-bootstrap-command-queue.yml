@@ -66,7 +66,7 @@ jobs:
             `$encodedObjectName = [System.Uri]::EscapeDataString(`$ObjectName)
             `$headers = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
             `$uri = "https://storage.googleapis.com/storage/v1/b/$bucketName/o/`$encodedObjectName``?alt=media"
-            Invoke-WebRequest -Headers `$headers -Uri `$uri -OutFile `$DestinationPath
+            Invoke-WebRequest -UseBasicParsing -Headers `$headers -Uri `$uri -OutFile `$DestinationPath
           }
           New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
           `$scripts = @('Deploy-PrEnvironment.ps1','Destroy-PrEnvironment.ps1','Install-PrEnvironmentCommandQueueTask.ps1','Invoke-PrEnvironmentCleanup.ps1','Invoke-PrEnvironmentCommandQueue.ps1','Invoke-SandboxRefreshWithPrEnvironments.ps1','Set-PrEnvironmentRuntimeConfiguration.ps1','Stop-PrEnvironment.ps1')
