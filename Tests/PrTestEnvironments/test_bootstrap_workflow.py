@@ -13,7 +13,7 @@ class BootstrapCommandQueueWorkflowTests(unittest.TestCase):
 
         self.assertIn("workflow_dispatch", workflow["on"])
         self.assertIn("google-github-actions/auth@v2", text)
-        self.assertIn("google-github-actions/upload-cloud-storage@v2", text)
+        self.assertIn("gsutil -m cp Deployment/PrTestEnvironments/*.ps1", text)
         self.assertIn("gcloud compute instances list", text)
         self.assertIn("GCP_VM_EXTERNAL_IP", text)
         self.assertIn("gcloud compute instances add-metadata", text)

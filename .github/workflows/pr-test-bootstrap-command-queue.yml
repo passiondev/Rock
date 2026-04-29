@@ -34,10 +34,10 @@ jobs:
           }
 
       - name: Upload deployment scripts to bootstrap location
-        uses: google-github-actions/upload-cloud-storage@v2
-        with:
-          path: Deployment/PrTestEnvironments
-          destination: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/pr-environments/bootstrap/latest
+        shell: pwsh
+        run: |
+          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 gs://$bucketName/pr-environments/bootstrap/latest/
 
       - name: Install command queue scheduled task through VM startup script
         shell: pwsh
@@ -57,7 +57,7 @@ jobs:
           $startupScript = @"
           `$ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
-          gsutil -m cp -r gs://$bucketName/pr-environments/bootstrap/latest/PrTestEnvironments/* C:\RockDeploy\
+          gsutil -m cp gs://$bucketName/pr-environments/bootstrap/latest/*.ps1 C:\RockDeploy\
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
           "@
