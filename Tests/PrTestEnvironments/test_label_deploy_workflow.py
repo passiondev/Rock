@@ -27,6 +27,8 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
         self.assertIn("commands/pending", text)
         self.assertIn("commands/results", text)
         self.assertIn("Poll PR environment command result", text)
+        self.assertIn("$i -lt 120", text)
+        self.assertIn("Start-Sleep -Seconds 15", text)
         self.assertIn("artifactGcsPath", text)
         self.assertIn("rock-dev.connect.passion.team", text)
         self.assertNotIn("sshpass", text)
