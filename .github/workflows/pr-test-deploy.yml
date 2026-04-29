@@ -169,7 +169,8 @@ jobs:
       PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
       HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
       HOST_NAME: ${{ needs.prepare.outputs.host_name }}
-      ARTIFACT_GCS_PATH: gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ needs.build.outputs.artifact_gcs_object_path }}
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ needs.build.outputs.artifact_gcs_object_path }}
       SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;
     steps:
       - name: Authenticate to Google Cloud
@@ -194,12 +195,12 @@ jobs:
             requestedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
           }
           $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-          gsutil cp command.json gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/commands/pending/$env:COMMAND_ID.json
+          gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
 
       - name: Poll PR environment command result
         shell: pwsh
         run: |
-          $resultUri = "gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/pr-environments/commands/results/$env:COMMAND_ID.json"
+          $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
           for ($i = 0; $i -lt 60; $i++) {
             gsutil cp $resultUri result.json 2>$null
             if ($LASTEXITCODE -eq 0) {
@@ -243,6 +244,6 @@ jobs:
               status: success ? 'deployed' : 'failed',
               hostName: '${{ needs.prepare.outputs.host_name }}',
               sha: '${{ needs.prepare.outputs.head_sha }}',
-              artifactGcsPath: 'gs://rock-deployments-${{ secrets.GCP_PROJECT_ID }}/${{ needs.build.outputs.artifact_gcs_object_path }}',
+              artifactGcsPath: 'gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ needs.build.outputs.artifact_gcs_object_path }}',
               logsUrl
             });
