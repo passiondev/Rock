@@ -100,7 +100,7 @@ foreach ($commandObject in $commands) {
             default { throw "Unknown command: $($command.command)" }
         }
 
-        if ($LASTEXITCODE -ne 0) { throw "Command script exited with $LASTEXITCODE" }
+        if (-not $?) { throw "Command script reported failure." }
         $result = [ordered]@{ commandId = $CommandId; prNumber = $command.prNumber; command = $command.command; status = "succeeded"; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
     }
     catch {
