@@ -21,7 +21,7 @@ class CommandQueueTests(unittest.TestCase):
 
     def test_bootstrap_installs_windows_scheduled_task_for_queue_processor(self):
         text = BOOTSTRAP_SCRIPT.read_text()
-        for expected in ["New-ScheduledTaskAction", "New-ScheduledTaskTrigger", "Register-ScheduledTask", "Invoke-PrEnvironmentCommandQueue.ps1", "C:\\RockDeploy"]:
+        for expected in ["schtasks.exe", "/SC MINUTE", "/RU SYSTEM", "Invoke-PrEnvironmentCommandQueue.ps1", "C:\\RockDeploy"]:
             self.assertIn(expected, text)
 
     def test_workflows_upload_commands_and_poll_results_without_ssh(self):
