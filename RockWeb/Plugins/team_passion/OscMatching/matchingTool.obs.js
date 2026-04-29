@@ -900,12 +900,14 @@ System.register(['vue', '@Obsidian/Utility/block', '@Obsidian/Enums/Crm/gender',
             }
           }
           function onGoBackClick() {
+            oscsGridDataSource.value = undefined;
             selectedProject.value = null;
             selectedOsc.value = null;
           }
           var closeSuggestedOscAssignModal = () => {
             isSuggestedOscAssignModalVisible.value = false;
             unnasignedProjectsSelected.value = true;
+            oscsGridDataSource.value = undefined;
             selectedProject.value = null;
             selectedOsc.value = null;
           };
@@ -1028,10 +1030,10 @@ System.register(['vue', '@Obsidian/Utility/block', '@Obsidian/Enums/Crm/gender',
                   "data-toggle": "tooltip",
                   title: (_selectedOsc$value$ex = selectedOsc.value.extraInfo) !== null && _selectedOsc$value$ex !== void 0 ? _selectedOsc$value$ex : undefined
                 }, [selectedOsc.value.extraInfo ? (openBlock(), createElementBlock("i", _hoisted_55)) : createCommentVNode("v-if", true), createTextVNode(toDisplayString(selectedOsc.value.name), 1)], 8, _hoisted_54)]), createElementVNode("div", _hoisted_56, [createElementVNode("span", {
-                  class: normalizeClass('match-item' + (selectedProject.value.gender == unref(Gender).Unknown || selectedOsc.value.gender == selectedProject.value.gender ? ' match' : ''))
+                  class: normalizeClass('match-item' + (!selectedProject.value || selectedProject.value.gender == unref(Gender).Unknown || selectedOsc.value.gender == selectedProject.value.gender ? ' match' : ''))
                 }, toDisplayString(selectedOsc.value.gender != unref(Gender).Unknown ? selectedOsc.value.genderString : 'Not Specified'), 3)]), createElementVNode("div", _hoisted_57, [selectedOsc.value.location ? (openBlock(), createElementBlock("span", {
                   key: 0,
-                  class: normalizeClass('match-item' + (!selectedProject.value.location || selectedOsc.value.location == selectedProject.value.location ? ' match' : ''))
+                  class: normalizeClass('match-item' + (!selectedProject.value || !selectedProject.value.location || selectedOsc.value.location == selectedProject.value.location ? ' match' : ''))
                 }, toDisplayString(selectedOsc.value.location), 3)) : createCommentVNode("v-if", true)]), createElementVNode("div", _hoisted_58, [createElementVNode("div", _hoisted_59, [createElementVNode("span", {
                   class: normalizeClass(getDayMatchClass((_selectedOsc$value = selectedOsc.value) === null || _selectedOsc$value === void 0 ? void 0 : _selectedOsc$value.dayPreference, 'Monday', (_selectedProject$valu31 = selectedProject.value) === null || _selectedProject$valu31 === void 0 ? void 0 : _selectedProject$valu31.day))
                 }, "M", 2), createElementVNode("span", {
@@ -1097,7 +1099,7 @@ System.register(['vue', '@Obsidian/Utility/block', '@Obsidian/Enums/Crm/gender',
                     format: withCtx(_ref2 => {
                       var row = _ref2.row;
                       return [createElementVNode("span", {
-                        class: normalizeClass('match-item' + (selectedProject.value.gender == unref(Gender).Unknown || row.gender == selectedProject.value.gender ? ' match' : ''))
+                        class: normalizeClass('match-item' + (!selectedProject.value || selectedProject.value.gender == unref(Gender).Unknown || row.gender == selectedProject.value.gender ? ' match' : ''))
                       }, toDisplayString(row.gender != unref(Gender).Unknown ? row.genderString : 'Not Specified'), 3)];
                     }),
                     _: 1
@@ -1110,7 +1112,7 @@ System.register(['vue', '@Obsidian/Utility/block', '@Obsidian/Enums/Crm/gender',
                       var row = _ref3.row;
                       return [row.location ? (openBlock(), createElementBlock("span", {
                         key: 0,
-                        class: normalizeClass('match-item' + (!selectedProject.value.location || row.location == selectedProject.value.location ? ' match' : ''))
+                        class: normalizeClass('match-item' + (!selectedProject.value || !selectedProject.value.location || row.location == selectedProject.value.location ? ' match' : ''))
                       }, toDisplayString(row.location), 3)) : createCommentVNode("v-if", true)];
                     }),
                     _: 1
