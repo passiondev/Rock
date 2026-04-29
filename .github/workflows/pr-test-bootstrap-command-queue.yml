@@ -85,5 +85,8 @@ jobs:
             --metadata-from-file=windows-startup-script-ps1=$scriptFile
 
           gcloud compute instances stop $vmName --zone=$vmZone
+          gcloud compute instances set-service-account $vmName `
+            --zone=$vmZone `
+            --scopes=https://www.googleapis.com/auth/cloud-platform
           Start-Sleep -Seconds 10
           gcloud compute instances start $vmName --zone=$vmZone

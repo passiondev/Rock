@@ -19,6 +19,8 @@ class BootstrapCommandQueueWorkflowTests(unittest.TestCase):
         self.assertIn("gcloud compute instances add-metadata", text)
         self.assertIn("windows-startup-script-ps1", text)
         self.assertIn("gcloud compute instances stop", text)
+        self.assertIn("gcloud compute instances set-service-account", text)
+        self.assertIn("https://www.googleapis.com/auth/cloud-platform", text)
         self.assertIn("gcloud compute instances start", text)
         self.assertIn("Install-PrEnvironmentCommandQueueTask.ps1", text)
         self.assertIn("Invoke-PrEnvironmentCommandQueue.ps1", text)
