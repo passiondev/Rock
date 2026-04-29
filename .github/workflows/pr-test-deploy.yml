@@ -201,7 +201,7 @@ jobs:
         shell: pwsh
         run: |
           $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
-          for ($i = 0; $i -lt 60; $i++) {
+          for ($i = 0; $i -lt 120; $i++) {
             gsutil cp $resultUri result.json 2>$null
             if ($LASTEXITCODE -eq 0) {
               $result = Get-Content result.json -Raw | ConvertFrom-Json
@@ -209,7 +209,7 @@ jobs:
               if ($result.status -eq "succeeded") { exit 0 }
               exit 1
             }
-            Start-Sleep -Seconds 10
+            Start-Sleep -Seconds 15
           }
           throw "Timed out waiting for PR environment command result: $resultUri"
 
