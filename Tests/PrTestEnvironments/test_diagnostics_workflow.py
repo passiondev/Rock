@@ -17,7 +17,7 @@ class DiagnoseCommandQueueWorkflowTests(unittest.TestCase):
         self.assertIn("Get-ScheduledTaskInfo", text)
         self.assertIn("C:\\RockDeploy", text)
         self.assertIn("Invoke-PrEnvironmentCommandQueue.ps1", text)
-        self.assertIn("gsutil ls", text)
+        self.assertIn("Get-GcsObjectList", text)
         self.assertIn("pr-environments/diagnostics", text)
         self.assertIn("gcloud compute instances add-metadata", text)
         self.assertIn("gcloud compute instances stop", text)
