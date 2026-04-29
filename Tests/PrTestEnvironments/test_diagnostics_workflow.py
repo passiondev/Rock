@@ -22,6 +22,7 @@ class DiagnoseCommandQueueWorkflowTests(unittest.TestCase):
         self.assertIn("gcloud compute instances add-metadata", text)
         self.assertIn("gcloud compute instances stop", text)
         self.assertIn("gcloud compute instances start", text)
+        self.assertIn("gcloud compute instances get-serial-port-output", text)
         self.assertIn("Poll diagnostics", text)
 
 if __name__ == "__main__":

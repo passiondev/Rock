@@ -80,6 +80,16 @@ jobs:
           Start-Sleep -Seconds 10
           gcloud compute instances start $vmName --zone=$vmZone
 
+          "VM_NAME=$vmName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VM_ZONE=$vmZone" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Print VM serial output after startup
+        if: always()
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 120
+          gcloud compute instances get-serial-port-output $env:VM_NAME --zone=$env:VM_ZONE --port=1 | Select-Object -Last 300
+
       - name: Poll diagnostics
         shell: pwsh
         run: |
