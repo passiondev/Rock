@@ -60,6 +60,7 @@ jobs:
             `$headers = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
             `$uri = "https://storage.googleapis.com/storage/v1/b/$bucketName/o?prefix=`$encodedPrefix"
             `$response = Invoke-RestMethod -Headers `$headers -Uri `$uri
+            if (-not (`$response.PSObject.Properties.Name -contains 'items')) { return @() }
             if (`$null -eq `$response.items) { return @() }
             return @(`$response.items | ForEach-Object { `$_.name })
           }

@@ -39,6 +39,7 @@ function Get-GcsObjectList {
     $encodedPrefix = [System.Uri]::EscapeDataString($Prefix)
     $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o?prefix=$encodedPrefix"
     $response = Invoke-GcsRequest -Uri $uri
+    if (-not ($response.PSObject.Properties.Name -contains 'items')) { return @() }
     if ($null -eq $response.items) { return @() }
     return @($response.items | ForEach-Object { $_.name })
 }
