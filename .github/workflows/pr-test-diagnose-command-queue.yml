@@ -49,12 +49,34 @@ jobs:
           Write-Host '--- Scheduled task ---'
           Get-ScheduledTask -TaskName 'Rock PR Environment Command Queue' -ErrorAction Continue | Format-List *
           Get-ScheduledTaskInfo -TaskName 'Rock PR Environment Command Queue' -ErrorAction Continue | Format-List *
-          Write-Host '--- gsutil version ---'
-          gsutil version -l
+          function Get-GcsAccessToken {
+            `$headers = @{ 'Metadata-Flavor' = 'Google' }
+            `$tokenResponse = Invoke-RestMethod -Headers `$headers -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
+            return `$tokenResponse.access_token
+          }
+          function Get-GcsObjectList {
+            param([string]`$Prefix)
+            `$encodedPrefix = [System.Uri]::EscapeDataString(`$Prefix)
+            `$headers = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
+            `$uri = "https://storage.googleapis.com/storage/v1/b/$bucketName/o?prefix=`$encodedPrefix"
+            `$response = Invoke-RestMethod -Headers `$headers -Uri `$uri
+            if (`$null -eq `$response.items) { return @() }
+            return @(`$response.items | ForEach-Object { `$_.name })
+          }
+          function Write-GcsObjectFile {
+            param([string]`$ObjectName, [string]`$Path)
+            `$encodedObjectName = [System.Uri]::EscapeDataString(`$ObjectName)
+            `$headers = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
+            `$uri = "https://storage.googleapis.com/upload/storage/v1/b/$bucketName/o?uploadType=media&name=`$encodedObjectName"
+            Invoke-RestMethod -Headers `$headers -Method POST -Uri `$uri -InFile `$Path -ContentType 'text/plain' | Out-Null
+          }
+          Write-Host '--- metadata token check ---'
+          `$token = Get-GcsAccessToken
+          Write-Host "Token length: `$(`$token.Length)"
           Write-Host '--- bucket visibility ---'
-          gsutil ls gs://$bucketName/pr-environments/commands/pending/
-          gsutil ls gs://$bucketName/pr-environments/commands/processing/
-          gsutil ls gs://$bucketName/pr-environments/commands/results/
+          Get-GcsObjectList -Prefix 'pr-environments/commands/pending/'
+          Get-GcsObjectList -Prefix 'pr-environments/commands/processing/'
+          Get-GcsObjectList -Prefix 'pr-environments/commands/results/'
           Write-Host '--- run queue once ---'
           if (Test-Path 'C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1') {
             powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
@@ -64,9 +86,9 @@ jobs:
             Write-Host 'Queue processor missing: C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1'
           }
           Write-Host '--- post-run results ---'
-          gsutil ls gs://$bucketName/pr-environments/commands/results/
+          Get-GcsObjectList -Prefix 'pr-environments/commands/results/'
           Stop-Transcript
-          gsutil cp `$log gs://$bucketName/pr-environments/diagnostics/$diagnosticId.txt
+          Write-GcsObjectFile -ObjectName 'pr-environments/diagnostics/$diagnosticId.txt' -Path `$log
           "@
 
           $scriptFile = Join-Path $env:RUNNER_TEMP 'pr-test-diagnostics-startup.ps1'
