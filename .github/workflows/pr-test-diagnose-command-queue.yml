@@ -1,0 +1,95 @@
+name: PR Test Environment Diagnose Command Queue
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose PR environment command queue on Windows VM
+    runs-on: ubuntu-latest
+    env:
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      DIAGNOSTIC_ID: diagnostics-${{ github.run_id }}
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run diagnostics through VM startup script
+        shell: pwsh
+        run: |
+          $bucketName = $env:PR_TEST_GCS_BUCKET
+          $diagnosticId = $env:DIAGNOSTIC_ID
+          $vmName = "${{ secrets.GCP_VM_NAME }}"
+          $vmZone = "${{ secrets.GCP_ZONE }}"
+
+          $vmByIp = gcloud compute instances list --filter="networkInterfaces.accessConfigs[0].natIP=${{ secrets.GCP_VM_EXTERNAL_IP }}" --format="csv[no-heading](name,zone)" | Select-Object -First 1
+          if (![string]::IsNullOrWhiteSpace($vmByIp)) {
+            $parts = $vmByIp.Split(',')
+            $vmName = $parts[0]
+            $vmZone = ($parts[1] -split '/')[-1]
+          }
+
+          $startupScript = @"
+          `$ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Path 'C:\RockDeploy\diagnostics' -Force | Out-Null
+          `$log = 'C:\RockDeploy\diagnostics\$diagnosticId.txt'
+          Start-Transcript -Path `$log -Force
+          Write-Host '=== PR command queue diagnostics ==='
+          Write-Host "Time UTC: `$((Get-Date).ToUniversalTime().ToString('o'))"
+          Write-Host '--- C:\RockDeploy ---'
+          Get-ChildItem -Path 'C:\RockDeploy' -Force | Format-List *
+          Write-Host '--- Scheduled task ---'
+          Get-ScheduledTask -TaskName 'Rock PR Environment Command Queue' -ErrorAction Continue | Format-List *
+          Get-ScheduledTaskInfo -TaskName 'Rock PR Environment Command Queue' -ErrorAction Continue | Format-List *
+          Write-Host '--- gsutil version ---'
+          gsutil version -l
+          Write-Host '--- bucket visibility ---'
+          gsutil ls gs://$bucketName/pr-environments/commands/pending/
+          gsutil ls gs://$bucketName/pr-environments/commands/processing/
+          gsutil ls gs://$bucketName/pr-environments/commands/results/
+          Write-Host '--- run queue once ---'
+          if (Test-Path 'C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1') {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
+            Write-Host "Queue processor exit code: `$LASTEXITCODE"
+          }
+          else {
+            Write-Host 'Queue processor missing: C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1'
+          }
+          Write-Host '--- post-run results ---'
+          gsutil ls gs://$bucketName/pr-environments/commands/results/
+          Stop-Transcript
+          gsutil cp `$log gs://$bucketName/pr-environments/diagnostics/$diagnosticId.txt
+          "@
+
+          $scriptFile = Join-Path $env:RUNNER_TEMP 'pr-test-diagnostics-startup.ps1'
+          $startupScript | Out-File -FilePath $scriptFile -Encoding utf8
+
+          gcloud compute instances add-metadata $vmName `
+            --zone=$vmZone `
+            --metadata-from-file=windows-startup-script-ps1=$scriptFile
+
+          gcloud compute instances stop $vmName --zone=$vmZone
+          Start-Sleep -Seconds 10
+          gcloud compute instances start $vmName --zone=$vmZone
+
+      - name: Poll diagnostics
+        shell: pwsh
+        run: |
+          $uri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/diagnostics/$env:DIAGNOSTIC_ID.txt"
+          for ($i = 0; $i -lt 60; $i++) {
+            gsutil cp $uri diagnostics.txt 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              Get-Content diagnostics.txt
+              exit 0
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw "Timed out waiting for diagnostics: $uri"
