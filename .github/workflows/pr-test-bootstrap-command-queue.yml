@@ -69,7 +69,7 @@ jobs:
             Invoke-WebRequest -UseBasicParsing -Headers `$headers -Uri `$uri -OutFile `$DestinationPath
           }
           New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
-          `$scripts = @('Deploy-PrEnvironment.ps1','Destroy-PrEnvironment.ps1','Install-PrEnvironmentCommandQueueTask.ps1','Invoke-PrEnvironmentCleanup.ps1','Invoke-PrEnvironmentCommandQueue.ps1','Invoke-SandboxRefreshWithPrEnvironments.ps1','Set-PrEnvironmentRuntimeConfiguration.ps1','Stop-PrEnvironment.ps1')
+          `$scripts = @('Deploy-PrEnvironment.ps1','Destroy-PrEnvironment.ps1','Install-PrEnvironmentCommandQueueTask.ps1','Invoke-PrEnvironmentCleanup.ps1','Invoke-PrEnvironmentCommandQueue.ps1','Invoke-PrEnvironmentCertificateRenewal.ps1','Invoke-SandboxRefreshWithPrEnvironments.ps1','Set-PrEnvironmentRuntimeConfiguration.ps1','Stop-PrEnvironment.ps1')
           foreach (`$script in `$scripts) {
             Copy-GcsObjectToFile -ObjectName "pr-environments/bootstrap/latest/`$script" -DestinationPath "C:\RockDeploy\`$script"
           }

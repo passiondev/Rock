@@ -4,11 +4,11 @@
 
 - Base branch config: `.github/pr-test-environments.json` controls which PR base branch is eligible for PR test environments. It currently targets `develop-17.6.1` for the Rock version pin. Update this value during Rock upgrades.
 - Wildcard DNS: `*.rock-dev.connect.passion.team` points to the Google Windows VM. Cloudflare is configured manually in DNS-only mode.
-- TLS: install a wildcard TLS certificate for `*.rock-dev.connect.passion.team` in IIS and expose its thumbprint through the deploy environment when available.
-- Firewall/VPN allowlist: restrict HTTP/HTTPS to office/VPN egress `159.63.145.194/32` through GCP firewall rules and/or Windows Firewall.
-- SSH: deployment uses OpenSSH to the Windows host with `WINDOWS_USERNAME` and `WINDOWS_PASSWORD`.
-- GCP/GCS: artifacts are uploaded to `gs://rock-deployments-${GCP_PROJECT_ID}/pr-environments/pr-<number>/<sha>/`.
-- GitHub secrets used by workflows: `GCP_PROJECT_ID`, `GCP_SA_KEY`, `GCP_VM_NAME`, `GCP_VM_EXTERNAL_IP`, `GCP_ZONE`, `WINDOWS_USERNAME`, `WINDOWS_PASSWORD`, `CLOUD_SQL_CONNECTION_NAME`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
+- TLS: PR hosts use Let's Encrypt certificates installed in LocalMachine `My` and bound in IIS. `.github/workflows/pr-test-renew-certificates.yml` runs weekly and can be dispatched manually; it temporarily opens TCP 80 for HTTP-01 validation, queues `renew-certificate`, then removes the temporary firewall rule. A Cloudflare DNS token would allow a future wildcard DNS-01 flow.
+- Firewall/VPN allowlist: keep HTTPS restricted to office/VPN egress `159.63.145.194/32` through GCP firewall rules and/or Windows Firewall. The renewal workflow temporarily opens HTTP/80 to `0.0.0.0/0` only for ACME validation.
+- Deployment control plane: GitHub Actions uploads artifacts/commands to GCS; the Windows VM polls the command queue. Do not expose SSH publicly for PR environment deployment.
+- GCP/GCS: artifacts and commands use `PR_TEST_GCS_BUCKET`.
+- GitHub secrets/vars used by workflows: `GCP_PROJECT_ID`, `GCP_SA_KEY`, `GCP_VM_NAME`, `GCP_VM_EXTERNAL_IP`, `GCP_ZONE`, `PR_TEST_GCS_BUCKET`, `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
 
 ## Paths and naming
 
@@ -29,6 +29,7 @@
 - `Destroy-PrEnvironment.ps1` removes PR IIS resources and files.
 - `Invoke-PrEnvironmentCleanup.ps1` stops deployed environments after 6 idle hours and destroys stale stopped environments after 7 days. Use `-WhatIf` for manual verification.
 - `Invoke-SandboxRefreshWithPrEnvironments.ps1` stops PR app pools before DB refresh and restarts only previously running app pools afterward.
+- `Invoke-PrEnvironmentCertificateRenewal.ps1` issues/renews Let's Encrypt certs for deployed PR environments and rebinds IIS HTTPS bindings. Run through the scheduled/manual certificate renewal workflow so GCP HTTP/80 is opened only during ACME validation.
 
 ## Sandbox DB refresh coordination
 
@@ -44,12 +45,12 @@ The script writes maintenance state to `C:\RockTestEnvs\maintenance.json` and lo
 - Stuck deploying: cancel stale GitHub Actions runs, then rerun with `rock-test:start`.
 - IIS state mismatch: run `Destroy-PrEnvironment.ps1 -PrNumber <n>`, then re-add `rock-test:start`.
 - Cleanup dry run: `Invoke-PrEnvironmentCleanup.ps1 -WhatIf`.
-- Certificate/DNS issues: verify Cloudflare wildcard record, IIS wildcard TLS certificate, host binding, and VPN allowlist.
+- Certificate/DNS issues: verify Cloudflare wildcard record, IIS Let's Encrypt certificate, host binding, weekly renewal workflow, and VPN allowlist.
 
 ## Troubleshooting
 
 - Failed builds: inspect `.github/workflows/pr-test-artifact.yml` logs.
-- Failed deploys: inspect `.github/workflows/pr-test-deploy.yml`, SSH connectivity, GCS artifact path, and `C:\RockDeploy` scripts.
+- Failed deploys: inspect `.github/workflows/pr-test-deploy.yml`, command queue results, GCS artifact path, and `C:\RockDeploy` scripts.
 - Stopped environments: developers can re-add `rock-test:start`.
-- Certificate warnings: verify wildcard TLS certificate binding on `*:443:<host>`.
+- Certificate warnings: verify the Let's Encrypt certificate binding on `*:443:<host>` and dispatch `.github/workflows/pr-test-renew-certificates.yml` if needed.
 - DNS failures: confirm `*.rock-dev.connect.passion.team` resolves to `GCP_VM_EXTERNAL_IP` from VPN.

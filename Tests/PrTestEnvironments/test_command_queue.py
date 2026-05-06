@@ -12,7 +12,7 @@ class CommandQueueTests(unittest.TestCase):
         text = QUEUE_SCRIPT.read_text()
         for expected in [
             "Get-GcsAccessToken", "Invoke-GcsRequest", "commands/pending", "commands/processing", "commands/results",
-            "Deploy-PrEnvironment.ps1", "Stop-PrEnvironment.ps1", "Destroy-PrEnvironment.ps1",
+            "Deploy-PrEnvironment.ps1", "Stop-PrEnvironment.ps1", "Destroy-PrEnvironment.ps1", "Invoke-PrEnvironmentCertificateRenewal.ps1",
             "ConvertFrom-Json", "ConvertTo-Json", "CommandId", "status = \"succeeded\"", "status = \"failed\""
         ]:
             self.assertIn(expected, text)

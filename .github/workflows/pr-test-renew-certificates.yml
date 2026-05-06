@@ -1,0 +1,117 @@
+name: PR Test Environment Certificate Renewal
+
+"on":
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  renew:
+    name: Renew PR environment certificates
+    runs-on: ubuntu-latest
+    env:
+      COMMAND_ID: renew-certificates-${{ github.run_id }}
+      FIREWALL_RULE: pr-test-acme-http-temp
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload latest deployment scripts
+        shell: pwsh
+        run: |
+          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 gs://$env:PR_TEST_GCS_BUCKET/pr-environments/bootstrap/latest/
+
+      - name: Resolve VM and temporarily allow ACME HTTP-01
+        shell: pwsh
+        run: |
+          $vmName = "${{ secrets.GCP_VM_NAME }}"
+          $vmZone = "${{ secrets.GCP_ZONE }}"
+
+          $vmByIp = gcloud compute instances list --filter="networkInterfaces.accessConfigs.natIP=${{ secrets.GCP_VM_EXTERNAL_IP }}" --format="csv[no-heading](name,zone)" | Select-Object -First 1
+          if (![string]::IsNullOrWhiteSpace($vmByIp)) {
+            $parts = $vmByIp.Split(',')
+            $vmName = $parts[0]
+            $vmZone = ($parts[1] -split '/')[-1]
+          }
+
+          if ([string]::IsNullOrWhiteSpace($vmName) -or [string]::IsNullOrWhiteSpace($vmZone)) {
+            throw "Could not resolve PR environment VM name/zone."
+          }
+
+          $vm = gcloud compute instances describe $vmName --zone=$vmZone --format=json | ConvertFrom-Json
+          $network = ($vm.networkInterfaces[0].network -split '/')[-1]
+          $tags = @($vm.tags.items) | Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+
+          $args = @(
+            'compute', 'firewall-rules', 'create', $env:FIREWALL_RULE,
+            '--network', $network,
+            '--direction', 'INGRESS',
+            '--priority', '900',
+            '--action', 'ALLOW',
+            '--rules', 'tcp:80',
+            '--source-ranges', '0.0.0.0/0'
+          )
+          if ($tags.Count -gt 0) {
+            $args += @('--target-tags', ($tags -join ','))
+          }
+
+          gcloud compute firewall-rules describe $env:FIREWALL_RULE *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gcloud compute firewall-rules update $env:FIREWALL_RULE --rules=tcp:80 --source-ranges=0.0.0.0/0
+          }
+          else {
+            & gcloud @args
+          }
+
+          "VM_NAME=$vmName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VM_ZONE=$vmZone" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Queue certificate renewal command
+        shell: pwsh
+        run: |
+          $command = [ordered]@{
+            commandId = $env:COMMAND_ID
+            command = 'renew-certificate'
+            requestedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
+          gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
+
+      - name: Poll certificate renewal result
+        shell: pwsh
+        run: |
+          $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
+          for ($i = 0; $i -lt 90; $i++) {
+            gsutil cp $resultUri result.json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $result = Get-Content result.json -Raw | ConvertFrom-Json
+              $result | ConvertTo-Json -Depth 10
+              if ($result.status -eq 'succeeded') { exit 0 }
+              exit 1
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw "Timed out waiting for PR environment certificate renewal result: $resultUri"
+
+      - name: Remove temporary ACME HTTP-01 firewall rule
+        if: always()
+        shell: pwsh
+        run: |
+          gcloud compute firewall-rules delete $env:FIREWALL_RULE --quiet 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Firewall rule $env:FIREWALL_RULE was already absent or could not be deleted."
+          }
