@@ -97,6 +97,9 @@ foreach ($commandObject in $commands) {
             "destroy" {
                 & (Join-Path $DeployRoot "Destroy-PrEnvironment.ps1") -PrNumber $command.prNumber
             }
+            "renew-certificate" {
+                & (Join-Path $DeployRoot "Invoke-PrEnvironmentCertificateRenewal.ps1") -DeployRoot $DeployRoot
+            }
             default { throw "Unknown command: $($command.command)" }
         }
 

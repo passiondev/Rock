@@ -27,9 +27,10 @@ class RunbookTests(unittest.TestCase):
         text = OP_RUNBOOK.read_text()
         for expected in [
             '*.rock-dev.connect.passion.team',
-            'wildcard TLS certificate',
+            "Let's Encrypt",
+            'pr-test-renew-certificates.yml',
             '159.63.145.194/32',
-            'WINDOWS_USERNAME',
+            'command queue',
             'GCP_VM_EXTERNAL_IP',
             'C:\\RockTestEnvs',
             'env.json',
