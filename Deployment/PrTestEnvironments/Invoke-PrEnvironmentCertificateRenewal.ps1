@@ -131,8 +131,8 @@ function Bind-CertificateToSite {
 }
 
 Ensure-WinAcme
-$manifests = Get-DeployedPrEnvironmentManifests
-if ($manifests.Count -eq 0) {
+$manifests = @(Get-DeployedPrEnvironmentManifests)
+if (@($manifests).Length -eq 0) {
     Write-Host "No deployed PR environments found under $EnvironmentRoot."
     return
 }
@@ -149,7 +149,7 @@ foreach ($manifest in $manifests) {
     }
 }
 
-if ($hostsNeedingCertificate.Count -gt 0) {
+if (@($hostsNeedingCertificate).Length -gt 0) {
     Write-Host "Stopping IIS for HTTP-01 self-hosting challenge."
     Stop-Service W3SVC -Force -ErrorAction Continue
     Start-Sleep -Seconds 5
