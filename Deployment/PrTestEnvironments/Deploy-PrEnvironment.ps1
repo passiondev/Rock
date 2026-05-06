@@ -37,7 +37,15 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]
-    $CertificateThumbprint = $env:PR_TEST_CERTIFICATE_THUMBPRINT
+    $CertificateThumbprint = $env:PR_TEST_CERTIFICATE_THUMBPRINT,
+
+    [Parameter(Mandatory = $false)]
+    [string]
+    $SharedAssetSourcePath = $env:PR_TEST_SHARED_ASSET_SOURCE_PATH,
+
+    [Parameter(Mandatory = $false)]
+    [string]
+    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES })
 )
 
 Set-StrictMode -Version Latest
@@ -115,6 +123,56 @@ function Remove-PluginBuildArtifacts {
             Where-Object { $_.Name -in @('bin', 'obj') } |
             Sort-Object FullName -Descending |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-SharedAssetSourcePath {
+    param([Parameter(Mandatory = $false)][string]$ExplicitPath)
+
+    if (![string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        return [Environment]::ExpandEnvironmentVariables($ExplicitPath)
+    }
+
+    $defaultSite = Get-Website -Name 'Default Web Site' -ErrorAction SilentlyContinue
+    if ($null -ne $defaultSite -and ![string]::IsNullOrWhiteSpace($defaultSite.physicalPath)) {
+        return [Environment]::ExpandEnvironmentVariables($defaultSite.physicalPath)
+    }
+
+    return $null
+}
+
+function Sync-SharedSiteAssets {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot,
+        [Parameter(Mandatory = $true)][string]$DirectoryList
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SourceRoot) -or !(Test-Path $SourceRoot)) {
+        Write-Host "Shared site asset source not found; skipping shared asset overlay. SourceRoot=$SourceRoot"
+        return
+    }
+
+    $directories = $DirectoryList.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+    foreach ($directory in $directories) {
+        if ($directory -match '[\\/]|\.\.') {
+            throw "Shared asset directory must be a simple child directory name: $directory"
+        }
+
+        $sourcePath = Join-Path $SourceRoot $directory
+        $destinationPath = Join-Path $DestinationRoot $directory
+        if (!(Test-Path $sourcePath)) {
+            Write-Host "Shared asset directory not present on source site; skipping $sourcePath"
+            continue
+        }
+
+        Ensure-Directory -Path $destinationPath
+        Write-Host "Overlaying shared site assets from $sourcePath to $destinationPath"
+        & robocopy $sourcePath $destinationPath /MIR /NFL /NDL /NJH /NJS /NP
+        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+        if ($exitCode -gt 7) {
+            throw "robocopy failed for shared asset directory $directory with exit code $exitCode."
+        }
     }
 }
 
@@ -225,6 +283,8 @@ try {
     }
     Move-Item -Path $ExtractPath -Destination $SitePath
     Remove-PluginBuildArtifacts -SitePath $SitePath
+    $sharedAssetSource = Get-SharedAssetSourcePath -ExplicitPath $SharedAssetSourcePath
+    Sync-SharedSiteAssets -SourceRoot $sharedAssetSource -DestinationRoot $SitePath -DirectoryList $SharedAssetDirectories
 
     $RuntimeConfigScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "Set-PrEnvironmentRuntimeConfiguration.ps1"
     & $RuntimeConfigScript -PrNumber $PrNumber -SitePath $SitePath -EnvironmentPath $EnvironmentPath -SandboxConnectionString $SandboxConnectionString

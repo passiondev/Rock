@@ -38,6 +38,20 @@ class DeployPrEnvironmentScriptTests(unittest.TestCase):
         self.assertNotIn("Restart-Computer", text)
         self.assertNotIn("iisreset", text.lower())
 
+    def test_deploy_script_can_overlay_shared_site_assets_from_same_server(self):
+        text = DEPLOY_SCRIPT.read_text()
+        for expected in [
+            "SharedAssetSourcePath",
+            "PR_TEST_SHARED_ASSET_SOURCE_PATH",
+            "SharedAssetDirectories",
+            "Themes,Content,Assets,Styles",
+            "Sync-SharedSiteAssets",
+            "robocopy",
+            "Get-SharedAssetSourcePath",
+            "Default Web Site",
+        ]:
+            self.assertIn(expected, text)
+
 
 if __name__ == "__main__":
     unittest.main()
