@@ -89,4 +89,16 @@ jobs:
             --zone=$vmZone `
             --scopes=https://www.googleapis.com/auth/cloud-platform
           Start-Sleep -Seconds 10
-          gcloud compute instances start $vmName --zone=$vmZone
+          $started = $false
+          for ($attempt = 1; $attempt -le 6; $attempt++) {
+            gcloud compute instances start $vmName --zone=$vmZone
+            if ($LASTEXITCODE -eq 0) {
+              $started = $true
+              break
+            }
+            Write-Warning "VM start attempt $attempt failed; retrying in 30 seconds."
+            Start-Sleep -Seconds 30
+          }
+          if (!$started) {
+            throw "Failed to start VM $vmName in $vmZone after retries."
+          }
