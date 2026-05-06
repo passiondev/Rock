@@ -104,7 +104,9 @@ foreach ($commandObject in $commands) {
         }
 
         if (-not $?) { throw "Command script reported failure." }
-        $result = [ordered]@{ commandId = $CommandId; prNumber = $command.prNumber; command = $command.command; status = "succeeded"; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
+        $prNumber = $null
+        if ($command.PSObject.Properties.Name -contains 'prNumber') { $prNumber = $command.prNumber }
+        $result = [ordered]@{ commandId = $CommandId; prNumber = $prNumber; command = $command.command; status = "succeeded"; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
     }
     catch {
         $result = [ordered]@{ commandId = $CommandId; status = "failed"; error = $_.Exception.Message; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
