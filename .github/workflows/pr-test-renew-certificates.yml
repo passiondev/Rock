@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       COMMAND_ID: renew-certificates-${{ github.run_id }}
-      FIREWALL_RULE: pr-test-acme-http-temp
+      ACME_TAG: pr-test-acme-http
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     steps:
       - uses: actions/checkout@v4
@@ -52,30 +52,11 @@ jobs:
             throw "Could not resolve PR environment VM name/zone."
           }
 
-          $vm = gcloud compute instances describe $vmName --zone=$vmZone --format=json | ConvertFrom-Json
-          $network = ($vm.networkInterfaces[0].network -split '/')[-1]
-          $tags = @($vm.tags.items) | Where-Object { ![string]::IsNullOrWhiteSpace($_) }
-
-          $args = @(
-            'compute', 'firewall-rules', 'create', $env:FIREWALL_RULE,
-            '--network', $network,
-            '--direction', 'INGRESS',
-            '--priority', '900',
-            '--action', 'ALLOW',
-            '--rules', 'tcp:80',
-            '--source-ranges', '0.0.0.0/0'
-          )
-          if ($tags.Count -gt 0) {
-            $args += @('--target-tags', ($tags -join ','))
-          }
-
-          gcloud compute firewall-rules describe $env:FIREWALL_RULE *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gcloud compute firewall-rules update $env:FIREWALL_RULE --rules=tcp:80 --source-ranges=0.0.0.0/0
-          }
-          else {
-            & gcloud @args
-          }
+          # The GCP firewall rule is pre-created by an operator and targets this tag:
+          #   pr-test-acme-http -> allow tcp:80 from 0.0.0.0/0
+          # The workflow only toggles the tag during the renewal window, avoiding
+          # broad firewall administration permissions in GitHub Actions.
+          gcloud compute instances add-tags $vmName --zone=$vmZone --tags=$env:ACME_TAG
 
           "VM_NAME=$vmName" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VM_ZONE=$vmZone" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -107,11 +88,14 @@ jobs:
           }
           throw "Timed out waiting for PR environment certificate renewal result: $resultUri"
 
-      - name: Remove temporary ACME HTTP-01 firewall rule
+      - name: Remove temporary ACME HTTP-01 network tag
         if: always()
         shell: pwsh
         run: |
-          gcloud compute firewall-rules delete $env:FIREWALL_RULE --quiet 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Firewall rule $env:FIREWALL_RULE was already absent or could not be deleted."
+          if (![string]::IsNullOrWhiteSpace($env:VM_NAME) -and ![string]::IsNullOrWhiteSpace($env:VM_ZONE)) {
+            gcloud compute instances remove-tags $env:VM_NAME --zone=$env:VM_ZONE --tags=$env:ACME_TAG
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "Could not remove ACME tag $env:ACME_TAG from $env:VM_NAME."
+            }
           }
+          exit 0

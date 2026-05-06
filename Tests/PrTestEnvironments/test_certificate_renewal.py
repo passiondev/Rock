@@ -38,10 +38,10 @@ class CertificateRenewalTests(unittest.TestCase):
         text = RENEWAL_WORKFLOW.read_text()
         for expected in [
             "schedule:",
-            "firewall-rules", "tcp:80", "pr-test-acme-http-temp",
+            "add-tags", "remove-tags", "pr-test-acme-http",
             "renew-certificate",
             "commands/pending", "commands/results",
-            "Remove temporary ACME HTTP-01 firewall rule",
+            "Remove temporary ACME HTTP-01 network tag",
             "if: always()"
         ]:
             self.assertIn(expected, text)
