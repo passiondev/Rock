@@ -83,6 +83,41 @@ function Ensure-AppPool {
     Set-ItemProperty "IIS:\AppPools\$Name" -Name processModel.identityType -Value "ApplicationPoolIdentity"
 }
 
+function Get-PrEnvironmentCertificateThumbprint {
+    param(
+        [Parameter(Mandatory = $true)][string]$HostHeader,
+        [Parameter(Mandatory = $false)][string]$Thumbprint
+    )
+
+    if (![string]::IsNullOrWhiteSpace($Thumbprint)) {
+        return $Thumbprint
+    }
+
+    $domain = ($HostHeader -replace '^[^.]+\.', '*.')
+    $cert = Get-ChildItem Cert:\LocalMachine\My |
+        Where-Object { ($_.DnsNameList -contains $HostHeader) -or ($_.DnsNameList -contains $domain) -or ($_.Subject -eq "CN=$domain") } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
+
+    if ($null -eq $cert) {
+        $cert = New-SelfSignedCertificate -DnsName @($domain, $HostHeader) -CertStoreLocation 'Cert:\LocalMachine\My' -FriendlyName 'Rock PR Test Environments wildcard' -NotAfter (Get-Date).AddYears(2)
+    }
+
+    return $cert.Thumbprint
+}
+
+function Remove-PluginBuildArtifacts {
+    param([Parameter(Mandatory = $true)][string]$SitePath)
+
+    $pluginRoot = Join-Path $SitePath 'Plugins'
+    if (Test-Path $pluginRoot) {
+        Get-ChildItem $pluginRoot -Directory -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('bin', 'obj') } |
+            Sort-Object FullName -Descending |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Ensure-Website {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -114,9 +149,8 @@ function Ensure-Website {
             Where-Object { $_.bindingInformation -eq "*:443:$HostHeader" }
     }
 
-    if (![string]::IsNullOrWhiteSpace($Thumbprint)) {
-        $httpsBinding.AddSslCertificate($Thumbprint, "My")
-    }
+    $certificateThumbprint = Get-PrEnvironmentCertificateThumbprint -HostHeader $HostHeader -Thumbprint $Thumbprint
+    $httpsBinding.AddSslCertificate($certificateThumbprint, "My")
 }
 
 function Get-GcsAccessToken {
@@ -190,6 +224,7 @@ try {
         Remove-Item $SitePath -Recurse -Force
     }
     Move-Item -Path $ExtractPath -Destination $SitePath
+    Remove-PluginBuildArtifacts -SitePath $SitePath
 
     $RuntimeConfigScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "Set-PrEnvironmentRuntimeConfiguration.ps1"
     & $RuntimeConfigScript -PrNumber $PrNumber -SitePath $SitePath -EnvironmentPath $EnvironmentPath -SandboxConnectionString $SandboxConnectionString

@@ -171,7 +171,8 @@ jobs:
       HOST_NAME: ${{ needs.prepare.outputs.host_name }}
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ needs.build.outputs.artifact_gcs_object_path }}
-      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;
+      PR_TEST_DB_DATA_SOURCE: ${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }}
+      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2

@@ -50,6 +50,14 @@ $connectionStringConfig = @"
 "@
 $connectionStringConfig | Out-File -FilePath (Join-Path $SitePath "web.ConnectionStrings.config") -Encoding UTF8 -Force
 
+$webConfigPath = Join-Path $SitePath "web.config"
+if (Test-Path $webConfigPath) {
+    $publicRoot = "https://pr-$PrNumber.rock-dev.connect.passion.team"
+    $webConfig = Get-Content $webConfigPath -Raw
+    $webConfig = $webConfig -replace '(<attributeValue\s+attributeKey="PublicApplicationRoot"[^>]*value=")"', "`${1}$publicRoot`""
+    $webConfig | Out-File -FilePath $webConfigPath -Encoding UTF8 -Force
+}
+
 # Production integration credentials are intentionally not deployed to PR environments.
 # The transform below overrides common outbound integration/app settings with inert values.
 # This includes SMTP, Twilio, SMS, Payment, Webhook, SparkApiUrl, and background job settings.
