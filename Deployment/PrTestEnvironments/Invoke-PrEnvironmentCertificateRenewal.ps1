@@ -24,6 +24,10 @@ param(
     $RenewWithinDays = 30,
 
     [Parameter(Mandatory = $false)]
+    [int]
+    $PerHostTimeoutSeconds = 180,
+
+    [Parameter(Mandatory = $false)]
     [string]
     $WinAcmeDownloadUrl = "https://github.com/win-acme/win-acme/releases/download/v2.2.9.1701/win-acme.v2.2.9.1701.x64.pluggable.zip"
 )
@@ -35,6 +39,7 @@ Import-Module WebAdministration
 
 $WinAcmeRoot = Join-Path $DeployRoot "win-acme"
 $WinAcmeExe = Join-Path $WinAcmeRoot "wacs.exe"
+$LogRoot = Join-Path $WinAcmeRoot "logs"
 
 function Ensure-Directory {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -91,10 +96,17 @@ function Get-NewestLetsEncryptCertificate {
         Select-Object -First 1
 }
 
+function Write-WinAcmeLog {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path $Path) {
+        Get-Content -Path $Path -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+    }
+}
+
 function Invoke-WinAcmeForHost {
     param([Parameter(Mandatory = $true)][string]$HostName)
 
-    $args = @(
+    $wacsArgs = @(
         '--source', 'manual',
         '--host', $HostName,
         '--validation', 'selfhosting',
@@ -107,10 +119,33 @@ function Invoke-WinAcmeForHost {
         '--verbose'
     )
 
-    Write-Host "Requesting Let's Encrypt certificate for $HostName using HTTP-01 self-hosting."
-    & $WinAcmeExe @args
-    if ($LASTEXITCODE -ne 0) {
-        throw "win-acme failed for $HostName with exit code $LASTEXITCODE."
+    Ensure-Directory -Path $LogRoot
+    $safeHost = ($HostName -replace '[^A-Za-z0-9._-]', '_')
+    $stdoutLog = Join-Path $LogRoot "wacs-$safeHost.out.log"
+    $stderrLog = Join-Path $LogRoot "wacs-$safeHost.err.log"
+
+    # win-acme self-hosting waits on the Let's Encrypt HTTP-01 callback, which never
+    # arrives if inbound TCP 80 is blocked or DNS is wrong. Running headless under the
+    # command-queue task there is no console to interrupt it, so cap each host with a
+    # hard timeout and kill the process rather than let it hang the queue worker.
+    Write-Host "Requesting Let's Encrypt certificate for $HostName using HTTP-01 self-hosting (timeout ${PerHostTimeoutSeconds}s)."
+    $process = Start-Process -FilePath $WinAcmeExe -ArgumentList $wacsArgs -NoNewWindow -PassThru `
+        -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+
+    if (-not $process.WaitForExit($PerHostTimeoutSeconds * 1000)) {
+        try { $process.Kill() } catch { Write-Warning "Could not kill win-acme process for ${HostName}: $($_.Exception.Message)" }
+        Write-WinAcmeLog -Path $stdoutLog
+        Write-WinAcmeLog -Path $stderrLog
+        throw "win-acme timed out after $PerHostTimeoutSeconds seconds for $HostName and was terminated."
+    }
+
+    # Ensure exit processing completes before reading ExitCode.
+    $process.WaitForExit()
+    Write-WinAcmeLog -Path $stdoutLog
+    Write-WinAcmeLog -Path $stderrLog
+
+    if ($process.ExitCode -ne 0) {
+        throw "win-acme failed for $HostName with exit code $($process.ExitCode)."
     }
 }
 
@@ -156,7 +191,15 @@ if (@($hostsNeedingCertificate).Length -gt 0) {
 
     try {
         foreach ($hostName in ($hostsNeedingCertificate | Sort-Object -Unique)) {
-            Invoke-WinAcmeForHost -HostName $hostName
+            # Keep going if one host fails so a single broken environment does not
+            # block renewal for the others. A host that genuinely failed is caught
+            # below when its certificate is missing during the bind pass.
+            try {
+                Invoke-WinAcmeForHost -HostName $hostName
+            }
+            catch {
+                Write-Warning "Certificate request failed for ${hostName}: $($_.Exception.Message)"
+            }
         }
     }
     finally {

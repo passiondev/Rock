@@ -52,6 +52,26 @@ jobs:
             throw "Could not resolve PR environment VM name/zone."
           }
 
+          # The renewal command runs through the command-queue scheduled task on the
+          # VM, so the VM has to be powered on. PR environments may be stopped to save
+          # cost when the weekly schedule fires, which would otherwise leave the
+          # command unprocessed until this job's poll loop times out. Starting an
+          # already-running instance is a no-op; a cold boot re-runs the startup
+          # script, which refreshes the deployment scripts from bootstrap/latest.
+          $started = $false
+          for ($attempt = 1; $attempt -le 6; $attempt++) {
+            gcloud compute instances start $vmName --zone=$vmZone
+            if ($LASTEXITCODE -eq 0) {
+              $started = $true
+              break
+            }
+            Write-Warning "VM start attempt $attempt failed; retrying in 30 seconds."
+            Start-Sleep -Seconds 30
+          }
+          if (!$started) {
+            throw "Failed to start PR environment VM $vmName in $vmZone after retries."
+          }
+
           # The GCP firewall rule is pre-created by an operator and targets this tag:
           #   pr-test-acme-http -> allow tcp:80 from 0.0.0.0/0
           # The workflow only toggles the tag during the renewal window, avoiding
