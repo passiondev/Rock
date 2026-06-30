@@ -1221,6 +1221,8 @@ WHERE [PQ].[row_number] = 1
         /// </summary>
         private static void InitializeLava()
         {
+            LavaBlockBase.SetLoggerFactory( RockLogger.LoggerFactory );
+
             // Get the Lava Engine configuration settings.
             Type engineType = null;
 

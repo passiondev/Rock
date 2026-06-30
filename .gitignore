@@ -40,6 +40,7 @@ RockWeb/Scripts/Rock/UI/structuredcontenteditor/
 .vshistory/
 .localhistory/
 .vshistory/
+.omx/
 TestResults/
 
 Packages/*
@@ -52,3 +53,7 @@ node_modules
 /Installers/CheckScannerInstall/UpgradeLog.htm
 /Installers/CheckScannerInstall/UpgradeLog2.htm
 /Installers/CheckScannerInstall_2017/CheckScannerInstall
+
+# Python test cache
+__pycache__/
+*.py[cod]

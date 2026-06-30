@@ -1,0 +1,46 @@
+.registrationentry-payment .hosted-payment-control {
+  margin-bottom: 30px;
+}
+
+.gateway-type-selector {
+  border-radius: 99px;
+}
+
+@media (min-width: 500px) {
+  .registrationentry-payment .payment-method-options .payment-method-entry {
+    padding-left: 0px;
+  }
+}
+
+/* Gateway Payment Type Selector for Mobile */
+@media (max-width: 992px) {
+  .js-payment-googlepay svg {
+    width: 60px !important;
+  }
+  .gateway-type-selector a i {
+    margin-right: 0px !important;
+    font-size: 25px;
+  }
+  .gateway-type-selector {
+    flex-direction: column;
+    border-radius: 10px !important;
+  }
+  .gateway-type-selector a {
+    justify-content: start !important;
+    gap: 5px;
+  }
+
+  .gateway-type-selector .btn {
+    border-radius: 10px !important;
+  }
+  .js-payment-googlepay {
+    padding-left: 5px !important;
+  }
+  .js-payment-applepay i {
+    font-size: 20px !important;
+    margin-left: 5px;
+  }
+  .js-payment-applepay p {
+    margin-left: 10px !important;
+  }
+}

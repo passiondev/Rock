@@ -330,11 +330,11 @@ namespace Rock.Model
                                         var newPassword = string.Empty;
                                         var createLogin = sync.AddUserAccountsDuringSync;
 
-                                        // Only create a login if requested, no logins exist and we have enough information to generate a user name.
-                                        if ( createLogin && !person.Users.Any() && !string.IsNullOrWhiteSpace( person.NickName ) && !string.IsNullOrWhiteSpace( person.LastName ) )
+                                        // Only create a login if requested, no logins exist and the person has an email address.
+                                        if ( createLogin && !person.Users.Any() && !string.IsNullOrWhiteSpace( person.Email ) )
                                         {
                                             newPassword = System.Web.Security.Membership.GeneratePassword( 9, 1 );
-                                            var username = Rock.Security.Authentication.Database.GenerateUsername( person.NickName, person.LastName );
+                                            var username = person.Email;
 
                                             var login = UserLoginService.Create(
                                                 groupMemberContext,
@@ -404,5 +404,7 @@ namespace Rock.Model
 
             return result;
         }
+
+
     }
 }
