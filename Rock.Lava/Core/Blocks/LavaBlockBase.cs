@@ -19,6 +19,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Encodings.Web;
 
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
 namespace Rock.Lava
 {
     /// <summary>
@@ -26,7 +29,21 @@ namespace Rock.Lava
     /// </summary>
     public abstract class LavaBlockBase : ILavaBlock, ILiquidFrameworkElementRenderer
     {
+        private static ILoggerFactory _loggerFactory = NullLoggerFactory.Instance;
+
         private string _sourceElementName = null;
+        private ILogger _logger;
+
+        /// <summary>
+        /// Sets the logger factory used by Lava blocks.
+        /// </summary>
+        /// <param name="loggerFactory">The logger factory.</param>
+        public static void SetLoggerFactory( ILoggerFactory loggerFactory )
+        {
+            _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+        }
+
+        private ILogger Logger => _logger ?? ( _logger = _loggerFactory.CreateLogger( GetType().FullName ) );
 
         /// <summary>
         /// The name of the block as it appears in the source tag.
@@ -192,8 +209,9 @@ namespace Rock.Lava
                 throw liex;
             }
             catch ( Exception ex )
-            {                
-                // Throw a user-friendly error message that is suitable for rendering to output.
+            {
+                Logger.LogError( ex, "Lava block '{BlockName}' failed to render.", InternalElementName );
+
                 throw new Exception( $"(Block: {this.InternalElementName}) {ex.Message}", ex );
             }
             finally
