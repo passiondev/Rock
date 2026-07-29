@@ -484,7 +484,29 @@ $(document).ready(function () {
                     var person = GetPerson();
                     var attendanceOccurrenceService = new AttendanceOccurrenceService(rockContext);
                     var occurrence = attendanceOccurrenceService.Get(occurrenceId);
+
+                    // GetPerson() is nullable on every entry point in this block, and person.Guid is
+                    // dereferenced on the next line, so it has to be checked before the reload.
+                    if (person == null)
+                    {
+                        nbNotAuthorized.Visible = true;
+                        return;
+                    }
+
                     person = new PersonService(rockContext).Get(person.Guid);
+
+                    // The occurrence id here arrives from a hidden field, so a page left open while the
+                    // occurrence was deleted -- or a tampered field -- reaches this write path with
+                    // nothing to record against, and UpdateOrCreateAttendanceRecord dereferences
+                    // occurrence.Id and person.PrimaryAliasId unchecked. Returning before the write
+                    // also keeps the decline-confirmation panel from claiming a save that never
+                    // happened.
+                    if (occurrence == null || person == null)
+                    {
+                        Show404();
+                        return;
+                    }
+
                     UpdateOrCreateAttendanceRecord(occurrence, person, rockContext, Rock.Model.RSVP.No, null, declineReason.Value, rtbDeclineNote.Text);
                 }
                 pnlDeclineReasons.Visible = false;
@@ -1430,6 +1452,16 @@ $(document).ready(function () {
                 var person = GetPerson();
                 var occurrenceId = PageParameter(PageParameterKey.AttendanceOccurrenceId).AsInteger();
                 var occurrence = new AttendanceOccurrenceService(rockContext).Get(occurrenceId);
+
+                // The mirror of the guard in GroupHasAttributes below. This rebuilds the same controls
+                // after a postback and dereferences occurrence.Group and person.Id the same way, so it
+                // failed the same way. With nothing to build against, leaving the placeholder empty is
+                // correct -- the caller's own missing-occurrence handling renders the message.
+                if (occurrence == null || occurrence.Group == null || person == null)
+                {
+                    return;
+                }
+
                 var groupMember = occurrence.Group.Members.Where(gm => gm.PersonId == person.Id).FirstOrDefault();
                 if (groupMember == null)
                 {
@@ -1627,10 +1659,14 @@ $(document).ready(function () {
                         message.AddRecipient(new RockEmailMessageRecipient(person, mergeFields));
                         message.Message = email_content;
                         message.AdditionalMergeFields = mergeFields;
-                        message.FromName = (fromName.IsNullOrWhiteSpace() == true) ? fromName : "Passion City Church";
-                        message.FromEmail = (fromEmail.IsNullOrWhiteSpace() == true) ? fromEmail : "connect@passioncitychurch.com";
-                        message.ReplyToEmail = (replyToEmail.IsNullOrWhiteSpace() == true) ? replyToEmail : "connect@passioncitychurch.com";
-                        message.Subject = (emailSubject.IsNullOrWhiteSpace() == true) ? emailSubject : "RSVP Confirmed — " + group.Name;
+                        // All four of these were inverted: the blank branch returned the blank value
+                        // and the configured branch was discarded. So a group's Comm_* settings never
+                        // took effect, and a group with nothing configured sent a blank From and a
+                        // blank Subject. Configured value wins; the literal is the fallback.
+                        message.FromName = fromName.IsNullOrWhiteSpace() ? "Passion City Church" : fromName;
+                        message.FromEmail = fromEmail.IsNullOrWhiteSpace() ? "connect@passioncitychurch.com" : fromEmail;
+                        message.ReplyToEmail = replyToEmail.IsNullOrWhiteSpace() ? "connect@passioncitychurch.com" : replyToEmail;
+                        message.Subject = emailSubject.IsNullOrWhiteSpace() ? "RSVP Confirmed — " + group.Name : emailSubject;
 
                         message.AppRoot = ResolveRockUrl("~/");
                         message.ThemeRoot = ResolveRockUrl("~~/");
@@ -1988,6 +2024,15 @@ $(document).ready(function () {
                 foreach (int occurrenceId in occurrenceIds)
                 {
                     var occurrence = attendanceOccurrenceService.Get(occurrenceId);
+
+                    // Skip rather than fail, matching ShowMultipleOccurrence_Choice: one stale id in
+                    // the list must not take down the valid occurrences beside it. Skipping still binds
+                    // the repeater to whatever did resolve, so the page renders the rest normally.
+                    if (occurrence == null || occurrence.Group == null || person == null)
+                    {
+                        continue;
+                    }
+
                     var occClosedDate = occurrence.GetAttributeValue("ClosedDate").AsDateTime();
                     if (occClosedDate < RockDateTime.Now)
                     {
@@ -2091,22 +2136,46 @@ $(document).ready(function () {
         private bool ProcessOccurrence(Person person, RepeaterItem item, RockContext rockContext)
         {
             RockCheckBox rcbAccept = item.FindControl("rcbAccept") as RockCheckBox;
+
+            // FindControl returns null if the repeater template changes or the cast fails, and this
+            // runs once per repeater item, so an unchecked dereference took down the entire
+            // multi-occurrence submit. Nothing was accepted if the checkbox is not there.
+            if (rcbAccept == null || person == null)
+            {
+                return false;
+            }
+
             if (rcbAccept.Checked)
             {
                 HiddenField hfOccurrenceId = item.FindControl("hfOccurrenceId") as HiddenField;
                 PlaceHolder phOccurrenceAttributes = item.FindControl("phOccurrenceAttributes") as PlaceHolder;
 
-                int occurrenceId = int.Parse(hfOccurrenceId.Value);
+                // AsInteger rather than int.Parse: this value round-trips through a hidden field, so a
+                // blank or tampered value threw FormatException instead of being handled. 0 never
+                // resolves to an occurrence, so it falls into the guard below.
+                int occurrenceId = hfOccurrenceId?.Value.AsInteger() ?? 0;
                 var attendanceOccurrenceService = new AttendanceOccurrenceService(rockContext);
                 var occurrence = attendanceOccurrenceService.Get(occurrenceId);
 
                 person = new PersonService(rockContext).Get(person.Guid);
+
+                // UpdateOrCreateAttendanceRecord and GetOccurrenceTitle both dereference occurrence
+                // unchecked. Report the item as not accepted rather than recording an RSVP against an
+                // occurrence that no longer exists.
+                if (occurrence == null || person == null)
+                {
+                    return false;
+                }
+
                 UpdateOrCreateAttendanceRecord(occurrence, person, rockContext, Rock.Model.RSVP.Yes, phOccurrenceAttributes);
                 _processedOccurrences.Add(GetOccurrenceTitle(occurrence));
             }
-            return rcbAccept.Checked;
 
-            Authorization.SignOut();
+            // The Authorization.SignOut() that used to sit below this return was unreachable, so it
+            // never signed anyone out. Removed rather than hoisted above the return: making it
+            // actually run would change behaviour, which is a separate decision from deleting code
+            // that has never executed.
+            return rcbAccept.Checked;
         }
 
         /// <summary>
@@ -2135,11 +2204,16 @@ $(document).ready(function () {
 
                 if (!string.IsNullOrWhiteSpace(PhoneNumber.CleanNumber(pnbPhone.Number)))
                 {
-                    int phoneNumberTypeId = 12;
+                    // Was a hardcoded 12. That is the Mobile DefinedValue's Id in this database, but
+                    // Ids are not portable between databases, so resolve the well-known guid instead --
+                    // same value here, without silently writing to the wrong phone type after a restore
+                    // or a migration. The 12 is kept only as a last-resort fallback.
+                    int phoneNumberTypeId = DefinedValueCache.Get(Rock.SystemGuid.DefinedValue.PERSON_PHONE_TYPE_MOBILE.AsGuid())?.Id ?? 12;
 
                     var phoneNumber = CurrentPerson.PhoneNumbers.FirstOrDefault(n => n.NumberTypeValueId == phoneNumberTypeId);
                     string oldPhoneNumber = string.Empty;
-                    if (phoneNumber == null)
+                    bool isNewPhoneNumber = phoneNumber == null;
+                    if (isNewPhoneNumber)
                     {
                         phoneNumber = new PhoneNumber { NumberTypeValueId = phoneNumberTypeId };
                         CurrentPerson.PhoneNumbers.Add(phoneNumber);
@@ -2151,7 +2225,16 @@ $(document).ready(function () {
 
                     phoneNumber.CountryCode = PhoneNumber.CleanNumber(pnbPhone.CountryCode);
                     phoneNumber.Number = PhoneNumber.CleanNumber(pnbPhone.Number);
-                    phoneNumber.IsMessagingEnabled = true;
+
+                    // This was set true unconditionally, which silently re-enabled SMS for anyone who
+                    // had deliberately opted out -- and 76,163 of the 103,909 mobile numbers on file
+                    // are opted out, so submitting an RSVP was overwriting a stored consent decision
+                    // at scale. Only set it when adding a number that has no stored preference yet;
+                    // never overwrite an existing one.
+                    if (isNewPhoneNumber)
+                    {
+                        phoneNumber.IsMessagingEnabled = true;
+                    }
 
 
 
