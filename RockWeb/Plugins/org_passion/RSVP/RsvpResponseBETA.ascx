@@ -84,7 +84,13 @@
                         </div>
                     </div>
                     <div class="row">
-                            <asp:PlaceHolder ID="divGuestCount" runat="server" Visible="false" >
+                        <div class="col-sm-12">
+                            <Rock:DefinedValuesPicker ID="dvpDietaryRestrictions" Label="Dietary Restrictions" Required="false" runat="server" DefinedTypeId="346" OnSelectedIndexChanged="SelectedIndexChanged" CausesValidation="false" AutoPostBack="true"/>
+                        </div>
+                        <div class="col-sm-12">
+                            <Rock:RockTextBox ID="rtbDietaryOther" runat="server" Label="Other" Required="true" Visible="false"/>
+                        </div>
+                        <asp:PlaceHolder ID="divGuestCount" runat="server" Visible="false" >
                                     <h5 class="text-center mx-3">This Event Allows for Additional Guests, please include the number of guests you will be bringing (not including yourself) </h5>
                                 <div class="col-xs-12 col-sm-8 col-md-6">
                                     <Rock:NumberBox ID="rnbGuestCount" runat="server" Required="false" Label="Additional Guests <a class='help' href='#' tabindex='-1' data-toggle='tooltip' data-placement='auto' data-container='body' data-html='true' title='' data-original-title='Only include the number of guests coming, not including yourself'><i class='fa fa-info-circle'></i></a>"/>
