@@ -120,7 +120,6 @@ namespace RockWeb.Blocks.RSVP
 
     public partial class RSVPResponse : RockBlock
     {
-        public string DietaryRestrictions { get; set; }
         private static class AttributeKey
         {
             public const string DisplayFormWhenSignedIn = "DisplayFormWhenSignedIn";
@@ -207,6 +206,8 @@ $(document).ready(function () {
 
 ";
             ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "DefinedValueChecklistScript", script, true);
+
+            RegisterDietaryOtherRevealScript();
 
             lbAccept_Multiple.Text = GetAttributeValue(AttributeKey.AcceptButtonLabel);
             lbAccept_Single.Text = GetAttributeValue(AttributeKey.AcceptButtonLabel);
@@ -383,6 +384,17 @@ $(document).ready(function () {
                 }
             }
 
+            // Dietary Restrictions (PTP-18203): the free-text is required once "Other" is selected, and
+            // this is the only place that is enforced. rtbDietaryOther is deliberately not declared
+            // Required -- see the note in the .ascx -- so this check replaces the validator entirely.
+            // Same pattern as the birth date and address checks above.
+            if (pnlDietary.Visible && IsDietaryOtherSelected() && string.IsNullOrWhiteSpace(rtbDietaryOther.Text))
+            {
+                valGuests.Text = "Please specify your other dietary restriction.";
+                valGuests.Visible = true;
+                return;
+            }
+
             ShowSingleOccurrence_Accept(attendanceOccurrenceId.Value, person);
             ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
         }
@@ -495,6 +507,17 @@ $(document).ready(function () {
             {
                 var occurrence = new AttendanceOccurrenceService(rockContext).Get(occurrenceId);
                 person = new PersonService(rockContext).Get(person.Guid);
+
+                // UpdateOrCreateAttendanceRecord dereferences occurrence.Id and person.PrimaryAliasId
+                // without checking either, so a stale Accept link from an old email threw here --
+                // before ShowSingleOccurrence_Accept, which runs next, could render its "could not be
+                // found" panel. There is nothing to record against an occurrence that no longer
+                // exists, so returning is the entire fix.
+                if (occurrence == null || person == null)
+                {
+                    return;
+                }
+
                 UpdateOrCreateAttendanceRecord(occurrence, person, rockContext, Rock.Model.RSVP.Yes);
             }
         }
@@ -901,31 +924,211 @@ $(document).ready(function () {
             }
         }
 
+        #region Dietary Restrictions (PTP-18203)
+
         /// <summary>
-        /// Displays the "Other" field for Dietary Restrictions when the Other check box is selected
+        /// The "Other" option within the Dietary Restrictions DefinedType (346).
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        protected void SelectedIndexChanged(object sender, EventArgs e)
+        private const string DietaryOtherValueGuid = "246898C7-9502-4845-81C1-055AD223BB5C";
+
+        /// <summary>
+        /// Group attribute that opts an event into the Dietary Restrictions fields. This is a Boolean on
+        /// the "Events" group type, so an administrator controls it per event from the group itself.
+        /// The original implementation also required the event to be parented to group 1192535 -- the
+        /// group literally named "_testing" -- which the PTP-18203 ticket does not ask for. That check
+        /// was removed: it made ticking this box on any real event a silent no-op, with nothing in the
+        /// UI to explain why the fields never appeared.
+        /// </summary>
+        private const string DietaryEnabledAttributeKey = "Info_DietaryRestrictions";
+
+        /// <summary>
+        /// Person attribute keys for Dietary Restrictions. These are Person attributes, NOT GroupMember.
+        /// "DietaryRestrictions" is a multi-select Defined Value on DefinedType 346 and stores
+        /// comma-delimited DefinedValue GUIDs. "OtherDietaryRestriction" is its free-text companion.
+        /// The plural/singular mismatch is how the two already exist in the database. SetAttributeValue
+        /// does nothing at all when a key does not match an attribute, so these must stay exact.
+        /// </summary>
+        private const string DietaryRestrictionsAttributeKey = "DietaryRestrictions";
+
+        private const string DietaryOtherAttributeKey = "OtherDietaryRestriction";
+
+        /// <summary>
+        /// Registers the script that reveals the Dietary Restrictions "Other" text box when the
+        /// "Other" option is checked.
+        /// This replaces an AutoPostBack round trip: AutoPostBack on the DefinedValuesPicker tripped
+        /// ASP.NET event validation and returned a 500 on every checkbox click (PTP-18203).
+        /// </summary>
+        private void RegisterDietaryOtherRevealScript()
         {
-            var otherGuid = new Guid("246898C7-9502-4845-81C1-055AD223BB5C");
-            var otherDefinedValue = DefinedValueCache.Get(otherGuid);
+            // ASP.NET CheckBoxList does not render an item's value onto the input element, so the
+            // "Other" checkbox has to be matched on its label text instead.
+            var otherDefinedValue = GetDietaryOtherDefinedValue();
+            var otherLabel = otherDefinedValue != null ? otherDefinedValue.Value : "Other";
 
-            if (otherDefinedValue != null && dvpDietaryRestrictions != null)
-            {
-                // DefinedValuesPicker handles postbacks beautifully and retains its values
-                rtbDietaryOther.Visible = dvpDietaryRestrictions.SelectedValues.Contains(otherDefinedValue.Id.ToString());
-            }
-            else
-            {
-                rtbDietaryOther.Visible = false;
-            }
+            var script = @"
+(function () {
+    'use strict';
 
-            if (rtbDietaryOther != null)
-            {
-                rtbDietaryOther.Required = rtbDietaryOther.Visible;
-            }
+    var otherLabel = '" + otherLabel.Replace("\\", "\\\\").Replace("'", "\\'") + @"';
+
+    function isOtherChecked() {
+        var found = false;
+        $('.js-dietary-picker input[type=checkbox]:checked').each(function () {
+            if ($.trim($('label[for=""' + this.id + '""]').text()) === otherLabel) { found = true; }
+        });
+        return found;
+    }
+
+    // No validator toggling here on purpose. rtbDietaryOther is not declared Required, because
+    // RockControlHelper re-forces RequiredFieldValidator.Enabled = true at render whenever Required
+    // is set, which would undo a client-side ValidatorEnable(false). The requirement is enforced
+    // server-side in lbAccept_Single_Click instead.
+    function sync(animate) {
+        var $other = $('.js-dietary-other');
+        if (!$other.length) { return; }
+
+        var show = isOtherChecked();
+        if (show) {
+            if (animate) { $other.slideDown(150); } else { $other.show(); }
+        } else {
+            if (animate) { $other.slideUp(150); } else { $other.hide(); }
+            $other.find('input[type=text]').val('');
         }
+    }
+
+    // Delegated from document so the handler survives the UpdatePanel replacing the DOM.
+    // off() runs first because RegisterStartupScript re-emits this on every async postback.
+    $(document).off('change.rsvpDietary').on('change.rsvpDietary', '.js-dietary-picker input[type=checkbox]', function () {
+        sync(true);
+    });
+
+    $(function () { sync(false); });
+
+    if (typeof Sys !== 'undefined' && Sys.WebForms && Sys.WebForms.PageRequestManager && !window.rsvpDietaryHooked) {
+        window.rsvpDietaryHooked = true;
+        Sys.WebForms.PageRequestManager.getInstance().add_endRequest(function () { sync(false); });
+    }
+})();
+";
+            ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "DietaryOtherRevealScript", script, true);
+        }
+
+        /// <summary>
+        /// Gets the "Other" Dietary Restrictions DefinedValue, or null when it cannot be found.
+        /// </summary>
+        private DefinedValueCache GetDietaryOtherDefinedValue()
+        {
+            return DefinedValueCache.Get(DietaryOtherValueGuid.AsGuid());
+        }
+
+        /// <summary>
+        /// Determines whether the "Other" dietary option is currently selected in the picker.
+        /// </summary>
+        private bool IsDietaryOtherSelected()
+        {
+            var otherDefinedValue = GetDietaryOtherDefinedValue();
+
+            return otherDefinedValue != null
+                && dvpDietaryRestrictions.SelectedValues.Contains(otherDefinedValue.Id.ToString());
+        }
+
+        /// <summary>
+        /// Determines whether the Dietary Restrictions fields apply to the given group.
+        /// </summary>
+        private bool IsDietaryEnabled(Group group)
+        {
+            if (group == null)
+            {
+                return false;
+            }
+
+            if (group.Attributes == null)
+            {
+                group.LoadAttributes();
+            }
+
+            return group.GetAttributeValue(DietaryEnabledAttributeKey).AsBoolean();
+        }
+
+        /// <summary>
+        /// Shows or hides the Dietary Restrictions fields, and loads the person's saved values.
+        /// </summary>
+        private void ConfigureDietaryRestrictions(Group group, Person person)
+        {
+            pnlDietary.Visible = IsDietaryEnabled(group);
+
+            if (!pnlDietary.Visible || person == null)
+            {
+                return;
+            }
+
+            person.LoadAttributes();
+
+            var savedIds = person.GetAttributeValue(DietaryRestrictionsAttributeKey)
+                .SplitDelimitedValues()
+                .Select(guid => DefinedValueCache.Get(guid.AsGuid()))
+                .Where(definedValue => definedValue != null)
+                .Select(definedValue => definedValue.Id)
+                .ToList();
+
+            var savedOtherText = person.GetAttributeValue(DietaryOtherAttributeKey);
+            var otherDefinedValue = GetDietaryOtherDefinedValue();
+
+            // Some existing records carry "Other" text without the "Other" option selected. Left as
+            // stored, the picker renders "Other" unchecked, the reveal script clears the hidden box on
+            // load, and SaveDietaryRestrictions then writes string.Empty -- silently destroying text
+            // the person was never shown. Selecting "Other" makes the loaded state self-consistent, so
+            // the text is visible and only ever cleared deliberately.
+            if (savedOtherText.IsNotNullOrWhiteSpace()
+                && otherDefinedValue != null
+                && !savedIds.Contains(otherDefinedValue.Id))
+            {
+                savedIds.Add(otherDefinedValue.Id);
+            }
+
+            if (savedIds.Any())
+            {
+                dvpDietaryRestrictions.SelectedDefinedValuesId = savedIds.ToArray();
+            }
+
+            rtbDietaryOther.Text = savedOtherText;
+        }
+
+        /// <summary>
+        /// Saves the Dietary Restrictions selections onto the person.
+        /// </summary>
+        private void SaveDietaryRestrictions(Person person)
+        {
+            if (!pnlDietary.Visible || person == null)
+            {
+                return;
+            }
+
+            var selectedGuids = dvpDietaryRestrictions.SelectedDefinedValuesId
+                .Select(id => DefinedValueCache.Get(id))
+                .Where(definedValue => definedValue != null)
+                .Select(definedValue => definedValue.Guid.ToString())
+                .ToList();
+
+            // LoadAttributes is required because SetAttributeValue silently does nothing when the
+            // attributes have not been loaded. SaveAttributeValues is required because
+            // RockContext.SaveChanges does not persist attribute values.
+            person.LoadAttributes();
+
+            // A stored Guid that no longer resolves to a DefinedValue cannot be rendered as a
+            // checkbox, so it never posts back and would be dropped here. Carry those through
+            // untouched rather than deleting data this block is simply unable to display.
+            var unresolvedGuids = person.GetAttributeValue(DietaryRestrictionsAttributeKey)
+                .SplitDelimitedValues()
+                .Where(guid => guid.IsNotNullOrWhiteSpace() && DefinedValueCache.Get(guid.AsGuid()) == null)
+                .ToList();
+
+            person.SetAttributeValue(DietaryRestrictionsAttributeKey, string.Join(",", selectedGuids.Union(unresolvedGuids)));
+            person.SetAttributeValue(DietaryOtherAttributeKey, IsDietaryOtherSelected() ? rtbDietaryOther.Text : string.Empty);
+            person.SaveAttributeValues();
+        }
+
+        #endregion
 
         /// <summary>
         /// Calculates the display title for an <see cref="AttendanceOccurrence"/>.
@@ -980,6 +1183,18 @@ $(document).ready(function () {
             {
                 var attendanceOccurrenceService = new AttendanceOccurrenceService(rockContext);
                 var occurrence = attendanceOccurrenceService.Get(occurrenceId);
+
+                // A link to an occurrence that no longer exists -- a stale invitation email being
+                // the common case -- arrives here with nothing to look up, and dereferencing it
+                // threw a NullReferenceException that took down the whole page instead of letting
+                // the block explain itself. ShowSingleOccurrence_Accept already handles this with
+                // Show404, which shows the "could not be found" panel; match it.
+                if (occurrence == null || occurrence.Group == null)
+                {
+                    Show404();
+                    return;
+                }
+
                 var group = occurrence.Group;
                 group.LoadAttributes();
                 var groupMember = occurrence.Group.Members.Where(gm => gm.PersonId == person.Id).FirstOrDefault();
@@ -1070,7 +1285,6 @@ $(document).ready(function () {
                 var gndcheck = group.GetAttributeValue("Info_Gender").AsBoolean();
                 var mscheck = group.GetAttributeValue("Info_MaritalStatus").AsBoolean();
                 var bdcheck = group.GetAttributeValue("Info_BirthDate").AsBoolean();
-                var drcheck = group.GetAttributeValue("Info_DietaryRestrictions").AsBoolean();
 
 
                 ConfigurePhoneField(pncheck, person);
@@ -1200,13 +1414,10 @@ $(document).ready(function () {
                     divGuestCount.Visible = true;
                 }
 
-                dvpDietaryRestrictions.Visible = false;
-                rtbDietaryOther.Visible = false;
-                if (group.ParentGroupId == 1192535 && drcheck)
-                {
-                    dvpDietaryRestrictions.Visible = true;
-                    
-                }
+                // Dietary Restrictions (PTP-18203). pnlDietary wraps both the picker and the "Other"
+                // box so a single flag gates the pair. The "Other" box stays visible server-side and
+                // is hidden by its wrapper div, so script can reveal it without a postback.
+                ConfigureDietaryRestrictions(group, person);
             }
         }
         /// <summary>
@@ -1246,6 +1457,16 @@ $(document).ready(function () {
                 var person = GetPerson();
                 var occurrenceId = PageParameter(PageParameterKey.AttendanceOccurrenceId).AsInteger();
                 var occurrence = new AttendanceOccurrenceService(rockContext).Get(occurrenceId);
+
+                // This runs before anything else on the Accept path, so an unguarded dereference here
+                // crashed the page first and made every downstream guard unreachable. With no group
+                // there are no public group-member attributes to collect, so false is the honest
+                // answer and it lets the caller fall through to the "could not be found" panel.
+                if (occurrence == null || occurrence.Group == null || person == null)
+                {
+                    return false;
+                }
+
                 var groupMember = occurrence.Group.Members.Where(gm => gm.PersonId == person.Id).FirstOrDefault();
                 if (groupMember == null)
                 {
@@ -1561,6 +1782,11 @@ $(document).ready(function () {
                 groupMember.SaveAttributeValues();
             }
 
+            // Dietary Restrictions (PTP-18203) are stored on the Person, so they are saved here rather
+            // than inside UpdatePersonRecord. That method only runs when there is no
+            // PersonActionIdentifier, which means it never runs for the RSVP links sent out by email.
+            SaveDietaryRestrictions(person);
+
             if (!HasPersonActionIdentifier())
             {
                 UpdatePersonRecord(person);
@@ -1580,14 +1806,20 @@ $(document).ready(function () {
             {
                 var attendanceOccurrenceService = new AttendanceOccurrenceService(rockContext);
                 var occurrence = attendanceOccurrenceService.Get(occurrenceId);
-                var occClosedDate = occurrence.GetAttributeValue("ClosedDate").AsDateTime();
-                lHeading.Text = GetOccurrenceTitle(occurrence);
+
+                // This null check used to sit *below* the two lines that follow it, where it could
+                // never run: GetAttributeValue and GetOccurrenceTitle both dereference occurrence
+                // and threw first. Checking before the first dereference is what makes the Show404
+                // the original author clearly intended actually reachable.
                 if (occurrence == null)
                 {
                     Show404();
                     return;
                 }
-                else if (occClosedDate < RockDateTime.Now)
+
+                var occClosedDate = occurrence.GetAttributeValue("ClosedDate").AsDateTime();
+                lHeading.Text = GetOccurrenceTitle(occurrence);
+                if (occClosedDate < RockDateTime.Now)
                 {
                     // This event has expired.
                     Show404(true, GetOccurrenceTitle(occurrence));
@@ -1683,6 +1915,15 @@ $(document).ready(function () {
                 foreach (int occurrenceId in occurrenceIds)
                 {
                     var occurrence = attendanceOccurrenceService.Get(occurrenceId);
+
+                    // One stale id must not take down the occurrences alongside it. The loop
+                    // already separates "skip this one" from "nothing here is valid", so if every
+                    // id is unresolvable hasValidOccurrences stays false and the Show404 below fires.
+                    if (occurrence == null || occurrence.Group == null)
+                    {
+                        continue;
+                    }
+
                     var group = occurrence.Group;
                     var activeMembers = group.ActiveMembers().Count();
                     var acceptedRSVPs = occurrence.Attendees.Where(a => a.RSVP == Rock.Model.RSVP.Yes).Count();
@@ -1984,19 +2225,6 @@ $(document).ready(function () {
                     }
                 }
 
-                // Saving Gender
-                if (dvpDietaryRestrictions.SelectedValues.Count() > 0)
-                {
-                    var otherGuid = new Guid("246898C7-9502-4845-81C1-055AD223BB5C");
-                    var otherDefinedValue = DefinedValueCache.Get(otherGuid);
-                    CurrentPerson.SetAttributeValue("DietaryRestriction", dvpDietaryRestrictions.SelectedValues.ToString());
-
-                    if (dvpDietaryRestrictions.SelectedValues.Contains(otherDefinedValue.Id.ToString()))
-                    {
-                        CurrentPerson.SetAttributeValue("OtherDietaryRestriction", rtbDietaryOther.Text);
-                    }
-
-                }
                 rockContext.SaveChanges();
             }
         }
@@ -2042,6 +2270,18 @@ $(document).ready(function () {
             {
                 var attendanceOccurrenceService = new AttendanceOccurrenceService(rockContext);
                 var occurrence = attendanceOccurrenceService.Get(occurrenceId);
+
+                // A bare "/RSVP" visit, an empty AttendanceOccurrenceId, or a stale link from an old
+                // email all arrive here with nothing to look up, and dereferencing the missing
+                // occurrence threw a NullReferenceException out of OnInit -- which took down the whole
+                // page instead of letting the block render its own "could not be found" notification.
+                // This method only reads group attributes to style the Accept/Decline buttons, so when
+                // there is no occurrence the correct behaviour is to leave those defaults alone.
+                if (occurrence == null || occurrence.Group == null)
+                {
+                    return;
+                }
+
                 var group = occurrence.Group;
                 group.LoadAttributes();
 

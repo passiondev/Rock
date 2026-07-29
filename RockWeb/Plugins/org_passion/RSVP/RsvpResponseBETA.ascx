@@ -84,12 +84,30 @@
                         </div>
                     </div>
                     <div class="row">
-                        <div class="col-sm-12">
-                            <Rock:DefinedValuesPicker ID="dvpDietaryRestrictions" Label="Dietary Restrictions" Required="false" runat="server" DefinedTypeId="346" OnSelectedIndexChanged="SelectedIndexChanged" CausesValidation="false" AutoPostBack="true"/>
-                        </div>
-                        <div class="col-sm-12">
-                            <Rock:RockTextBox ID="rtbDietaryOther" runat="server" Label="Other" Required="true" Visible="false"/>
-                        </div>
+                        <%-- PTP-18203: AutoPostBack on this picker tripped ASP.NET event validation, so every
+                             checkbox click returned a 500. The "Other" box is revealed client-side now, so the
+                             picker needs no postback and no OnSelectedIndexChanged handler.
+                             rtbDietaryOther must NOT use Visible="false" -- a server-side hidden control renders
+                             nothing at all, so script would have nothing to reveal. The wrapper div is hidden
+                             instead, which keeps the input in the DOM and its value in ViewState.
+                             pnlDietary is a PlaceHolder rather than a Panel so it emits no markup of its own and
+                             does not break the Bootstrap "row > col-sm-12" structure. --%>
+                        <asp:PlaceHolder ID="pnlDietary" runat="server" Visible="false">
+                            <div class="col-sm-12 js-dietary-picker">
+                                <Rock:DefinedValuesPicker ID="dvpDietaryRestrictions" runat="server" Label="Dietary Restrictions" Required="false" DefinedTypeId="346" />
+                            </div>
+                            <div class="col-sm-12 js-dietary-other" style="display: none;">
+                                <%-- Required is deliberately NOT set here. RockControlHelper re-forces
+                                     RequiredFieldValidator.Enabled = true at render whenever Required is set
+                                     (RockControlHelper.cs:191), which undoes any client-side ValidatorEnable(false).
+                                     Because lbAccept_Single_Click never checks Page.IsValid, a hidden-but-required
+                                     box let the RSVP save anyway while still rendering "Other is required." in the
+                                     validation summary -- an error for a field the user could not even see.
+                                     The requirement is enforced server-side in lbAccept_Single_Click instead, which
+                                     is how this block already validates the birth date and address fields. --%>
+                                <Rock:RockTextBox ID="rtbDietaryOther" runat="server" Label="Other" />
+                            </div>
+                        </asp:PlaceHolder>
                         <asp:PlaceHolder ID="divGuestCount" runat="server" Visible="false" >
                                     <h5 class="text-center mx-3">This Event Allows for Additional Guests, please include the number of guests you will be bringing (not including yourself) </h5>
                                 <div class="col-xs-12 col-sm-8 col-md-6">
