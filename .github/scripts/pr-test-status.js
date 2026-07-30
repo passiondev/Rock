@@ -1,0 +1,111 @@
+const STICKY_MARKER = '<!-- rock-test-environment-status -->';
+
+const STATE_LABELS = [
+  'rock-test:queued',
+  'rock-test:building',
+  'rock-test:deploying',
+  'rock-test:deployed',
+  'rock-test:failed',
+  'rock-test:stopped'
+];
+
+const STATUS_TO_LABEL = {
+  queued: 'rock-test:queued',
+  building: 'rock-test:building',
+  deploying: 'rock-test:deploying',
+  deployed: 'rock-test:deployed',
+  failed: 'rock-test:failed',
+  stopped: 'rock-test:stopped',
+  destroyed: null
+};
+
+async function reconcilePrTestLabels({ github, owner, repo, issue_number, status }) {
+  for (const label of STATE_LABELS) {
+    try {
+      await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label });
+    } catch (error) {
+      if (error.status !== 404) {
+        throw error;
+      }
+    }
+  }
+
+  const nextLabel = STATUS_TO_LABEL[status];
+  if (nextLabel) {
+    await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [nextLabel] });
+  }
+}
+
+function renderPrTestStatusComment({ status, hostName, sha, artifactGcsPath, logsUrl, updatedAt }) {
+  const url = hostName ? `https://${hostName}` : '_Not available_';
+  const deployedSha = sha ? `\`${sha}\`` : '_Not available_';
+  const artifact = artifactGcsPath ? `\`${artifactGcsPath}\`` : '_Not available_';
+  const logs = logsUrl ? `[GitHub Actions run](${logsUrl})` : '_Not available_';
+
+  return `${STICKY_MARKER}
+## PR Test Environment
+
+| Field | Value |
+| --- | --- |
+| Status | **${status}** |
+| URL | ${url} |
+| Deployed SHA | ${deployedSha} |
+| Artifact | ${artifact} |
+| Last updated | ${updatedAt} |
+| Logs | ${logs} |
+
+### Commands
+
+Apply one of these labels to manage the environment:
+
+- \`rock-test:start\` — build and deploy the latest PR head.
+- \`rock-test:stop\` — stop the IIS site/app pool but keep files and state.
+- \`rock-test:destroy\` — remove IIS resources, files, and PR environment state.
+- \`rock-test:auto\` — opt into redeploying automatically on PR pushes.
+
+### Access and data notes
+
+VPN/office network access is required. This environment uses a shared sanitized sandbox database and shared sandbox file storage; it isolates code/runtime, not data.
+`;
+}
+
+async function findStickyComment({ github, owner, repo, issue_number }) {
+  const comments = await github.paginate(github.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number,
+    per_page: 100
+  });
+
+  return comments.find(comment => comment.body && comment.body.includes(STICKY_MARKER));
+}
+
+async function updateStickyComment({ github, owner, repo, issue_number, body }) {
+  const existing = await findStickyComment({ github, owner, repo, issue_number });
+  if (existing) {
+    await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+  } else {
+    await github.rest.issues.createComment({ owner, repo, issue_number, body });
+  }
+}
+
+async function updatePrTestStatus({ github, context, owner, repo, prNumber, status, hostName, sha, artifactGcsPath, logsUrl }) {
+  const issue_number = Number(prNumber);
+  const updatedAt = new Date().toISOString();
+
+  await reconcilePrTestLabels({ github, owner, repo, issue_number, status });
+  await updateStickyComment({
+    github,
+    owner,
+    repo,
+    issue_number,
+    body: renderPrTestStatusComment({ status, hostName, sha, artifactGcsPath, logsUrl, updatedAt })
+  });
+}
+
+module.exports = {
+  STICKY_MARKER,
+  reconcilePrTestLabels,
+  renderPrTestStatusComment,
+  updatePrTestStatus
+};
