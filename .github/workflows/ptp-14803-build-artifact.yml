@@ -1,0 +1,223 @@
+name: PTP-14803 Build Artifact (build only)
+
+# Build-only. Produces the four files we hand-deploy for PTP-14803 / PTP-14804
+# and nothing else.
+#
+# Deliberately does NOT authenticate to Google Cloud, write to any GCS bucket,
+# touch any VM, or reference any database secret. pr-test-deploy.yml does all of
+# those and is the wrong vehicle here: PR_TEST_GCS_BUCKET resolves to the
+# production file-storage bucket, and its sandbox connection string is built
+# from the same DB_NAME/DB_USER/DB_PASSWORD secrets the production deploy uses,
+# so a PR environment would boot Rock 18.4.1 and run EF migrations against that
+# catalog. This workflow requests `contents: read` and consumes no secrets, so
+# it cannot do any of that.
+#
+# Fails loudly on purpose. The upstream build steps use `continue-on-error` and
+# only warn when a Rock.* project fails, which yields a green run containing a
+# stale DLL. Every step here hard-exits, and the verify step asserts our changes
+# are actually present in the compiled output before anything is uploaded.
+
+"on":
+  push:
+    branches:
+      - deploy/ptp-14803-18.4.1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Rock.Blocks, Rock.ViewModels and the Obsidian bundles
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Git CRLF
+        run: git config --global core.autocrlf true
+
+      - name: Setup NuGet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Cache NuGet Packages
+        uses: actions/cache@v4
+        with:
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.sln', '**/packages.config') }}
+          path: ~/.nuget/packages
+          lookup-only: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Cache JavaScript Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            Rock.JavaScript.Obsidian/node_modules
+            Rock.JavaScript.Obsidian.Blocks/node_modules
+          key: js-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            js-${{ runner.os }}-
+
+      # The framework has to be built before the blocks. Its dist/ supplies the
+      # @Obsidian/* declarations that the blocks' build:types step resolves
+      # against; a stale or missing dist fails with hundreds of TS2307 errors,
+      # and because `npm run build` is `build:types && rollup`, the && short
+      # circuits and rollup silently never runs.
+      - name: Install Rock.JavaScript.Obsidian Dependencies
+        working-directory: Rock.JavaScript.Obsidian
+        run: npm ci
+
+      - name: Build Rock.JavaScript.Obsidian
+        working-directory: Rock.JavaScript.Obsidian
+        run: npm run build
+
+      # Not present in pr-test-artifact.yml, which is why that workflow can
+      # never produce formBuilderDetail.obs.js or entryForm.obs.js.
+      - name: Install Rock.JavaScript.Obsidian.Blocks Dependencies
+        working-directory: Rock.JavaScript.Obsidian.Blocks
+        run: npm ci
+
+      - name: Build Rock.JavaScript.Obsidian.Blocks
+        working-directory: Rock.JavaScript.Obsidian.Blocks
+        run: npm run build
+
+      - name: Move Plugins Folder
+        run: |
+          if (Test-Path RockWeb\Plugins) {
+            Move-Item RockWeb\Plugins C:\ -Force
+            Write-Output "Plugins moved"
+          }
+
+      - name: NuGet Restore
+        run: nuget restore -verbosity quiet -NonInteractive -Recursive Rock.sln
+
+      - name: Create Empty ConnectionStrings Config
+        run: New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
+
+      - name: Build Rock Projects (Dependency Order)
+        timeout-minutes: 60
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
+
+          $projects = @(
+            "DotLiquid\DotLiquid.csproj",
+            "Rock.Enums\Rock.Enums.csproj",
+            "Rock.Common\Rock.Common.csproj",
+            "Rock.Version\Rock.Version.csproj",
+            "Rock.ViewModels\Rock.ViewModels.csproj",
+            "Rock\Rock.csproj",
+            "Rock.Blocks\Rock.Blocks.csproj"
+          )
+
+          foreach ($project in $projects) {
+            Write-Host "::group::Building $project"
+            & $msbuild $project /p:Configuration=Release /verbosity:minimal /m:4
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($code -ne 0) {
+              Write-Host "::error::$project failed to build (exit $code)"
+              exit $code
+            }
+          }
+
+      # A green run with a stale DLL is the failure mode that matters most here,
+      # so assert the changes are in the compiled output rather than trusting
+      # the exit codes. Managed metadata user strings are UTF-16LE.
+      - name: Verify the changes are present in the build output
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = @()
+
+          $blocks = "Rock.Blocks\bin\Release\Rock.Blocks.dll"
+          $viewModels = "Rock.ViewModels\bin\Release\Rock.ViewModels.dll"
+          $formBuilderJs = "RockWeb\Obsidian\Blocks\WorkFlow\FormBuilder\formBuilderDetail.obs.js"
+          $entryFormJs = "RockWeb\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\entryForm.obs.js"
+
+          foreach ($f in @($blocks, $viewModels, $formBuilderJs, $entryFormJs)) {
+            if (!(Test-Path $f)) { $failed += "missing: $f" }
+          }
+          if ($failed.Count -gt 0) {
+            $failed | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+
+          foreach ($dll in @($blocks, $viewModels)) {
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $dll))
+            $text = [System.Text.Encoding]::Unicode.GetString($bytes)
+            if ($text -notmatch 'HeaderImage') {
+              $failed += "$dll does not contain 'HeaderImage' - stale or unpatched build"
+            }
+          }
+
+          if ((Get-Content $formBuilderJs -Raw) -notmatch 'headerImage') {
+            $failed += "formBuilderDetail.obs.js does not contain 'headerImage'"
+          }
+          if ((Get-Content $entryFormJs -Raw) -notmatch 'col-md-12') {
+            $failed += "entryForm.obs.js does not contain the PTP-14804 layout change"
+          }
+
+          if ($failed.Count -gt 0) {
+            $failed | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host "All four deploy files contain the expected changes."
+
+      - name: Stage deploy set and write manifest
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path out\bin -Force | Out-Null
+          New-Item -ItemType Directory -Path out\Obsidian\Blocks\WorkFlow\FormBuilder -Force | Out-Null
+          New-Item -ItemType Directory -Path out\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions -Force | Out-Null
+
+          Copy-Item Rock.Blocks\bin\Release\Rock.Blocks.dll out\bin\
+          Copy-Item Rock.ViewModels\bin\Release\Rock.ViewModels.dll out\bin\
+          Copy-Item RockWeb\Obsidian\Blocks\WorkFlow\FormBuilder\formBuilderDetail.obs.js `
+                    out\Obsidian\Blocks\WorkFlow\FormBuilder\
+          Copy-Item RockWeb\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\entryForm.obs.js `
+                    out\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\
+
+          # Hash and version every Rock assembly built, not just the two we ship,
+          # so drift against prod can be reasoned about without a second run.
+          $all = Get-ChildItem -Path . -Recurse -Filter "Rock*.dll" |
+                 Where-Object { $_.FullName -like "*\bin\Release\*" } |
+                 Group-Object Name | ForEach-Object { $_.Group[0] } | ForEach-Object {
+                   [pscustomobject]@{
+                     name = $_.Name
+                     fileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($_.FullName).FileVersion
+                     sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+                   }
+                 }
+
+          $deploySet = Get-ChildItem out -Recurse -File | ForEach-Object {
+            [pscustomobject]@{
+              path = $_.FullName.Substring((Resolve-Path out).Path.Length + 1)
+              bytes = $_.Length
+              sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            }
+          }
+
+          [ordered]@{
+            sha = "${{ github.sha }}"
+            ref = "${{ github.ref }}"
+            runId = "${{ github.run_id }}"
+            deploySet = $deploySet
+            allRockAssemblies = $all
+          } | ConvertTo-Json -Depth 6 | Out-File out\manifest.json -Encoding utf8
+
+          Get-Content out\manifest.json
+
+      - name: Upload deploy set
+        uses: actions/upload-artifact@v4
+        with:
+          name: ptp-14803-deploy-set-${{ github.run_id }}
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
