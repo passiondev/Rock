@@ -38,6 +38,38 @@ jobs:
       - name: Setup Git CRLF
         run: git config --global core.autocrlf true
 
+      # Runs before the ~15 minutes of npm and NuGet work so a toolchain problem
+      # surfaces in seconds rather than at the end.
+      #
+      # Locate MSBuild rather than hardcoding it. The literal path the other
+      # workflows use --
+      #   C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe
+      # -- was valid as recently as the 2026-05-06 build-develop run, which
+      # logged msbuild 17.14.40.60911 from exactly there. The runner image has
+      # moved to Visual Studio 18 since, so that path now fails with "is not
+      # recognized as ... an executable program". build-develop.yml and
+      # pr-test-artifact.yml still carry it behind continue-on-error, so today
+      # they would go green having compiled nothing.
+      - name: Locate MSBuild
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+
+          $msbuild = & $vswhere -latest -products * `
+                       -requires Microsoft.Component.MSBuild `
+                       -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+
+          if (-not $msbuild -or !(Test-Path $msbuild)) {
+            Write-Host "::error::Could not locate MSBuild.exe via vswhere"
+            & $vswhere -latest -products * -format value
+            exit 1
+          }
+
+          Write-Host "MSBuild: $msbuild"
+          & $msbuild -version
+          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Setup NuGet
         uses: actions/setup-dotnet@v4
         with:
@@ -101,33 +133,6 @@ jobs:
       - name: Create Empty ConnectionStrings Config
         run: New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
 
-      # Locate MSBuild rather than hardcoding it. The literal path the other
-      # workflows use --
-      #   C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe
-      # -- does not exist on the current runner image, so every msbuild call
-      # fails with "is not recognized as ... an executable program". Those
-      # workflows set continue-on-error and only warn per project, so they go
-      # green and package whatever DLLs happen to be lying around.
-      - name: Locate MSBuild
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (!(Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
-
-          $msbuild = & $vswhere -latest -products * `
-                       -requires Microsoft.Component.MSBuild `
-                       -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
-
-          if (-not $msbuild -or !(Test-Path $msbuild)) {
-            Write-Host "::error::Could not locate MSBuild.exe via vswhere"
-            & $vswhere -latest -products * -format value
-            exit 1
-          }
-
-          Write-Host "MSBuild: $msbuild"
-          & $msbuild -version
-          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Build Rock Projects (Dependency Order)
         timeout-minutes: 60
         run: |
@@ -155,39 +160,75 @@ jobs:
             }
           }
 
+      # Resolve rather than assume. These are SDK-style projects targeting
+      # net472, so the default output is bin\Release\net472\ -- but
+      # Directory.Build.targets also runs _CopyArtifactsToRockWebBin, which
+      # copies the output into RockWeb\bin. Prefer that copy, since it is the
+      # same location the files occupy on the server, and fall back to a search
+      # so a future layout change fails with a listing instead of a bare
+      # "missing".
+      - name: Resolve build outputs
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Resolve-Output {
+            param([string] $Name, [string] $Preferred, [string] $SearchRoot)
+
+            if (Test-Path $Preferred) { return (Resolve-Path $Preferred).Path }
+
+            Write-Host "::warning::$Preferred not found, searching $SearchRoot"
+            $hit = Get-ChildItem -Path $SearchRoot -Recurse -Filter $Name -ErrorAction SilentlyContinue |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+
+            Write-Host "::error::could not locate $Name under $SearchRoot"
+            Get-ChildItem -Path $SearchRoot -Recurse -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -in @('Release','net472') } |
+              ForEach-Object { Write-Host "  candidate dir: $($_.FullName)" }
+            exit 1
+          }
+
+          $paths = [ordered]@{
+            BLOCKS_DLL     = Resolve-Output 'Rock.Blocks.dll'     'RockWeb\bin\Rock.Blocks.dll'     'Rock.Blocks'
+            VIEWMODELS_DLL = Resolve-Output 'Rock.ViewModels.dll' 'RockWeb\bin\Rock.ViewModels.dll' 'Rock.ViewModels'
+            FORMBUILDER_JS = Resolve-Output 'formBuilderDetail.obs.js' 'RockWeb\Obsidian\Blocks\WorkFlow\FormBuilder\formBuilderDetail.obs.js' 'RockWeb\Obsidian'
+            ENTRYFORM_JS   = Resolve-Output 'entryForm.obs.js'         'RockWeb\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\entryForm.obs.js' 'RockWeb\Obsidian'
+          }
+
+          foreach ($k in $paths.Keys) {
+            Write-Host ("{0,-16} {1}" -f $k, $paths[$k])
+            "$k=$($paths[$k])" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
       # A green run with a stale DLL is the failure mode that matters most here,
       # so assert the changes are in the compiled output rather than trusting
-      # the exit codes. Managed metadata user strings are UTF-16LE.
+      # the exit codes.
+      #
+      # Note these checks are necessary but not sufficient for the assemblies:
+      # prod's UNPATCHED Rock.Blocks.dll already contains the literal
+      # "HeaderImage", and its UNPATCHED Rock.ViewModels.dll already contains
+      # HeaderImage/get_HeaderImage from an unrelated view model. The
+      # authoritative check reads .NET metadata (see scratchpad/verify-artifact.sh,
+      # which asserts Rock.Blocks has GetHeaderImageViewModel and that
+      # FormGeneralViewModel actually gained a HeaderImage property) and is run
+      # against the downloaded artifact before anything is deployed.
       - name: Verify the changes are present in the build output
         run: |
           $ErrorActionPreference = 'Stop'
           $failed = @()
 
-          $blocks = "Rock.Blocks\bin\Release\Rock.Blocks.dll"
-          $viewModels = "Rock.ViewModels\bin\Release\Rock.ViewModels.dll"
-          $formBuilderJs = "RockWeb\Obsidian\Blocks\WorkFlow\FormBuilder\formBuilderDetail.obs.js"
-          $entryFormJs = "RockWeb\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\entryForm.obs.js"
-
-          foreach ($f in @($blocks, $viewModels, $formBuilderJs, $entryFormJs)) {
-            if (!(Test-Path $f)) { $failed += "missing: $f" }
-          }
-          if ($failed.Count -gt 0) {
-            $failed | ForEach-Object { Write-Host "::error::$_" }
-            exit 1
-          }
-
-          foreach ($dll in @($blocks, $viewModels)) {
-            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $dll))
+          foreach ($dll in @($env:BLOCKS_DLL, $env:VIEWMODELS_DLL)) {
+            $bytes = [System.IO.File]::ReadAllBytes($dll)
             $text = [System.Text.Encoding]::Unicode.GetString($bytes)
             if ($text -notmatch 'HeaderImage') {
               $failed += "$dll does not contain 'HeaderImage' - stale or unpatched build"
             }
           }
 
-          if ((Get-Content $formBuilderJs -Raw) -notmatch 'headerImage') {
+          if ((Get-Content $env:FORMBUILDER_JS -Raw) -notmatch 'headerImage') {
             $failed += "formBuilderDetail.obs.js does not contain 'headerImage'"
           }
-          if ((Get-Content $entryFormJs -Raw) -notmatch 'col-md-12') {
+          if ((Get-Content $env:ENTRYFORM_JS -Raw) -notmatch 'col-md-12') {
             $failed += "entryForm.obs.js does not contain the PTP-14804 layout change"
           }
 
@@ -204,18 +245,15 @@ jobs:
           New-Item -ItemType Directory -Path out\Obsidian\Blocks\WorkFlow\FormBuilder -Force | Out-Null
           New-Item -ItemType Directory -Path out\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions -Force | Out-Null
 
-          Copy-Item Rock.Blocks\bin\Release\Rock.Blocks.dll out\bin\
-          Copy-Item Rock.ViewModels\bin\Release\Rock.ViewModels.dll out\bin\
-          Copy-Item RockWeb\Obsidian\Blocks\WorkFlow\FormBuilder\formBuilderDetail.obs.js `
-                    out\Obsidian\Blocks\WorkFlow\FormBuilder\
-          Copy-Item RockWeb\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\entryForm.obs.js `
-                    out\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\
+          Copy-Item $env:BLOCKS_DLL     out\bin\
+          Copy-Item $env:VIEWMODELS_DLL out\bin\
+          Copy-Item $env:FORMBUILDER_JS out\Obsidian\Blocks\WorkFlow\FormBuilder\
+          Copy-Item $env:ENTRYFORM_JS   out\Obsidian\Blocks\WorkFlow\WorkflowEntry\Actions\
 
           # Hash and version every Rock assembly built, not just the two we ship,
           # so drift against prod can be reasoned about without a second run.
-          $all = Get-ChildItem -Path . -Recurse -Filter "Rock*.dll" |
-                 Where-Object { $_.FullName -like "*\bin\Release\*" } |
-                 Group-Object Name | ForEach-Object { $_.Group[0] } | ForEach-Object {
+          $all = Get-ChildItem -Path RockWeb\bin -Filter "Rock*.dll" -ErrorAction SilentlyContinue |
+                 ForEach-Object {
                    [pscustomobject]@{
                      name = $_.Name
                      fileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($_.FullName).FileVersion
@@ -235,6 +273,7 @@ jobs:
             sha = "${{ github.sha }}"
             ref = "${{ github.ref }}"
             runId = "${{ github.run_id }}"
+            msbuild = "$env:MSBUILD_PATH"
             deploySet = $deploySet
             allRockAssemblies = $all
           } | ConvertTo-Json -Depth 6 | Out-File out\manifest.json -Encoding utf8
