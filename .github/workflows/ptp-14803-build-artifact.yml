@@ -101,11 +101,38 @@ jobs:
       - name: Create Empty ConnectionStrings Config
         run: New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
 
+      # Locate MSBuild rather than hardcoding it. The literal path the other
+      # workflows use --
+      #   C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe
+      # -- does not exist on the current runner image, so every msbuild call
+      # fails with "is not recognized as ... an executable program". Those
+      # workflows set continue-on-error and only warn per project, so they go
+      # green and package whatever DLLs happen to be lying around.
+      - name: Locate MSBuild
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+
+          $msbuild = & $vswhere -latest -products * `
+                       -requires Microsoft.Component.MSBuild `
+                       -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+
+          if (-not $msbuild -or !(Test-Path $msbuild)) {
+            Write-Host "::error::Could not locate MSBuild.exe via vswhere"
+            & $vswhere -latest -products * -format value
+            exit 1
+          }
+
+          Write-Host "MSBuild: $msbuild"
+          & $msbuild -version
+          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build Rock Projects (Dependency Order)
         timeout-minutes: 60
         run: |
           $ErrorActionPreference = 'Stop'
-          $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
+          $msbuild = $env:MSBUILD_PATH
 
           $projects = @(
             "DotLiquid\DotLiquid.csproj",
