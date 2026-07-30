@@ -1,0 +1,104 @@
+name: PR Test Environment Bootstrap Command Queue
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Install PR environment command queue on Windows VM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Ensure Cloud Storage bucket exists
+        shell: pwsh
+        run: |
+          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          gsutil ls gs://$bucketName *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gsutil mb -p ${{ secrets.GCP_PROJECT_ID }} gs://$bucketName
+          }
+
+      - name: Upload deployment scripts to bootstrap location
+        shell: pwsh
+        run: |
+          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 gs://$bucketName/pr-environments/bootstrap/latest/
+
+      - name: Install command queue scheduled task through VM startup script
+        shell: pwsh
+        run: |
+          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          $vmName = "${{ secrets.GCP_VM_NAME }}"
+          $vmZone = "${{ secrets.GCP_ZONE }}"
+
+          $vmByIp = gcloud compute instances list --filter="networkInterfaces.accessConfigs.natIP=${{ secrets.GCP_VM_EXTERNAL_IP }}" --format="csv[no-heading](name,zone)" | Select-Object -First 1
+          if (![string]::IsNullOrWhiteSpace($vmByIp)) {
+            $parts = $vmByIp.Split(',')
+            $vmName = $parts[0]
+            $vmZone = ($parts[1] -split '/')[-1]
+          }
+
+          Write-Host "Bootstrapping PR command queue on VM $vmName in zone $vmZone"
+          $startupScript = @"
+          `$ErrorActionPreference = 'Stop'
+          function Get-GcsAccessToken {
+            `$headers = @{ 'Metadata-Flavor' = 'Google' }
+            `$tokenResponse = Invoke-RestMethod -Headers `$headers -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
+            return `$tokenResponse.access_token
+          }
+          function Copy-GcsObjectToFile {
+            param([string]`$ObjectName, [string]`$DestinationPath)
+            `$encodedObjectName = [System.Uri]::EscapeDataString(`$ObjectName)
+            `$headers = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
+            `$uri = "https://storage.googleapis.com/storage/v1/b/$bucketName/o/`$encodedObjectName``?alt=media"
+            Invoke-WebRequest -UseBasicParsing -Headers `$headers -Uri `$uri -OutFile `$DestinationPath
+          }
+          New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
+          `$scripts = @('Deploy-PrEnvironment.ps1','Destroy-PrEnvironment.ps1','Install-PrEnvironmentCommandQueueTask.ps1','Invoke-PrEnvironmentCleanup.ps1','Invoke-PrEnvironmentCommandQueue.ps1','Invoke-PrEnvironmentCertificateRenewal.ps1','Invoke-SandboxRefreshWithPrEnvironments.ps1','Set-PrEnvironmentRuntimeConfiguration.ps1','Stop-PrEnvironment.ps1')
+          foreach (`$script in `$scripts) {
+            Copy-GcsObjectToFile -ObjectName "pr-environments/bootstrap/latest/`$script" -DestinationPath "C:\RockDeploy\`$script"
+          }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
+          "@
+
+          $scriptFile = Join-Path $env:RUNNER_TEMP 'pr-test-bootstrap-startup.ps1'
+          $startupScript | Out-File -FilePath $scriptFile -Encoding utf8
+
+          gcloud compute instances add-metadata $vmName `
+            --zone=$vmZone `
+            --metadata-from-file=windows-startup-script-ps1=$scriptFile
+
+          gcloud compute instances stop $vmName --zone=$vmZone
+          gcloud compute instances set-service-account $vmName `
+            --zone=$vmZone `
+            --scopes=https://www.googleapis.com/auth/cloud-platform
+          Start-Sleep -Seconds 10
+          $started = $false
+          for ($attempt = 1; $attempt -le 6; $attempt++) {
+            gcloud compute instances start $vmName --zone=$vmZone
+            if ($LASTEXITCODE -eq 0) {
+              $started = $true
+              break
+            }
+            Write-Warning "VM start attempt $attempt failed; retrying in 30 seconds."
+            Start-Sleep -Seconds 30
+          }
+          if (!$started) {
+            throw "Failed to start VM $vmName in $vmZone after retries."
+          }
