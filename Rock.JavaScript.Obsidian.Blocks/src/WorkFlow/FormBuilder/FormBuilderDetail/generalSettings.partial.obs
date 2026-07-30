@@ -115,7 +115,7 @@
     // Kept out of the template so the Lava braces are not mistaken for an
     // interpolation by the template compiler.
     const headerImageHelp = "The image to show at the top of the form. Add {[ header ]} to the form's header content to display it, "
-        + "or reference it directly with {{ Workflow.WorkflowType | Attribute:'HeaderImage' }}.";
+        + "or reference it directly with {{ Workflow.WorkflowTypeCache | Attribute:'HeaderImage' }}.";
 
     // Watch for changes in our modelValue and then update all our internal values.
     watch(() => props.modelValue, () => {
