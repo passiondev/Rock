@@ -158,9 +158,20 @@ replace the markup with:
 ```
 
 The pre-change markup is backed up on the web server at
-`C:\Windows\Temp\shortcode43-backup.txt` (SHA256 of the original:
-`5B963C52A9A959F24DC38E077E8239C6DD0D78A1121156A0B5483F53D530AAFF`). To roll
-back, paste that file's contents back into the same screen.
+`C:\Windows\Temp\shortcode43-backup.txt`. To roll back, paste that file's
+contents back into the same screen.
+
+Two different SHA256 values identify that backup — check you are comparing like
+with like:
+
+| | SHA256 |
+|---|---|
+| The markup **string** (UTF-8 bytes, 909 chars) | `139B5F98C42DB4CBEAA87BA63B883E0D877F3A7D0A40CBFE18132E72E9F7CA9E` |
+| The backup **file** on disk (`Get-FileHash`, UTF-16 + BOM) | `5B963C52A9A959F24DC38E077E8239C6DD0D78A1121156A0B5483F53D530AAFF` |
+
+Use the first when hashing `LavaShortcode.Markup` read from the database. The
+shortcode's `ModifiedDateTime` is a simpler tell: it reads `2025-11-05` while
+the shortcode is unmodified.
 
 Why it is safe:
 
