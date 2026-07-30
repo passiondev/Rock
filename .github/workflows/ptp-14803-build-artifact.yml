@@ -217,12 +217,34 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $failed = @()
 
-          foreach ($dll in @($env:BLOCKS_DLL, $env:VIEWMODELS_DLL)) {
-            $bytes = [System.IO.File]::ReadAllBytes($dll)
-            $text = [System.Text.Encoding]::Unicode.GetString($bytes)
-            if ($text -notmatch 'HeaderImage') {
-              $failed += "$dll does not contain 'HeaderImage' - stale or unpatched build"
+          # Managed metadata uses two heaps with different encodings, and which
+          # one a name lands in depends on what kind of thing it is:
+          #   #Strings (UTF-8)  type, method and property NAMES
+          #   #US      (UTF-16) string LITERALS
+          # Check both. Rock.Blocks has the literal "HeaderImage" (from the
+          # HeaderImageAttributeKey const) so UTF-16 finds it, but
+          # Rock.ViewModels only gains a property NAME, which is UTF-8 only.
+          function Test-Marker {
+            param([string] $Path, [string] $Marker)
+            $bytes = [System.IO.File]::ReadAllBytes($Path)
+            return ([System.Text.Encoding]::UTF8.GetString($bytes).Contains($Marker)) -or
+                   ([System.Text.Encoding]::Unicode.GetString($bytes).Contains($Marker))
+          }
+
+          # Discriminating: these method names exist only in the patched build.
+          foreach ($m in @('GetHeaderImageViewModel', 'SaveHeaderImageAttributeValue')) {
+            if (-not (Test-Marker $env:BLOCKS_DLL $m)) {
+              $failed += "Rock.Blocks.dll is missing $m - stale or unpatched build"
             }
+          }
+
+          # Sanity only, NOT discriminating: an unrelated view model already
+          # contributes HeaderImage/get_HeaderImage to this assembly, so this
+          # passes even unpatched. Proving FormGeneralViewModel actually gained
+          # the property needs metadata parsing, which scratchpad/verify-artifact.sh
+          # does with ikdasm against the downloaded artifact before deployment.
+          if (-not (Test-Marker $env:VIEWMODELS_DLL 'HeaderImage')) {
+            $failed += "Rock.ViewModels.dll is missing HeaderImage entirely - build is broken"
           }
 
           if ((Get-Content $env:FORMBUILDER_JS -Raw) -notmatch 'headerImage') {
