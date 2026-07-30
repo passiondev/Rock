@@ -120,7 +120,7 @@ replace the markup with:
 
 {% assign formImage = '' %}
 {% if Workflow %}
-    {% assign formImage = Workflow.WorkflowType | Attribute:'HeaderImage' %}
+    {% assign formImage = Workflow.WorkflowTypeCache | Attribute:'HeaderImage' %}
 {% endif %}
 
 {% if formImage != '' %}
@@ -179,9 +179,9 @@ Why it is safe:
 - The bank branch is byte-for-byte the original logic, just nested in an `{% else %}`.
 - `{% if Workflow %}` guards the case where the shortcode is used outside a
   workflow context, where `Workflow` is undefined.
-- `Workflow.WorkflowType` is marked `[LavaVisible]` on `Rock.Model.Workflow`, and
-  the `Attribute` filter calls `LoadAttributes()` itself when they aren't loaded,
-  so no extra setup is required in the template.
+- `Workflow.WorkflowTypeCache` is marked `[LavaVisible]` on `Rock.Model.Workflow`,
+  and the `Attribute` filter calls `LoadAttributes()` itself when they aren't
+  loaded, so no extra setup is required in the template.
 - A form with its own image now skips the `{% sql %}` query entirely.
 
 Behavior change to be aware of: if a form has *both* an uploaded image and an
@@ -224,7 +224,7 @@ parameters still work: `{[ header width:'50%' center:'yes' margin-bottom:'20' ]}
 To place the image yourself rather than via the shortcode:
 
 ```liquid
-{{ Workflow.WorkflowType | Attribute:'HeaderImage' }}
+{{ Workflow.WorkflowTypeCache | Attribute:'HeaderImage' }}
 ```
 
 That renders a full `<img src='…' class='img-responsive' />` tag.
@@ -235,8 +235,12 @@ That renders a full `<img src='…' class='img-responsive' />` tag.
   `ILinkableFieldType`, so the `'Url'` qualifier returns nothing. Use
   `,'RawValue'` if you want the bare `BinaryFile` Guid and intend to build the
   URL yourself.
-- `Workflow.WorkflowTypeCache` does not exist. The Lava-visible property is
-  `Workflow.WorkflowType`.
+- Use `Workflow.WorkflowTypeCache`, **not** `Workflow.WorkflowType`. Both are
+  `[LavaVisible]`, but on the form-entry page the workflow has not been saved
+  yet, so the `WorkflowType` navigation property is `null` — `Workflow.Activate`
+  sets only `WorkflowTypeId`. `WorkflowTypeCache` resolves off that id
+  (`Rock/Model/Workflow/Workflow/Workflow.Logic.cs:47`) and works either way.
+  Getting this wrong fails silently: the header renders nothing, no error.
 - The image is uploaded as temporary and only becomes permanent when the record
   is saved. If you upload and then navigate away without saving, the nightly
   Rock Cleanup job (job Id 7, ~1:00 AM) deletes the orphaned file.
