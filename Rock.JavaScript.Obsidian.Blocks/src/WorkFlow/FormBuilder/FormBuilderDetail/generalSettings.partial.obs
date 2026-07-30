@@ -40,6 +40,18 @@
 
         <div class="row">
             <div class="col-md-6">
+                <ImageUploader v-model="headerImage"
+                               label="Header Image"
+                               :help="headerImageHelp"
+                               :binaryFileTypeGuid="BinaryFiletype.ContentChannelItemImage"
+                               :uploadAsTemporary="true"
+                               uploadButtonText="Upload"
+                               :showDeleteButton="true" />
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
                 <DateTimePicker v-model="entryStarts"
                                 label="Form Entry Starts" />
             </div>
@@ -59,7 +71,9 @@
     import CheckBox from "@Obsidian/Controls/checkBox.obs";
     import DateTimePicker from "@Obsidian/Controls/dateTimePicker.obs";
     import DropDownList from "@Obsidian/Controls/dropDownList.obs";
+    import ImageUploader from "@Obsidian/Controls/imageUploader.obs";
     import TextBox from "@Obsidian/Controls/textBox.obs";
+    import { BinaryFiletype } from "@Obsidian/SystemGuids/binaryFiletype";
     import { EntityType } from "@Obsidian/SystemGuids/entityType";
     import { updateRefValue } from "@Obsidian/Utility/component";
     import SectionContainer from "@Obsidian/Controls/sectionContainer.obs";
@@ -94,8 +108,14 @@
     const entryStarts = ref(props.modelValue.entryStarts ?? "");
     const entryEnds = ref(props.modelValue.entryEnds ?? "");
     const isLoginRequired = ref(props.modelValue.isLoginRequired ?? false);
+    const headerImage = ref(props.modelValue.headerImage ?? null);
 
     const isLoginRequiredForced = computed((): boolean => props.templateOverrides?.isLoginRequiredConfigured ?? false);
+
+    // Kept out of the template so the Lava braces are not mistaken for an
+    // interpolation by the template compiler.
+    const headerImageHelp = "The image to show at the top of the form. Add {[ header ]} to the form's header content to display it, "
+        + "or reference it directly with {{ Workflow.WorkflowType | Attribute:'HeaderImage' }}.";
 
     // Watch for changes in our modelValue and then update all our internal values.
     watch(() => props.modelValue, () => {
@@ -106,10 +126,11 @@
         updateRefValue(entryStarts, props.modelValue.entryStarts ?? "");
         updateRefValue(entryEnds, props.modelValue.entryEnds ?? "");
         updateRefValue(slug, props.modelValue.slug ?? "");
+        updateRefValue(headerImage, props.modelValue.headerImage ?? null);
     });
 
     // Watch for changes on any of our internal values and then update the modelValue.
-    watch([name, description, template, category, isLoginRequired, entryStarts, entryEnds, slug], () => {
+    watch([name, description, template, category, isLoginRequired, entryStarts, entryEnds, slug, headerImage], () => {
         const newValue: FormGeneral = {
             ...props.modelValue,
             name: name.value,
@@ -119,7 +140,8 @@
             isLoginRequired: isLoginRequired.value,
             entryStarts: entryStarts.value,
             entryEnds: entryEnds.value,
-            slug: slug.value
+            slug: slug.value,
+            headerImage: headerImage.value
         };
 
         emit("update:modelValue", newValue);
