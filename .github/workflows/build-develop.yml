@@ -15,6 +15,31 @@ jobs:
       - name: Setup Git CRLF
         run: git config --global core.autocrlf true
 
+      # The runner image moves Visual Studio between major versions (the install
+      # root went 2022 -> 18), so pinning the version folder silently rots. Only
+      # vswhere.exe has a stable location; ask it where MSBuild actually landed.
+      # Runs before the npm builds so a bad image fails in seconds, not minutes.
+      - name: Locate MSBuild
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+
+          $msbuild = & $vswhere -latest -products * `
+                       -requires Microsoft.Component.MSBuild `
+                       -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+
+          if (-not $msbuild -or !(Test-Path $msbuild)) {
+            Write-Host "::error::Could not locate MSBuild.exe via vswhere"
+            & $vswhere -latest -products * -format value
+            exit 1
+          }
+
+          Write-Host "MSBuild: $msbuild"
+          & $msbuild -version
+          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Setup NuGet
         uses: actions/setup-dotnet@v4
         with:
@@ -85,14 +110,13 @@ jobs:
           New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
 
       - name: Build Rock Projects (Dependency Order)
-        continue-on-error: true
         timeout-minutes: 30
         shell: pwsh
         run: |
           # Build projects in dependency order to avoid reference issues
 
           # First, build base dependencies
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" DotLiquid\DotLiquid.csproj /p:Configuration=Release /verbosity:minimal
+          & "$env:MSBUILD_PATH" DotLiquid\DotLiquid.csproj /p:Configuration=Release /verbosity:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Build core Rock projects
@@ -106,13 +130,13 @@ jobs:
           foreach ($project in $coreProjects) {
             if (Test-Path $project) {
               Write-Host "Building core project: $project"
-              & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project /p:Configuration=Release /verbosity:minimal
+              & "$env:MSBUILD_PATH" $project /p:Configuration=Release /verbosity:minimal
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
           }
 
           # Build Rock.dll (main assembly)
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock\Rock.csproj /p:Configuration=Release /verbosity:minimal /m:4
+          & "$env:MSBUILD_PATH" Rock\Rock.csproj /p:Configuration=Release /verbosity:minimal /m:4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Build remaining Rock.* projects (excluding RockWeb, Rock.Client and problematic ones)
@@ -130,7 +154,7 @@ jobs:
 
           foreach ($project in $rockProjects) {
              Write-Host "Building $($project.Name)"
-             & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /verbosity:minimal /m:4
+             & "$env:MSBUILD_PATH" $project.FullName /p:Configuration=Release /verbosity:minimal /m:4
              if ($LASTEXITCODE -ne 0) {
                Write-Host "Warning: Failed to build $($project.Name), continuing with other projects..."
              }
@@ -151,7 +175,7 @@ jobs:
                $originalErrorActionPreference = $ErrorActionPreference
                $ErrorActionPreference = 'Continue'
                 try {
-                  & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /p:SolutionDir="$PWD\" /verbosity:minimal
+                  & "$env:MSBUILD_PATH" $project.FullName /p:Configuration=Release /p:SolutionDir="$PWD\" /verbosity:minimal
                } finally {
                  $ErrorActionPreference = $originalErrorActionPreference
                }
@@ -160,6 +184,12 @@ jobs:
                }
              }
              exit 0
+
+           # NOTE: this `exit 0` returns from the step, so everything below it is
+           # unreachable -- plugin DLLs are never copied into RockWeb\bin, and a
+           # failure in the loops above is swallowed. Left as-is deliberately:
+           # the pipeline has been running this way, and changing what ships is a
+           # separate decision from fixing the toolchain lookup. See PTP-14803.
 
            # Copy plugin assemblies to RockWeb\bin (plugins folder is moved out during build)
            foreach ($project in $pluginProjects) {
