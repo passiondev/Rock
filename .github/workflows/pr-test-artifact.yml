@@ -194,7 +194,25 @@ jobs:
           Write-Output "Plugins moved"
 
       - name: NuGet Restore
-        run: nuget restore -verbosity quiet -NonInteractive -Recursive Rock.sln
+        run: |
+          nuget restore -verbosity quiet -NonInteractive -Recursive Rock.sln
+
+          # The solution restore above only covers the .csproj projects, and
+          # those use PackageReference -- their packages land in the global
+          # cache under ~/.nuget/packages, never in a solution packages\ folder.
+          #
+          # RockWeb is a Web Site project, so it has no .csproj for the
+          # solution restore to walk. Its 93 packages are declared in
+          # RockWeb\packages.config, and the 84 *.dll.refresh pointers that
+          # accompany them are written in the packages.config convention:
+          # ..\packages\<Id>.<Version>\lib\<tfm>\<Name>.dll, relative to the
+          # web site root. Nothing creates that folder unless the config is
+          # restored explicitly with -PackagesDirectory, which is what Visual
+          # Studio does for a Web Site project. Without it the 20 pointers
+          # whose assemblies no project build happens to emit -- among them
+          # Google.Protobuf.dll, which Application_Start needs -- resolve to
+          # nothing and drop out of the artifact.
+          nuget restore RockWeb\packages.config -PackagesDirectory packages -verbosity quiet -NonInteractive
 
       - name: Create Empty ConnectionStrings Config
         run: New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
@@ -331,6 +349,20 @@ jobs:
       #
       # Fill gaps only. A DLL a project actually built is the authoritative one and
       # must win over the copy sitting in packages\.
+      #
+      # Deliberately NOT recursive, and deliberately limited to *.dll.refresh:
+      #
+      #   * RockWeb\Bin\roslyn\ holds 20 more pointers (csc.exe, vbc.exe, the
+      #     Microsoft.CodeAnalysis assemblies) for the compiler that web.config's
+      #     <system.codedom> uses to compile .ascx at run time. All 20 targets are
+      #     committed to git alongside their pointers, so checkout already supplies
+      #     that folder and resolving it would be a no-op. Verified file by file --
+      #     do not "fix" this by adding -Recurse.
+      #   * RockWeb\Bin\Microsoft.Extensions.Primitives.refresh is malformed
+      #     upstream: it omits the .dll before .refresh, and it points at version
+      #     2.0.0 while packages.config pins 8.0.0. The filter skips it rather than
+      #     creating an extensionless file, and it would report as permanently
+      #     unresolved if included, which would blunt the count below.
       - name: Resolve .refresh assemblies into RockWeb bin
         run: |
           $copied = @()
