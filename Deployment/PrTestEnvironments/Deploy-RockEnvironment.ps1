@@ -469,7 +469,20 @@ function Write-RuntimeConfiguration {
         $connectionStringConfig | Out-File -FilePath (Join-Path $Path "web.ConnectionStrings.config") -Encoding UTF8 -Force
     }
     else {
-        Write-Host "No connection string supplied; leaving the existing web.ConnectionStrings.config in place."
+        # Production deliberately omits the connection string so CI never touches
+        # the one already on that box. That is only safe when the file is actually
+        # there. web.config binds connectionStrings through a configSource, so a
+        # missing file is not a degraded site -- it is a site that cannot serve a
+        # single request, error page included. Fail here, where the cause is
+        # obvious, instead of 300 seconds later as an unexplained health-check
+        # timeout.
+        $existingConnectionConfig = Join-Path $Path "web.ConnectionStrings.config"
+        if (Test-Path $existingConnectionConfig) {
+            Write-Host "No connection string supplied; leaving the existing web.ConnectionStrings.config in place."
+        }
+        else {
+            throw "No connection string was supplied and $existingConnectionConfig does not exist. web.config binds connectionStrings with a configSource, so the site would fail every request at startup. Re-run with write_connection_string enabled, or restore that file on the server."
+        }
     }
 
     $webConfigPath = Join-Path $Path "web.config"
@@ -558,8 +571,38 @@ try {
     if ($Mode -eq 'DedicatedSite') {
         # A dedicated site owns its whole directory, so replace it wholesale and
         # let the shared-asset overlay backfill server-only files afterwards.
+        #
+        # $PreservedFiles has to be carried across that replace by hand. The
+        # InPlace branch below hands the list to robocopy as /XF exclusions, but
+        # there is no copy to exclude anything from here -- the directory is
+        # deleted outright. Skipping this is how a deploy that supplies no
+        # connection string destroys the site: the wipe takes
+        # web.ConnectionStrings.config with it, Write-RuntimeConfiguration
+        # declines to write a replacement it was not given and reports that it is
+        # "leaving the existing" file in place, and web.config is left pointing a
+        # configSource at a file that no longer exists. Every request then 500s
+        # before Rock starts, including the error page.
+        $preservedStash = @{}
+        foreach ($file in $PreservedFiles) {
+            $existing = Join-Path $SitePath $file
+            if (Test-Path $existing) {
+                $preservedStash[$file] = Get-Content -Raw -Path $existing
+            }
+        }
+
         if (Test-Path $SitePath) { Remove-Item $SitePath -Recurse -Force }
         Move-Item -Path $ExtractPath -Destination $SitePath
+
+        foreach ($file in $preservedStash.Keys) {
+            $restoreTo = Join-Path $SitePath $file
+            # Only fill a gap. The artifact shipping its own copy means the branch
+            # is authoritative for that file, exactly as in the InPlace path.
+            if (!(Test-Path $restoreTo)) {
+                Ensure-Directory -Path (Split-Path -Parent $restoreTo)
+                $preservedStash[$file] | Out-File -FilePath $restoreTo -Encoding UTF8 -Force -NoNewline
+                Write-Host "Preserved $file across the site replace."
+            }
+        }
 
         $sharedAssetSource = ''
         if (![string]::IsNullOrWhiteSpace($SharedAssetSourcePath)) {
