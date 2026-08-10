@@ -35,18 +35,50 @@ correctly.
 | Clock | Min | Segment | Slides | Land this one point |
 | --- | --- | --- | --- | --- |
 | 0:00 | 4 | Open — why this exists | 1–2 | Rock only builds on Windows; we're all on Macs. That's the whole reason. |
-| 0:04 | 8 | Git in five minutes | 3–6 | A branch is a copy you can't break. |
-| 0:12 | 6 | The fork | 7–8 | We didn't write Rock. We keep our changes next to theirs. Repo is **public**. |
-| 0:18 | 4 | Version branches | 9–10 | The trunk is named after the version production runs. |
-| 0:22 | 8 | Making changes | 11–13 | Base branch `passion-18.4.1`, or nothing happens. |
-| 0:30 | 5 | Why GitHub builds it | 14–15 | 25 minutes of compiling on a Windows machine none of us owns. |
-| 0:35 | 7 | Three doors | 16–17 | Merging deploys **staging**. Production takes two people. |
-| 0:42 | 10 | **Demo** | 18 | It's real, and here's the URL. |
-| 0:52 | 8 | Q&A + asks | 19–21 | Two things for the team, two for DevOps. |
+| 0:04 | 8 | Git in five minutes | 3–5 | A branch is a copy you can't break. |
+| 0:12 | 6 | The fork | 6–7 | We didn't write Rock. We keep our changes next to theirs. Repo is **public**. |
+| 0:18 | 4 | Version branches | 8–9 | The trunk is named after the version production runs. |
+| 0:22 | 8 | Making changes | 10–12 | Base branch `passion-18.4.1`, or nothing happens. |
+| 0:30 | 5 | Why GitHub builds it | 13–14 | 25 minutes of compiling on a Windows machine none of us owns. |
+| 0:35 | 7 | Three doors | 15–16 | Merging deploys **staging**. Production takes two people. |
+| 0:42 | 10 | **Demo** | 17 | It's real, and here's the URL. |
+| 0:52 | 8 | Q&A + asks | 18–20 | Two things for the team, two for DevOps. |
 
-**If you're at 0:35 and only on slide 10:** cut slide 10 (next upgrade), cut slide 13 (why a
+**If you're at 0:35 and only on slide 9:** cut slide 9 (next upgrade), cut slide 12 (why a
 PR for a typo — it's on the cheat sheet), and compress "Three doors" to the table only. Never
 cut the demo; it's the thing they'll remember. Never cut the "public repo" warning.
+
+## Slide map
+
+The deck is one linear pass, no builds or hidden slides. Numbers below are what the
+segment notes refer to. **If a heading here does not match the deck, the numbers in this
+script are stale** — that has happened once already, when a slide was cut from "Git in
+five minutes" and every reference after it silently pointed one slide too far.
+
+| # | Section | Heading |
+| --- | --- | --- |
+| 1 | *(title slide)* | Rock CI/CD Training |
+| 2 | Why any of this exists | Everyone here has a MacBook. Rock only builds on Windows. |
+| 3 | Git in five minutes | A branch is a copy of everything that you cannot break. |
+| 4 | Git in five minutes | A pull request is the request, the conversation, and the button. |
+| 5 | Git in five minutes | Branching strategy: one trunk, many short branches. |
+| 6 | The fork | We didn't write Rock. We forked it. |
+| 7 | The fork | A fork is a two-way street. Both directions have rules. |
+| 8 | Version branches | The trunk is named after the Rock version it runs. |
+| 9 | Version branches | How the next upgrade happens. |
+| 10 | Making changes | One decision matters more than all the rest: the base branch. |
+| 11 | Making changes | Labels are buttons. That's the whole control panel. |
+| 12 | Making changes | Why a pull request, even for a one-word typo. |
+| 13 | Why GitHub builds it | What "build" actually means for Rock. |
+| 14 | Why GitHub builds it | Four reasons it can't be your laptop. |
+| 15 | Three doors | Three places code can land. Only one of them is production. |
+| 16 | Three doors | Merging deploys staging. Nothing merges to production. |
+| 17 | Demo | Let's go look at a real one. |
+| 18 | Questions you're about to ask | Anticipated questions. |
+| 19 | Questions you're about to ask | And the harder ones. |
+| 20 | Where we go from here | Four things, and then it's yours. |
+
+---
 
 ---
 
@@ -67,7 +99,7 @@ Then defuse the fear immediately, before anyone's had time to build it up:
 > branch you can push and no button you can click in a browser that reaches production.
 > We'll get to exactly why."
 
-### 0:04 — Git in five minutes (slides 3–6, 8 min)
+### 0:04 — Git in five minutes (slides 3–5, 8 min)
 
 Aimed at the lead. Use the analogy and then drop it — don't extend it past where it holds.
 
@@ -78,21 +110,21 @@ The two things that make git feel strange are worth naming out loud, because bot
 point: nothing is ever overwritten, and you work on a copy and then *ask* for it to be
 merged. There's no "save to the server."
 
-On slide 5, say the words **"pull request is a bad name"** — read it as *please pull my
+On slide 4, say the words **"pull request is a bad name"** — read it as *please pull my
 changes in*. Everyone nods; nobody had been told.
 
-On slide 6, keep the branching-strategy discussion to the two boxes. If the DevOps engineer
+On slide 5, keep the branching-strategy discussion to the two boxes. If the DevOps engineer
 wants to discuss trunk-based vs. GitFlow, park it: *"Worth a conversation, not this one."*
 
-### 0:12 — The fork (slides 7–8, 6 min)
+### 0:12 — The fork (slides 6–7, 6 min)
 
-Slide 7's diagram is the answer to "where does our code come from." Numbers to say out loud:
+Slide 6's diagram is the answer to "where does our code come from." Numbers to say out loud:
 **68 files on the trunk that don't exist upstream, and 63 of them are this pipeline** — the
 workflows, the deploy scripts, the docs, the tests. Five are product code. The point of saying
 it that way: the trunk is almost entirely *plumbing* so far, and the plumbing is what this
 meeting is about.
 
-Slide 8 is the most important non-demo slide in the deck. Two directions, then the warning.
+Slide 7 is the most important non-demo slide in the deck. Two directions, then the warning.
 
 If anyone asks about `develop` being a "mirror" — the deck used to say that and it was wrong.
 `develop` carries 276 files under `RockWeb/Plugins/`, 78 of them ours; upstream's 18.4.1 tag
@@ -112,24 +144,24 @@ Ops will likely ask whether member data is exposed *today*. The honest answer: n
 is in the repo, `.env` files are ignored, and the connection strings live in GitHub secrets
 and on the servers — never in the code.
 
-### 0:18 — Version branches (slides 9–10, 4 min)
+### 0:18 — Version branches (slides 8–9, 4 min)
 
 Short segment. The one thing they must take away: **don't memorize `passion-18.4.1`.** Read
 the default branch, or read `.github/pr-test-environments.json`. It changes at every upgrade.
 
-Slide 10 is cuttable. It exists so next year's branch names aren't a surprise.
+Slide 9 is cuttable. It exists so next year's branch names aren't a surprise.
 
-### 0:22 — Making changes (slides 11–13, 8 min)
+### 0:22 — Making changes (slides 10–12, 8 min)
 
 This is the segment the two staff engineers came for. Slow down.
 
-Slide 11's right-hand box is the single highest-value warning in the hour:
+Slide 10's right-hand box is the single highest-value warning in the hour:
 
 > "If you get the base branch wrong, you don't get an error. You get *nothing*. No comment,
 > no site, no red X. It looks like the pipeline is broken, and it isn't — it's ignoring you.
 > That's a GitHub limitation, not a choice."
 
-Slide 12 — labels-as-buttons. This is the bit Ops won't have seen before, so it's worth an
+Slide 11 — labels-as-buttons. This is the bit Ops won't have seen before, so it's worth an
 extra beat. Emphasize the split: **four labels you press, six the robot sets.** People break
 things by editing the state labels by hand.
 
@@ -138,35 +170,35 @@ Also say the cleanup truth plainly, because the earlier version of the docs got 
 > "Merging destroys your environment. Closing without merging just stops it. Nothing else
 > cleans up on a timer — so when you're done, destroy it yourself."
 
-Slide 13's exception matters more than the rest of the slide: **a lot of "editing the
+Slide 12's exception matters more than the rest of the slide: **a lot of "editing the
 website" in Rock is database content, not files.** HTML Content blocks, page names, routes,
 Lava in block settings, workflows, reports. Those are admin-UI changes on the live site and
 this pipeline never touches them. If they take one thing from this slide, it's *ask which
 side of that line you're on.*
 
-### 0:30 — Why GitHub builds it (slides 14–15, 5 min)
+### 0:30 — Why GitHub builds it (slides 13–14, 5 min)
 
-Slide 14's table answers "why does it take so long" before it's asked. The line that lands:
+Slide 13's table answers "why does it take so long" before it's asked. The line that lands:
 
 > "The compiled JavaScript for the newer Rock blocks isn't in the repo at all — it only
 > exists after a build. That's why 'just copy the files up' doesn't work. Half the site isn't
 > in the files."
 
-Slide 15, reason 3 is for the Technology Director: credentials live in GitHub secrets and are
+Slide 14, reason 3 is for the Technology Director: credentials live in GitHub secrets and are
 only ever read by a build. They never land on anyone's laptop.
 
 Set the expectation explicitly: **~30 minutes, label to live site.** Better they hear it from
 you than discover it while staring at a PR.
 
-### 0:35 — Three doors (slides 16–17, 7 min)
+### 0:35 — Three doors (slides 15–16, 7 min)
 
-Slide 16's table is the mental model for the whole hour. Walk the rows in order — PR,
+Slide 15's table is the mental model for the whole hour. Walk the rows in order — PR,
 staging, production — and note that the first two share a sandbox database.
 
 Then the red box: test environments isolate *code*, not *data*. Shared DB, gets reset, no
 email/texts/payments/jobs.
 
-Slide 17 is the production story, and it's where you earn the Director's trust. The two locks:
+Slide 16 is the production story, and it's where you earn the Director's trust. The two locks:
 someone runs it deliberately (and the default run is a **dry run** that changes nothing), then
 a second person approves — **after** the build, so nobody approves a commit that doesn't
 compile.
@@ -185,14 +217,14 @@ Then the two design decisions, in your own words:
 > queue agent on the production VM, and I'm doing that with [DevOps] rather than alone on a
 > Sunday. So today, production is proven up to the last inch, and deliberately not fired."
 
-### 0:42 — Demo (slide 18, 10 min)
+### 0:42 — Demo (slide 17, 10 min)
 
 See the runbook below. Narrate the baking-show framing as you go: the 25-minute build is
 already done, so you're taking the finished one out of the oven.
 
-### 0:52 — Q&A + asks (slides 19–21, 8 min)
+### 0:52 — Q&A + asks (slides 18–20, 8 min)
 
-Slides 19–20 are prepared answers — use them as a safety net if the room goes quiet, don't
+Slides 18–19 are prepared answers — use them as a safety net if the room goes quiet, don't
 read them aloud in order.
 
 The one to volunteer even if nobody asks is **"was this working before today?"** Getting
@@ -206,7 +238,7 @@ ahead of it is what makes the rest credible:
 > tests that fail if they come back. There's a written list of what's still open, and DevOps
 > has it."
 
-Close on slide 21: two asks for the team, two for DevOps. End on the last line — *the
+Close on slide 20: two asks for the team, two for DevOps. End on the last line — *the
 pipeline's job is to make a change boring.*
 
 ---
