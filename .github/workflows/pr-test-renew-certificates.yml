@@ -97,11 +97,31 @@ jobs:
         run: |
           $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
           for ($i = 0; $i -lt 90; $i++) {
-            gsutil cp $resultUri result.json 2>$null
+            gsutil -q cp $resultUri result.json 2>$null
             if ($LASTEXITCODE -eq 0) {
               $result = Get-Content result.json -Raw | ConvertFrom-Json
               $result | ConvertTo-Json -Depth 10
+
+              # Always print the renewal output. `succeeded` on its own is not
+              # proof of work here: the script exits happily when it finds zero
+              # deployed environments, so the log is the only place that says
+              # which host names were actually issued a certificate.
+              $logObject = $null
+              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
+              if (![string]::IsNullOrWhiteSpace($logObject)) {
+                gsutil -q cp "gs://$env:PR_TEST_GCS_BUCKET/$logObject" command-output.log 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "::group::Certificate renewal output from the VM"
+                  Get-Content command-output.log -Raw | Write-Host
+                  Write-Host "::endgroup::"
+                }
+              }
+              else {
+                Write-Host "The VM reported no output log. If this persists, re-run the bootstrap workflow so the VM picks up the current queue agent."
+              }
+
               if ($result.status -eq 'succeeded') { exit 0 }
+              Write-Host "::error::Certificate renewal failed on the VM: $($result.error)"
               exit 1
             }
             Start-Sleep -Seconds 10

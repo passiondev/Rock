@@ -160,13 +160,55 @@ jobs:
           $resultUri = "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/results/$env:COMMAND_ID.json"
           $attempts = ${{ inputs.poll_attempts }}
 
+          # The command's own output lives on the VM. The agent uploads a redacted
+          # copy beside the result so a failure can be diagnosed from this log
+          # instead of over RDP. Older agents do not set logObject, so treat a
+          # missing log as unremarkable rather than an error.
+          function Show-CommandLog {
+            param([string]$LogObject, [switch]$AppendToSummary)
+
+            if ([string]::IsNullOrWhiteSpace($LogObject)) {
+              Write-Host "The VM reported no output log. If this persists, re-run the bootstrap workflow so the VM picks up the current queue agent."
+              return
+            }
+
+            $logUri = "gs://$env:GCS_BUCKET/$LogObject"
+            gsutil -q cp $logUri command-output.log 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Could not download the command output from $logUri."
+              return
+            }
+
+            $logText = Get-Content command-output.log -Raw
+            Write-Host "::group::Command output from the VM"
+            Write-Host $logText
+            Write-Host "::endgroup::"
+
+            if ($AppendToSummary) {
+              # Only the tail goes in the summary -- it has a size limit, and the
+              # failure is at the end.
+              $lines = @($logText -split "`r?`n")
+              $tail = if ($lines.Count -gt 60) { $lines[-60..-1] } else { $lines }
+              "<details><summary>Command output from the VM (last $($tail.Count) lines)</summary>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              ($tail -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "</details>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            }
+          }
+
           for ($i = 0; $i -lt $attempts; $i++) {
             gsutil -q cp $resultUri result.json 2>$null
             if ($LASTEXITCODE -eq 0) {
               $result = Get-Content result.json -Raw | ConvertFrom-Json
               $result | ConvertTo-Json -Depth 10
 
+              $logObject = $null
+              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
+
               if ($result.status -eq "succeeded") {
+                Show-CommandLog -LogObject $logObject
                 "### Deployed $env:ENVIRONMENT_NAME" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
                 "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
                 "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
@@ -183,6 +225,8 @@ jobs:
               "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
               "$($result.error)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
               "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              Show-CommandLog -LogObject $logObject -AppendToSummary
               exit 1
             }
             Start-Sleep -Seconds 15

@@ -16,6 +16,29 @@ jobs:
           sparse-checkout: |
             Deployment/PrTestEnvironments
 
+      - name: Check the deployment scripts parse
+        shell: pwsh
+        run: |
+          # These scripts are about to become the only thing standing between the
+          # VM and a queued deploy, and a syntax error in them surfaces as a
+          # scheduled task that dies silently on a box nobody is watching. Parse
+          # them here, where the failure is loud and nothing has shipped yet.
+          $failed = $false
+          foreach ($file in Get-ChildItem Deployment/PrTestEnvironments/*.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              foreach ($e in $errors) {
+                Write-Host "::error file=$($file.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            }
+            else {
+              Write-Host "OK  $($file.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
