@@ -7,6 +7,8 @@ properties that make the production path safe.
 """
 
 import pathlib
+import re
+import subprocess
 import unittest
 
 import yaml
@@ -271,6 +273,101 @@ class ProductionWorkflowTests(unittest.TestCase):
         a site made of two different builds."""
         workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
         self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
+
+
+class ProductionVersionGuardTests(unittest.TestCase):
+    """Branch names in this repo do not carry the Rock version, and two of them are
+    actively misleading: `develop` declares 19.0.3 and `staging` declares 17.6.1
+    while the trunk declares 18.4.1. The last production build ran from `develop`,
+    so a 19.0 artifact was produced for a site running 18.x; the only reason that
+    was not an incident is that nobody installed it. Rock migrates the database on
+    the first request after a deploy, so the guard has to read the version out of
+    the source rather than trust the ref name."""
+
+    def _guard_step(self):
+        workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+        return next(
+            s
+            for s in workflow["jobs"]["resolve"]["steps"]
+            if s.get("name") == "Refuse a ref from a different Rock version"
+        )
+
+    def test_the_guard_runs_before_anything_is_built_or_approved(self):
+        workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+        step_names = [s.get("name") for s in workflow["jobs"]["resolve"]["steps"]]
+
+        self.assertIn("Refuse a ref from a different Rock version", step_names)
+        # `resolve` is what every other job depends on, so failing here costs no
+        # build minutes and never reaches a human approver.
+        for job in ["build", "approve", "deploy"]:
+            self.assertIn("resolve", workflow["jobs"][job]["needs"] if isinstance(
+                workflow["jobs"][job].get("needs"), list) else [workflow["jobs"][job]["needs"]])
+
+    def test_the_expected_version_is_read_from_the_default_branch_not_hardcoded(self):
+        """A hardcoded version would have to be edited during every Rock upgrade, and
+        the upgrade is exactly when nobody is thinking about this file. Reading the
+        default branch means promoting the new trunk to default is enough."""
+        run = self._guard_step()["run"]
+
+        self.assertIn("github.event.repository.default_branch", run)
+        self.assertIn("Rock.Version/AssemblySharedInfo.cs", run)
+        self.assertNotRegex(
+            run,
+            r'expected_version=["\']?1[0-9]\.[0-9]',
+            "the expected Rock version is hardcoded; it must come from the default branch",
+        )
+
+    def test_a_version_mismatch_fails_the_run(self):
+        run = self._guard_step()["run"]
+
+        self.assertIn("::error::", run)
+        self.assertRegex(run, r"(?m)^\s*exit 1\s*$")
+        self.assertIn("acknowledge_version_change", run)
+
+    def test_the_acknowledgement_is_off_by_default(self):
+        workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+        ack = workflow["on"]["workflow_dispatch"]["inputs"]["acknowledge_version_change"]
+
+        self.assertFalse(ack["default"])
+        self.assertFalse(ack.get("required", False))
+
+    def test_the_guards_own_regex_reads_the_version_and_nothing_else(self):
+        """The whole control rests on one sed expression. AssemblyFileVersion,
+        AssemblyInformationalVersion, and the prose comment above them all contain
+        the word "version", so an over-broad pattern silently reads the wrong line
+        and the guard starts comparing garbage."""
+        run = self._guard_step()["run"]
+        match = re.search(r"""sed -n '([^']+)' "\$1\"""", run)
+        self.assertIsNotNone(match, "could not find the version_of sed expression in the guard")
+        expression = match.group(1)
+
+        def extract(text):
+            result = subprocess.run(
+                ["sed", "-n", expression],
+                input=text,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.split()
+
+        # The trunk's real file, so the fixtures below cannot drift from reality.
+        real = (REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs").read_text()
+        self.assertEqual(extract(real), ["18.4.1"])
+
+        for version, informational in [("19.0.3", "19.0"), ("17.6.1", "17.6")]:
+            fixture = (
+                "// The AssemblyVersion number should change only when we are\n"
+                "// shipping a new major or minor release.\n"
+                f'[assembly: AssemblyVersion( "{version}" )]\n'
+                f'[assembly: AssemblyFileVersion( "{version}" )]\n'
+                f'[assembly: AssemblyInformationalVersion( "Rock McKinley {informational}" )]\n'
+            )
+            self.assertEqual(
+                extract(fixture),
+                [version],
+                f"expected exactly one match for {version}; the pattern is over-broad",
+            )
 
 
 class ReusableWorkflowPermissionTests(unittest.TestCase):
