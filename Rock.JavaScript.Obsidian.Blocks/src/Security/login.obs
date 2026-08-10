@@ -10,7 +10,7 @@
             </div>
             <div v-else class="login-block">
                 <fieldset>
-                    <legend>Log In</legend>
+                    <legend>Log In — CI/CD Training Build</legend>
 
                     <template v-if="config.configurationErrors?.length">
                         <NotificationBox v-for="configError in config.configurationErrors"
