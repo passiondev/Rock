@@ -486,16 +486,31 @@ event log on the VM, which is a DevOps task.
 Practically: **check staging, then report it** with your PR number. If both are down, say so
 — that one sentence saves an hour.
 
-### Trap 7: Plugin code errors appear in the browser, not in the build
+### Trap 7: Plugin blocks are not in this repository at all
 
-All 84 plugin blocks under `RockWeb/Plugins/` use `CodeFile=`, which means their `.ascx.cs`
-code-behind is **shipped as source and compiled by the web server on first request** — not
-by the build robot.
+`RockWeb/Plugins/.gitignore` consists of exactly one rule — `*/*` — so every plugin subfolder
+is ignored. That is an upstream Rock convention: plugins are treated as installed packages,
+not as source. Verified 2026-08-10: git tracks precisely two files under that directory
+(`.gitignore` and `readme.txt`), and **zero** files matching `org_passion` or `team_passion`
+anywhere in the repository. The 448 core blocks under `RockWeb/Blocks/` are tracked normally,
+so this applies only to plugins.
 
-Consequence: a syntax error or bad reference in a plugin `.ascx.cs` produces a **green
-build and a green deploy**, then a compiler error page ("yellow screen") when you open the
-page in the browser. That's expected behavior, not a broken pipeline. Read the error page —
-it names the file and line. Fix, commit, redeploy.
+Two consequences, and both will surprise you:
+
+- **A `pr-*` environment shows no plugin blocks.** The build packages what git has, and the
+  shared-asset overlay backfills only `Themes`, `Content`, `Assets`, and `Styles`. A page
+  built from an `org_passion` or `team_passion` block will not render on a test site.
+- **You cannot ship a plugin-block change through this pipeline.** There is nothing to
+  commit, because the file is not tracked. Changing one is a separate, manual, server-side
+  job. Ask DevOps before you start.
+
+Production keeps its plugins regardless, because a production deploy copies with robocopy
+`/E` and **no `/PURGE`** — files already on the server that the artifact does not contain are
+left untouched. That is deliberate, and it is why plugin folders survive a deploy that never
+contained them.
+
+If you need plugin pages to work on test sites, that is a config change, not a rewrite: the
+overlay list is read from `PR_TEST_SHARED_ASSET_DIRECTORIES`. It is on the open-items list.
 
 ### Trap 8: PRs from forks never deploy
 
@@ -678,7 +693,7 @@ instructions do.
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
 | Certificate warning | Unexpected — `pr-*` hosts carry real Let's Encrypt certificates | Report it. Do not click through as a matter of course; on these hosts a warning is new information |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
-| Yellow-screen compiler error on a plugin page | Plugin code-behind compiles at runtime ([Trap 7](#trap-7-plugin-code-errors-appear-in-the-browser-not-in-the-build)) | Read the file/line on the error page, fix, commit, redeploy |
+| A plugin page is missing or broken on a test site | Plugin blocks are not in the repo, so no test environment has them ([Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)) | Not a bug in your PR. Verify that page in production instead, and talk to DevOps |
 | Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
 | Test data vanished | Nightly sandbox refresh ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Recreate it; don't build multi-day scenarios |
 | Data I didn't create | Shared sandbox DB ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Expected. Ask in team chat if it's blocking |
@@ -797,10 +812,13 @@ re-diagnosing them. All verified 2026-08-10.
    deploy will build, gate, queue, and then time out. Being done with DevOps rather than
    unattended.
 
-3. **`build-develop.yml` ("Rock Build Pipeline") still exists and still deploys by
-   rebooting a VM**, with no health gate and no rollback. Its GCP half is gated on
-   `branches: [staging]` and has never executed. Now that Paths A and B exist it should be
-   reduced to a build-only CI check, or deleted.
+3. **Which branch production should deploy *from* is genuinely unsettled.** The trunk tracks
+   2 files under `RockWeb/Plugins/`; `develop` and `staging` track 276 each. The last
+   production build ran from `develop` on 2026-05-06 and produced only an artifact — the
+   server was then updated by hand. Production will not lose its plugins either way (the copy
+   is `robocopy /E` with no `/PURGE`, so server-only files stay), but choosing a source of
+   truth needs the assembly versions read off the production box. This is why the production
+   path is built and proven but deliberately unfired.
 
 4. **`GCP_COMPUTE_PROJECT_ID` is a dead secret** — no workflow references it. Worth removing
    so the secret list reflects reality.
@@ -810,10 +828,12 @@ re-diagnosing them. All verified 2026-08-10.
    unchallenged. Needs: Environment `production` with required reviewers, plus variables
    `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`, `PRODUCTION_SITE_NAME`.
 
-6. **Stale branches.** `develop-17.6.1`, `develop-18.3`, `deploy/ptp-14803-18.4.1`,
-   `bump`, `staging`, `fix/group-sync`, and `pilot/pr-test-env-doc-smoke-v1761` are all
-   superseded by `passion-18.4.1`. Pruning them removes several ways to target the wrong
-   base branch.
+6. **Stale branches.** `develop-17.6.1`, `deploy/ptp-14803-18.4.1`, `bump`, `fix/group-sync`,
+   and `pilot/pr-test-env-doc-smoke-v1761` are superseded by `passion-18.4.1`. Pruning them
+   removes several ways to target the wrong base branch. `develop` and `staging` are **not**
+   in that set and must not be pruned — between them they hold the only copy of some plugin
+   code, including five RSVP and authentication files where `staging`'s version is newer than
+   `develop`'s.
 
 7. **The pilot doc is stale.** `Documentation/Discussion Docs/PR-Test-Environments-Issues/12-pilot-rollout.md`
    still says deployment fails at an SSH step. That was fixed by the Cloud Storage command

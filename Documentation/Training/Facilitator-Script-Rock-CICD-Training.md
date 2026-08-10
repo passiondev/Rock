@@ -220,8 +220,8 @@ to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
 
 **Sequence:**
 
-1. **The PR page.** Files changed → two files, small diff. Point out the base branch reads
-   `passion-18.4.1`.
+1. **The PR page.** Files changed → three files. One is a one-line Vue change; the other two
+   are the theme `Site.Master` layouts. Point out the base branch reads `passion-18.4.1`.
 2. **The sidebar.** The label *you* added, and the state labels the robot set in response.
 3. **The bot comment.** Status table: `deployed`, the URL, the SHA, the artifact path. Note
    it also lists the commands — the PR documents itself.
