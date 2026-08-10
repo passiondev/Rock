@@ -170,19 +170,24 @@ before deleting; the rest are safe.
 "pristine upstream mirror" and put `staging` in the safe-to-prune set. Both were wrong, and
 measurably so:
 
-- `develop` is **489 commits ahead of upstream tag `18.4.1`** and tracks all **276** files
-  under `RockWeb/Plugins/`. It is not a mirror of anything; it is where Passion's plugin work
-  lives. It is also the branch the last production build came from — run on 2026-05-06 from
-  `dd6d189b`, which is `origin/develop` HEAD today.
-- `staging` is 73 commits ahead of `develop` and holds **five plugin files that are newer than
-  `develop`'s copies** — `org_passion/RSVP/RsvpDetailBETA.ascx`,
+- `develop` declares **Rock 19.0.3** — it is the v19 line, not a mirror and not an ancestor of
+  the trunk (the two diverged 2026-01-07). It tracks all **276** files under
+  `RockWeb/Plugins/`, 78 of them `org_passion`/`team_passion`. It is simultaneously where
+  Passion's plugin work lives *and* the only in-repo starting point for the eventual v19
+  upgrade. It is also the branch the last production build came from — 2026-05-06 from
+  `dd6d189b`, which is `origin/develop` HEAD today. See item 15 for why that build must never
+  be installed on production.
+- `staging` declares **Rock 17.6.1** and is 73 commits ahead of `develop`, holding **five
+  plugin files newer than `develop`'s copies** — `org_passion/RSVP/RsvpDetailBETA.ascx`,
   `org_passion/RSVP/RsvpResponse.ascx.cs`, `org_passion/RSVP/RsvpResponseBETA.ascx.cs` (all
   2026-02-24 vs. develop's 2026-01-09), plus `org_secc/Authentication/Arena.cs` and
   `org.secc.Authentication.csproj` (2026-01-28 vs. 2026-01-09). Two of its commits
   (`fix datetime issue in plugin`, `Optimizations`) exist nowhere else.
 
-Neither branch can be pruned until item 15 is settled, because between them they are the only
-copy of some of this code.
+Neither branch can be pruned until the plugin files are reconciled onto the trunk (item 14),
+because between them they are the only copy of some of this code. The branch names are also
+misleading enough to be worth renaming once that is done: `develop` is a v19 branch and
+`staging` is a v17 branch, and neither name says so.
 
 ### 10. `GCP_COMPUTE_PROJECT_ID` is a dead secret
 
@@ -260,49 +265,60 @@ Two things worth deciding, and they are independent:
 
 ---
 
-### 15. Nothing establishes which branch production is supposed to deploy from
+### 15. Which branch production deploys from — settled, plus the migration it implies
 
-**Priority: P0 despite the number** — this list is append-only so the numbers stay stable
-across revisions and the cross-references above keep working. This is the largest unresolved
-question in the repository and it should be settled before the first real production deploy.
+**Priority: P0 despite the number** — this list is append-only so the numbers stay stable across
+revisions and the cross-references above keep working. Opened as "nothing establishes which
+branch production deploys from." Measured and answered on 2026-08-10; what remains is one
+migration step that has to be taken deliberately, and one guard to add to the workflow.
 
-`production-deploy.yml` defaults its `ref` input to `passion-18.4.1`. That is a defensible
-default — it is the trunk, it matches the version production runs, and it is the branch this
-pipeline was built on. But it is a default that was chosen for pipeline reasons, and nobody has
-confirmed it is the right *source* for production. The measured situation:
+`production-deploy.yml` defaults its `ref` input to `passion-18.4.1`. Nothing in the repository
+stated *why* that is the right source, so it was measured. **The default is correct**, and the
+reason is worth writing down, because the obvious alternative is actively dangerous.
 
-| Branch | Ahead of upstream `18.4.1` | Files under `RockWeb/Plugins/` | Last commit |
-| --- | --- | --- | --- |
-| `passion-18.4.1` (trunk) | 20 commits | **2** | 2026-08-10 |
-| `develop` | 489 commits | **276** | 2026-05-06 |
-| `staging` | 72 commits | **276** | 2026-02-24 |
+Each branch declares its own Rock version in `Rock.Version/AssemblySharedInfo.cs`. They are not
+three points on one line — they are three different Rock majors:
 
-The last production build ran on **2026-05-06 from `develop`** (`dd6d189b`), and the copy of
-`build-develop.yml` on `develop` is build-only — it produces a downloadable artifact and stops.
-So production has been updated by hand from that artifact, which is consistent with the
-production `bin` being a mixed-version assembly set rather than the output of any single build.
+| Branch | Declares | Descends from upstream tag `18.4.1`? | Commits the tag has that it lacks | Files under `RockWeb/Plugins/` |
+| --- | --- | --- | --- | --- |
+| `passion-18.4.1` (trunk) | **18.4.1** | yes | 0 | 2 |
+| `develop` | **19.0.3** | no — diverged 2026-01-07 | 218 | 276 |
+| `staging` | **17.6.1** | no | 2,238 | 276 |
 
-Two things follow, and they are independent:
+Production's own `bin`, inventoried 2026-07-30, is a patchwork within the 18.x line: 17
+assemblies at 18.1.0, 8 at 18.3.1, and 3 at 18.4.1 (`Rock.dll`, `Rock.Blocks.dll`,
+`Rock.Version.dll`, hot-swapped 2026-07-20). Nothing on the box is 19.x. So:
 
-1. **Production is not at risk of losing its plugins.** The `InPlace` deploy path uses
-   `robocopy /E` with no `/MIR` and no `/PURGE` (`Deploy-RockEnvironment.ps1:647-659`), so
-   files present on the server and absent from the artifact are left untouched. A trunk-based
-   deploy overwrites core Rock files and leaves `RockWeb\Plugins\` alone. Verified by reading
-   the script, not by deploying.
-2. **But a trunk-based deploy is still a version change, not a no-op.** Trunk is the 18.4.1
-   release line plus this pipeline; `develop` carries 489 commits of drift, some upstream and
-   some Passion's. Whether replacing production's core assemblies with trunk's is an upgrade,
-   a downgrade, or a mix cannot be determined from the repository — it needs the assembly
-   versions actually on the production box.
+1. **Production is 18.4.1 at the core and behind it everywhere else.** `Rock.dll` and
+   `Rock.Version.dll` are 18.4.1, which is why Rock's own about-page reports 18.4 — but most of
+   the site is still 18.1.0/18.3.1. A trunk deploy builds every assembly at 18.4.1, so it
+   brings the stragglers *forward*. That is the reconciliation production needs, not a risk to
+   avoid.
+2. **`develop` must never be deployed to production.** It is the 19.0 line. A v19 artifact on
+   production is a major-version jump whose migrations run at startup and cannot be walked
+   back. The last production *build* ran 2026-05-06 from `develop` (`dd6d189b`) — and the
+   absence of any 19.x assembly on the box is the evidence that artifact was never actually
+   installed. That was luck, not a control. `production-deploy.yml` should reject any ref that
+   is not the trunk.
+3. **Production cannot lose its plugins.** The `InPlace` path uses `robocopy /E` with no `/MIR`
+   and no `/PURGE` (`Deploy-RockEnvironment.ps1:647-659`), so server-only files survive. Trunk
+   carries 2 plugin files and production carries hundreds; the deploy leaves them alone.
+   Verified by reading the script, not by deploying.
 
-**What to do, in order:** read the assembly versions off `connect-srv-prod` and compare them
-against what trunk builds; decide whether trunk, `develop`, or a reconciliation of the two is
-production's source of truth; then reconcile the plugin files (item 14) so one branch holds all
-of it. Until that is done, the production workflow is proven mechanically — it builds, gates,
-backs up, copies, and health-checks — but the question of *what* it should be shipping is open.
+**The one real risk, and it is specific:** `Rock.Migrations.dll` on production is **18.3.1**,
+and trunk builds it at **18.4.1**. Rock runs pending migrations on first startup, so the first
+trunk deploy will apply the 18.3.1 → 18.4.1 migrations against the production database. That is
+a normal patch-level upgrade, but it is a one-way door. It needs a verified database backup
+taken immediately before, and it should be the *only* change in that deploy.
 
-This is why the production path is deliberately unfired. The gate is not the only thing
-standing between this pipeline and production; this item is.
+**What to do, in order:** re-confirm the assembly inventory on `connect-srv-prod` (the numbers
+above are from 2026-07-30 and predate any 18.4.1 work since); take and *verify* a database
+backup; deploy the trunk to production during a window, with DevOps present; then reconcile the
+plugin files (item 14) so one branch holds all of it. Add the ref guard from point 2 before the
+first real run.
+
+This is why the production path is deliberately unfired — not because the source branch was
+unknown, but because the migration step above has to happen deliberately and with a backup.
 
 ---
 
@@ -344,9 +360,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 
 1. Item 2 — create the `production` Environment (~10 min, unblocks the gate)
 2. Item 3 — protect `passion-18.4.1` (~10 min, makes the training true)
-3. Item 15 — establish what production should deploy *from*, starting by reading the assembly
-   versions off `connect-srv-prod`. This gates the first real production deploy, and it is a
-   decision rather than a task
+3. Item 15 — the source branch is settled (the trunk). What's left: add the ref guard so
+   `develop` can never be deployed, re-confirm production's assembly inventory, and plan the
+   18.3.1 → 18.4.1 migration with a verified backup. This gates the first real production deploy
 4. Item 7 — decide the staging database question (a decision, then a restore)
 5. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window)
 6. Item 4 — re-run renewal once staging is healthy, then leave the schedule to it
@@ -359,4 +375,5 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
-needs a conversation rather than a keyboard.
+needs a conversation rather than a keyboard — specifically the database backup and the
+migration window, now that the branch question itself is answered.

@@ -714,8 +714,8 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>What's ours</h3>
-          <p>On the trunk, <strong>20 commits</strong> and <strong>69 files</strong> upstream doesn't have &mdash; and 55 of the 69 are this pipeline itself.</p>
-          <p style="margin-top:.5rem">Our long-standing custom blocks &mdash; check-in, scheduling, RSVP, finance, CMS &mdash; are <strong>276 files under <code>RockWeb/Plugins/</code></strong>, and they live on the older <code>develop</code> branch rather than on the trunk. Reconciling those two is the next piece of work, and it's on the open-items list.</p>
+          <p>On the trunk, <strong>68 files</strong> upstream doesn't have &mdash; and <strong>63 of them are this pipeline</strong>: the workflows, the deploy scripts, the docs, the tests. Five are product code, all one Form Builder feature.</p>
+          <p style="margin-top:.5rem">Our long-standing custom blocks &mdash; check-in, scheduling, RSVP, finance, CMS &mdash; are <strong>78 files under <code>RockWeb/Plugins/org_passion</code></strong> and <code>team_passion</code>. They are on the older <code>develop</code> branch, <strong>not on the trunk.</strong> Reconciling those two is the next piece of work and the top item on the open-items list.</p>
         </div>
         <div class="card">
           <h3>Why fork instead of starting clean</h3>
@@ -733,7 +733,8 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>Down: their work into ours</h3>
-          <p>Our <code>develop</code> branch is a <strong>pristine mirror of theirs</strong>. Nothing of ours is ever committed to it. That is what makes upgrades possible: we can always see exactly what changed upstream, with our customizations not in the way.</p>
+          <p>The clean reference point is not a branch of ours at all &mdash; it is <strong>Spark's tag <code>18.4.1</code></strong>, fetched from the <code>upstream</code> remote. That tag is what we diff against to see exactly what is ours and what is theirs.</p>
+          <p style="margin-top:.6rem">Our <code>develop</code> branch is <strong>not</strong> a clean mirror, despite the name. It carries 276 files under <code>RockWeb/Plugins/</code>, 78 of them ours, where upstream's tag carries 2. It is history we still need, not a reference copy.</p>
           <p class="card-note" style="margin-top:.6rem">Never open a PR against <code>develop</code>.</p>
         </div>
         <div class="card">
@@ -753,19 +754,22 @@
     <div class="eyebrow"><span class="eyebrow-num">03</span><span class="eyebrow-text">Version branches</span></div>
     <div class="body">
       <h2>The trunk is named after the Rock version it runs.</h2>
-      <div class="graph" role="img" aria-label="Diagram: upstream develop mirror, and the passion-18.4.1 trunk branched from Rock 18.4.1">
-        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">untouched mirror of SparkDevNetwork/Rock</span></div>
-        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;</span></div>
-        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">Rock 18.4.1 + our 233 commits = production</span></div>
+      <div class="graph" role="img" aria-label="Diagram: the passion-18.4.1 trunk continues from Spark's 18.4.1 tag, while our older develop branch diverged from a shared commit in January 2026">
+        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9670;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">Spark's tag 18.4.1 (&#9670;, July) + this pipeline</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">diverged Jan 2026 &mdash; holds our 78 plugin files</span></div>
       </div>
+      <p class="lede">Read the fork from the left: we share history with Spark up to January, they carried on to the <strong>18.4.1</strong> tag in July, and our trunk continues from that tag. <code>develop</code> is the older line that kept going in parallel.</p>
       <div class="cols cols-2">
         <div class="card">
           <h3>Why the version is in the name</h3>
           <p>A Rock upgrade is not a normal change &mdash; it moves thousands of files at once. Naming the trunk after the version makes the answer to "what is production running?" a thing you can read, not a thing you ask about.</p>
+          <p style="margin-top:.5rem">The cost of <em>not</em> doing that is already in this repo: <code>develop</code> is really Rock <strong>19.0.3</strong> and <code>staging</code> is really Rock <strong>17.6.1</strong>. Neither name says so &mdash; you have to open a source file to find out.</p>
         </div>
         <div class="card card-server">
-          <h3>What production runs today</h3>
-          <p><span class="mono">passion-18.4.1</span> &mdash; and the branch is the repository's default, so it is what you land on when you open the repo. If they match, there is nothing to remember.</p>
+          <h3>What the pipeline builds today</h3>
+          <p><span class="mono">passion-18.4.1</span> is the repository's default branch, so it's what you land on when you open the repo, and it's what staging builds from.</p>
+          <p style="margin-top:.5rem">Production runs Rock 18.4 at its core and was last touched <strong>by hand, in July.</strong> Pointing this pipeline at it is the next step, and it happens with DevOps in the room &mdash; not from a laptop.</p>
         </div>
       </div>
     </div>
@@ -778,9 +782,9 @@
       <h2>How the next upgrade happens.</h2>
       <p class="lede">You will not do this. It's here so the branch names you'll see next year make sense.</p>
       <ol>
-        <li>Pull Spark's <code>develop</code> down so the mirror is current.</li>
+        <li>Fetch from <code>upstream</code> so we have Spark's tags for the new release.</li>
         <li>Cut <code>passion-18.5</code> from the upstream tag for that release.</li>
-        <li>Replay our 233 commits onto it and fix what conflicts.</li>
+        <li>Replay our own work onto it and fix what conflicts.</li>
         <li>Point <code>.github/pr-test-environments.json</code> at the new branch &mdash; <strong>one file decides which base branch gets test environments.</strong></li>
         <li>Make it the repo default. Deploy it to staging. Live on staging until it's boring.</li>
         <li>Deploy to production. Retire the old trunk.</li>
