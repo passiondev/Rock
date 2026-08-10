@@ -1,0 +1,195 @@
+name: Rock Environment Deploy Command
+
+# Queues a deploy-environment command onto a VM's GCS command queue and waits for
+# the result. Shared by the staging and production deploy workflows so both use
+# exactly one code path to reach a Windows box.
+#
+# Why a GCS queue instead of SSH: the Windows VMs have no inbound SSH exposed and
+# adding it would mean opening a port and managing keys for a runner that changes
+# IP on every job. Each VM already has a service account and a scheduled task that
+# polls its own queue prefix, so a deploy is "write a JSON object to a bucket."
+
+"on":
+  workflow_call:
+    inputs:
+      environment_name:
+        description: Environment name, e.g. staging or production.
+        required: true
+        type: string
+      host_name:
+        description: Public host name for the environment.
+        required: true
+        type: string
+      sha:
+        description: Commit SHA being deployed.
+        required: true
+        type: string
+      artifact_gcs_object_path:
+        description: Artifact object path inside the deployment bucket.
+        required: true
+        type: string
+      mode:
+        description: DedicatedSite (its own IIS site) or InPlace (update an existing site).
+        required: false
+        default: DedicatedSite
+        type: string
+      queue_name:
+        description: Command queue prefix for the target VM. One per VM.
+        required: false
+        default: commands
+        type: string
+      target_site_path:
+        description: InPlace only -- existing site root to update, e.g. C:\inetpub\wwwroot.
+        required: false
+        default: ''
+        type: string
+      target_site_name:
+        description: InPlace only -- existing IIS site name.
+        required: false
+        default: ''
+        type: string
+      apply:
+        description: InPlace only -- false performs a dry run that reports its plan and changes nothing.
+        required: false
+        default: false
+        type: boolean
+      write_connection_string:
+        description: >-
+          Write web.ConnectionStrings.config from the sandbox DB secrets. Staging
+          does; production does not, so the connection string already on that box
+          is never touched by CI and never has to exist as a secret here.
+        required: false
+        default: true
+        type: boolean
+      poll_attempts:
+        description: Result poll attempts, 15 seconds apart.
+        required: false
+        default: 140
+        type: number
+
+defaults:
+  run:
+    shell: pwsh
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COMMAND_ID: deploy-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      QUEUE_NAME: ${{ inputs.queue_name }}
+      ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+      HOST_NAME: ${{ inputs.host_name }}
+      DEPLOY_SHA: ${{ inputs.sha }}
+      DEPLOY_MODE: ${{ inputs.mode }}
+      TARGET_SITE_PATH: ${{ inputs.target_site_path }}
+      TARGET_SITE_NAME: ${{ inputs.target_site_name }}
+      APPLY: ${{ inputs.apply }}
+      GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ inputs.artifact_gcs_object_path }}
+      CONNECTION_STRING: ${{ inputs.write_connection_string && format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, secrets.DB_NAME, secrets.DB_USER, secrets.DB_PASSWORD) || '' }}
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Confirm the artifact exists before queueing
+        run: |
+          # A queued command that names a missing artifact fails on the VM several
+          # minutes later, in a log nobody is watching. Checking here turns that
+          # into an immediate, obvious failure in the run that caused it.
+          gsutil -q stat "$env:ARTIFACT_GCS_PATH"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Artifact not found at $env:ARTIFACT_GCS_PATH"
+            exit 1
+          }
+          Write-Host "Artifact present: $env:ARTIFACT_GCS_PATH"
+
+      - name: Queue deploy-environment command
+        run: |
+          $command = [ordered]@{
+            commandId       = $env:COMMAND_ID
+            command         = "deploy-environment"
+            environmentName = $env:ENVIRONMENT_NAME
+            sha             = $env:DEPLOY_SHA
+            hostName        = $env:HOST_NAME
+            artifactGcsPath = $env:ARTIFACT_GCS_PATH
+            mode            = $env:DEPLOY_MODE
+            requestedAtUtc  = (Get-Date).ToUniversalTime().ToString("o")
+          }
+
+          if (![string]::IsNullOrWhiteSpace($env:CONNECTION_STRING)) {
+            $command.connectionString = $env:CONNECTION_STRING
+          }
+          if (![string]::IsNullOrWhiteSpace($env:TARGET_SITE_PATH)) {
+            $command.targetSitePath = $env:TARGET_SITE_PATH
+          }
+          if (![string]::IsNullOrWhiteSpace($env:TARGET_SITE_NAME)) {
+            $command.targetSiteName = $env:TARGET_SITE_NAME
+          }
+          if ($env:APPLY -eq 'true') {
+            $command.apply = $true
+          }
+
+          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
+
+          # Echo the command without the connection string so the log is safe to
+          # share in a screenshot or a training session. Rebuilt key by key rather
+          # than regex-scrubbed, so a password containing a quote cannot leak a
+          # fragment past the substitution.
+          $redacted = [ordered]@{}
+          foreach ($key in $command.Keys) {
+            if ($key -eq 'connectionString') { $redacted[$key] = '<redacted>' }
+            else { $redacted[$key] = $command[$key] }
+          }
+          $redacted | ConvertTo-Json -Depth 10
+
+          gsutil cp command.json "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/pending/$env:COMMAND_ID.json"
+
+      - name: Wait for the VM to report the result
+        id: poll
+        run: |
+          $resultUri = "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/results/$env:COMMAND_ID.json"
+          $attempts = ${{ inputs.poll_attempts }}
+
+          for ($i = 0; $i -lt $attempts; $i++) {
+            gsutil -q cp $resultUri result.json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $result = Get-Content result.json -Raw | ConvertFrom-Json
+              $result | ConvertTo-Json -Depth 10
+
+              if ($result.status -eq "succeeded") {
+                "### Deployed $env:ENVIRONMENT_NAME" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+                "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+                "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+                "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+                "| URL | https://$env:HOST_NAME |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+                "| Commit | ``$env:DEPLOY_SHA`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+                "| Mode | $env:DEPLOY_MODE |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+                exit 0
+              }
+
+              Write-Host "::error::Deploy of $env:ENVIRONMENT_NAME failed on the VM: $($result.error)"
+              "### Deploy of $env:ENVIRONMENT_NAME failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "$($result.error)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              exit 1
+            }
+            Start-Sleep -Seconds 15
+          }
+
+          # No result object at all means the queue worker never ran: the VM is
+          # off, the scheduled task is missing, or its service account lost bucket
+          # access. Say so, because "timed out" alone sends people to the wrong place.
+          Write-Host "::error::No result after $($attempts * 15) seconds. Check that $env:GCS_BUCKET is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running on the target VM against queue '$env:QUEUE_NAME'."
+          exit 1

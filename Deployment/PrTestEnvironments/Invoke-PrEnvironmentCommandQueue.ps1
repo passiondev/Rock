@@ -1,15 +1,25 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$BucketName,
-    [Parameter(Mandatory = $false)][string]$DeployRoot = "C:\RockDeploy"
+    [Parameter(Mandatory = $false)][string]$DeployRoot = "C:\RockDeploy",
+
+    # One queue per VM. The bucket is shared across environments, so if two hosts
+    # polled the same pending/ prefix they would race for every command and each
+    # would run roughly half of them -- a staging deploy could land on production.
+    # The default keeps the existing test-VM queue exactly where it is.
+    [Parameter(Mandatory = $false)][string]$QueueName = "commands"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$PendingPrefix = "pr-environments/commands/pending/"
-$ProcessingPrefix = "pr-environments/commands/processing/"
-$ResultsPrefix = "pr-environments/commands/results/"
+if ($QueueName -notmatch '^[a-z][a-z0-9-]{1,30}$') {
+    throw "QueueName must be lowercase letters, digits and hyphens, starting with a letter: '$QueueName'."
+}
+
+$PendingPrefix = "pr-environments/$QueueName/pending/"
+$ProcessingPrefix = "pr-environments/$QueueName/processing/"
+$ResultsPrefix = "pr-environments/$QueueName/results/"
 $LocalQueue = Join-Path $DeployRoot "queue"
 New-Item -ItemType Directory -Path $LocalQueue -Force | Out-Null
 
@@ -79,10 +89,11 @@ function Remove-GcsObject {
 # Defaults are kept comfortably under each workflow's own poll window so the
 # workflow reports the failure rather than timing out first.
 $CommandTimeoutsSeconds = @{
-    'deploy'            = 1500
-    'stop'              = 300
-    'destroy'           = 300
-    'renew-certificate' = 720
+    'deploy'             = 1500
+    'deploy-environment' = 1800
+    'stop'               = 300
+    'destroy'            = 300
+    'renew-certificate'  = 720
 }
 $FallbackCommandTimeoutSeconds = 600
 
@@ -100,6 +111,30 @@ $CommandRunner = {
                 -ArtifactGcsPath $Command.artifactGcsPath `
                 -HostName $Command.hostName `
                 -SandboxConnectionString $Command.sandboxConnectionString
+        }
+        "deploy-environment" {
+            # Long-lived named environments (staging, production). Optional fields
+            # are only forwarded when present so an older queued command still
+            # runs, and so production can omit connectionString to keep the one
+            # already on disk.
+            $arguments = @{
+                EnvironmentName = [string]$Command.environmentName
+                Sha             = [string]$Command.sha
+                ArtifactGcsPath = [string]$Command.artifactGcsPath
+                HostName        = [string]$Command.hostName
+            }
+            foreach ($optional in @('mode', 'connectionString', 'targetSitePath', 'targetSiteName', 'targetAppPoolName', 'environmentRoot')) {
+                if (($Command.PSObject.Properties.Name -contains $optional) -and ![string]::IsNullOrWhiteSpace([string]$Command.$optional)) {
+                    $parameterName = $optional.Substring(0, 1).ToUpperInvariant() + $optional.Substring(1)
+                    $arguments[$parameterName] = [string]$Command.$optional
+                }
+            }
+            # InPlace deploys are a dry run unless the command explicitly opts in.
+            if (($Command.PSObject.Properties.Name -contains 'apply') -and $Command.apply) {
+                $arguments['Apply'] = $true
+            }
+
+            & (Join-Path $DeployRoot "Deploy-RockEnvironment.ps1") @arguments
         }
         "stop" {
             & (Join-Path $DeployRoot "Stop-PrEnvironment.ps1") -PrNumber $Command.prNumber
