@@ -210,11 +210,31 @@ jobs:
         run: |
           $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
           for ($i = 0; $i -lt 120; $i++) {
-            gsutil cp $resultUri result.json 2>$null
+            gsutil -q cp $resultUri result.json 2>$null
             if ($LASTEXITCODE -eq 0) {
               $result = Get-Content result.json -Raw | ConvertFrom-Json
               $result | ConvertTo-Json -Depth 10
+
+              # The deploy script's own output stays on the VM; the queue agent
+              # uploads a redacted copy beside the result. Print it either way --
+              # on a failure it is the whole diagnosis, and on a success it is how
+              # you confirm the app actually started rather than merely copied.
+              $logObject = $null
+              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
+              if (![string]::IsNullOrWhiteSpace($logObject)) {
+                gsutil -q cp "gs://$env:PR_TEST_GCS_BUCKET/$logObject" command-output.log 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "::group::Deploy output from the VM"
+                  Get-Content command-output.log -Raw | Write-Host
+                  Write-Host "::endgroup::"
+                }
+              }
+              else {
+                Write-Host "The VM reported no output log. If this persists, re-run the bootstrap workflow so the VM picks up the current queue agent."
+              }
+
               if ($result.status -eq "succeeded") { exit 0 }
+              Write-Host "::error::Deploy of PR #$env:PR_NUMBER failed on the VM: $($result.error)"
               exit 1
             }
             Start-Sleep -Seconds 15

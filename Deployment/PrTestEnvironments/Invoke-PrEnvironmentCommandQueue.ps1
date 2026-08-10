@@ -65,11 +65,63 @@ function Read-GcsObjectText {
 function Write-GcsObjectText {
     param(
         [Parameter(Mandatory = $true)][string]$ObjectName,
-        [Parameter(Mandatory = $true)][string]$Text
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $false)][string]$ContentType = 'application/json'
     )
     $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
     $uri = "https://storage.googleapis.com/upload/storage/v1/b/$BucketName/o?uploadType=media&name=$encodedObjectName"
-    Invoke-GcsRequest -Uri $uri -Method POST -Body ([System.Text.Encoding]::UTF8.GetBytes($Text)) -ContentType 'application/json' | Out-Null
+    Invoke-GcsRequest -Uri $uri -Method POST -Body ([System.Text.Encoding]::UTF8.GetBytes($Text)) -ContentType $ContentType | Out-Null
+}
+
+# The command scripts write a lot of useful detail to their own output, but it
+# used to land only in this scheduled task's log on the VM -- so a failed deploy
+# reached GitHub as a single terse sentence and the only way to find out what
+# actually happened was to RDP in. Uploading the output next to the result lets
+# the queueing workflow print it, which is the difference between "did not become
+# healthy" and knowing which step failed and why.
+$LogsPrefix = "pr-environments/$QueueName/logs/"
+
+# This output is about to be printed in a PUBLIC repository's Actions log, and a
+# deploy command carries a database password. Redact by exact value first, using
+# the secrets from the command itself, then sweep for any password= that survived
+# in case a script assembled a connection string differently.
+function Get-RedactedText {
+    param(
+        [Parameter(Mandatory = $false)][string]$Text,
+        [Parameter(Mandatory = $false)][string[]]$Secrets = @()
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+
+    $redacted = $Text
+    foreach ($secret in $Secrets) {
+        # Short values are skipped: redacting a 3-character string would riddle
+        # the log with <redacted> and hide the very detail we came for.
+        if (![string]::IsNullOrWhiteSpace($secret) -and $secret.Length -ge 8) {
+            $redacted = $redacted.Replace($secret, '<redacted>')
+        }
+    }
+    $redacted = [regex]::Replace($redacted, '(?i)(password\s*=\s*)([^;"''\r\n]+)', '${1}<redacted>')
+    return $redacted
+}
+
+function Get-CommandSecrets {
+    param([Parameter(Mandatory = $true)]$Command)
+
+    $secrets = @()
+    foreach ($property in @('connectionString', 'sandboxConnectionString')) {
+        if ($Command.PSObject.Properties.Name -contains $property) {
+            $value = [string]$Command.$property
+            if (![string]::IsNullOrWhiteSpace($value)) {
+                $secrets += $value
+                # Also redact the password on its own: the full string may be
+                # line-wrapped or partially quoted in the output.
+                $match = [regex]::Match($value, '(?i)password\s*=\s*([^;]+)')
+                if ($match.Success) { $secrets += $match.Groups[1].Value.Trim() }
+            }
+        }
+    }
+    return $secrets
 }
 
 function Remove-GcsObject {
@@ -158,6 +210,8 @@ foreach ($commandObject in $commands) {
     $CommandId = $fileName
     $result = $null
     $job = $null
+    $commandOutput = ''
+    $commandSecrets = @()
 
     try {
         $commandJson = Read-GcsObjectText -ObjectName $commandObject
@@ -173,11 +227,30 @@ foreach ($commandObject in $commands) {
             $timeoutSeconds = [int]$command.timeoutSeconds
         }
 
+        $commandSecrets = Get-CommandSecrets -Command $command
+
         $job = Start-Job -ScriptBlock $CommandRunner -ArgumentList $DeployRoot, $command
         $finished = Wait-Job -Job $job -Timeout $timeoutSeconds
 
-        # Surface the command's output into the scheduled-task log regardless of outcome.
-        Receive-Job -Job $job *>&1 | ForEach-Object { Write-Host $_ }
+        # Surface the command's output into the scheduled-task log regardless of
+        # outcome, and keep a copy to upload so the workflow can print it too.
+        #
+        # -ErrorAction Continue is load-bearing. This script runs with
+        # $ErrorActionPreference = 'Stop', and Receive-Job re-emits a failed job's
+        # error as an error record -- which would become terminating and abandon
+        # this assignment, throwing away the output of exactly the failed deploy
+        # we wanted to read. Continue keeps it non-terminating so *>&1 can fold it
+        # into the captured text; the job's real outcome is judged below from
+        # $job.State, not from whether this line errored.
+        try {
+            $commandOutput = (Receive-Job -Job $job -ErrorAction Continue *>&1 | ForEach-Object {
+                Write-Host $_
+                [string]$_
+            }) -join "`n"
+        }
+        catch {
+            $commandOutput = "(could not read the command's output: $($_.Exception.Message))"
+        }
 
         if ($null -eq $finished) {
             Stop-Job -Job $job -ErrorAction SilentlyContinue
@@ -199,6 +272,34 @@ foreach ($commandObject in $commands) {
     }
     finally {
         if ($null -ne $job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+
+        # Upload the output before the result. The workflow stops polling the
+        # moment the result object appears, so writing the result first would
+        # race the log it is meant to point at.
+        $logObject = "$LogsPrefix$CommandId.log"
+        try {
+            $redactedOutput = Get-RedactedText -Text $commandOutput -Secrets $commandSecrets
+            if ([string]::IsNullOrWhiteSpace($redactedOutput)) {
+                $redactedOutput = "(the command produced no output)"
+            }
+            # Keep the tail: the failure and the steps leading to it are at the
+            # end, and an unbounded log is neither uploadable nor readable.
+            $maxLogCharacters = 200000
+            if ($redactedOutput.Length -gt $maxLogCharacters) {
+                $redactedOutput = "(truncated to the last $maxLogCharacters characters)`n" +
+                    $redactedOutput.Substring($redactedOutput.Length - $maxLogCharacters)
+            }
+            Write-GcsObjectText -ObjectName $logObject -Text $redactedOutput -ContentType 'text/plain; charset=utf-8'
+            # Indexer, not dot-notation: $result is an OrderedDictionary and this
+            # adds a key that isn't there yet.
+            $result['logObject'] = $logObject
+        }
+        catch {
+            # A log we could not upload must never turn a successful deploy into
+            # a failure, or mask the real error on a failed one.
+            Write-Warning "Could not upload command output for ${CommandId}: $($_.Exception.Message)"
+        }
+
         $resultJson = $result | ConvertTo-Json -Depth 10
         Write-GcsObjectText -ObjectName $resultObject -Text $resultJson
         Remove-GcsObject -ObjectName $commandObject

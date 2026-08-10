@@ -176,6 +176,147 @@ function Copy-GcsObjectToFile {
     Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri -OutFile $DestinationPath
 }
 
+function Write-GcsObjectFromFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Bucket,
+        [Parameter(Mandatory = $true)][string]$ObjectName,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
+    $headers = @{ Authorization = "Bearer $(Get-GcsAccessToken)" }
+    $uri = "https://storage.googleapis.com/upload/storage/v1/b/$Bucket/o?uploadType=media&name=$encodedObjectName"
+    Invoke-RestMethod -Headers $headers -Method POST -Uri $uri -InFile $Path -ContentType 'text/plain; charset=utf-8' | Out-Null
+}
+
+function Save-UnhealthyDiagnostics {
+    param(
+        [Parameter(Mandatory = $true)][string]$SiteRoot,
+        [Parameter(Mandatory = $true)][string]$Url
+    )
+
+    # When a deploy copies every file, starts the app pool, and the site still will
+    # not answer, the reason is in the application's own logs on this box -- and
+    # before this existed, reading them meant an RDP session. Collect them into one
+    # report and put it in the deployment bucket.
+    #
+    # Deliberately NOT printed to standard output. This script's output is uploaded
+    # and printed in a public repository's Actions log, and an application log can
+    # carry a person's email address or a stack trace full of internal detail. The
+    # bucket is private; the run log gets the object name and nothing else.
+    $since = (Get-Date).AddHours(-1)
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("Rock environment diagnostics")
+    $lines.Add("Collected (UTC): $((Get-Date).ToUniversalTime().ToString('o'))")
+    $lines.Add("Environment:     $EnvironmentName")
+    $lines.Add("Commit:          $Sha")
+    $lines.Add("Host name:       $HostName")
+    $lines.Add("Mode:            $Mode")
+    $lines.Add("Site root:       $SiteRoot")
+    $lines.Add("Health check:    $Url")
+    $lines.Add("")
+
+    $lines.Add("=== IIS state ===")
+    try {
+        if (Test-Path "IIS:\AppPools\$AppPoolName") {
+            $lines.Add("App pool ${AppPoolName}: $((Get-WebAppPoolState -Name $AppPoolName).Value)")
+        }
+        else { $lines.Add("App pool ${AppPoolName}: missing") }
+        if (Test-Path "IIS:\Sites\$SiteName") {
+            $lines.Add("Site ${SiteName}: $((Get-Website -Name $SiteName).State)")
+            foreach ($binding in @(Get-WebBinding -Name $SiteName)) {
+                $lines.Add("  binding: $($binding.protocol) $($binding.bindingInformation)")
+            }
+        }
+        else { $lines.Add("Site ${SiteName}: missing") }
+    }
+    catch { $lines.Add("Could not read IIS state: $($_.Exception.Message)") }
+    $lines.Add("")
+
+    $lines.Add("=== Deployed files ===")
+    # Presence, size and version only. web.ConnectionStrings.config holds a
+    # password, so its contents are never read here.
+    foreach ($relative in @('web.config', 'web.ConnectionStrings.config', 'bin\Rock.dll', 'bin\Rock.Version.dll')) {
+        $path = Join-Path $SiteRoot $relative
+        if (Test-Path $path) {
+            $item = Get-Item $path
+            $version = ''
+            if ($relative -like '*.dll') { $version = " version=$($item.VersionInfo.FileVersion)" }
+            $lines.Add("$relative present bytes=$($item.Length) modified=$($item.LastWriteTimeUtc.ToString('o'))$version")
+        }
+        else { $lines.Add("$relative MISSING") }
+    }
+    $lines.Add("")
+
+    $lines.Add("=== Windows Application event log, last hour, ASP.NET and .NET Runtime ===")
+    try {
+        $events = @(Get-WinEvent -LogName Application -MaxEvents 400 -ErrorAction SilentlyContinue |
+            Where-Object { $_.TimeCreated -gt $since -and $_.ProviderName -match 'ASP\.NET|\.NET Runtime|Application Error|IIS' } |
+            Select-Object -First 25)
+        if ($events.Count -eq 0) { $lines.Add("(no matching events -- the failure may not have reached the event log)") }
+        foreach ($entry in $events) {
+            $lines.Add("--- $($entry.TimeCreated.ToUniversalTime().ToString('o')) $($entry.ProviderName) id=$($entry.Id) level=$($entry.LevelDisplayName)")
+            $lines.Add($entry.Message)
+            $lines.Add("")
+        }
+    }
+    catch { $lines.Add("Could not read the event log: $($_.Exception.Message)") }
+    $lines.Add("")
+
+    $lines.Add("=== Application logs under App_Data\Logs ===")
+    try {
+        $logFiles = @(Get-ChildItem (Join-Path $SiteRoot 'App_Data\Logs') -Filter '*.log' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 3)
+        if ($logFiles.Count -eq 0) { $lines.Add("(no log files)") }
+        foreach ($logFile in $logFiles) {
+            $lines.Add("--- $($logFile.Name) modified=$($logFile.LastWriteTimeUtc.ToString('o')) bytes=$($logFile.Length)")
+            $lines.Add(((Get-Content $logFile.FullName -Tail 120 -ErrorAction SilentlyContinue) -join "`n"))
+            $lines.Add("")
+        }
+    }
+    catch { $lines.Add("Could not read the application logs: $($_.Exception.Message)") }
+    $lines.Add("")
+
+    $lines.Add("=== Response body from the health check URL ===")
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 60 -ErrorAction SilentlyContinue
+        $lines.Add("HTTP $($response.StatusCode)")
+        $lines.Add([string]$response.Content)
+    }
+    catch {
+        $lines.Add("Request threw: $($_.Exception.Message)")
+        try {
+            $errorResponse = $_.Exception.Response
+            if ($errorResponse) {
+                $reader = New-Object System.IO.StreamReader($errorResponse.GetResponseStream())
+                $lines.Add($reader.ReadToEnd())
+                $reader.Dispose()
+            }
+        }
+        catch { $lines.Add("(could not read the error response body)") }
+    }
+
+    # Light redaction even though the destination is private: a connection string
+    # can reach a log through an exception message, and a password should not be
+    # sitting in an object anyone with bucket read access can list.
+    $report = [regex]::Replace(($lines -join "`r`n"), '(?i)(password\s*=\s*)([^;"''\r\n]+)', '${1}<redacted>')
+
+    $bucket = ''
+    if ($ArtifactGcsPath -match '^gs://([^/]+)/') { $bucket = $Matches[1] }
+    if ([string]::IsNullOrWhiteSpace($bucket)) {
+        Write-Warning "Could not determine the bucket from $ArtifactGcsPath; diagnostics not uploaded."
+        return
+    }
+
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+    $localPath = Join-Path $env:TEMP "rock-diagnostics-$EnvironmentName-$stamp.txt"
+    $report | Out-File -FilePath $localPath -Encoding utf8 -Force
+    $objectName = "pr-environments/diagnostics/$EnvironmentName/$stamp-$Sha.txt"
+    Write-GcsObjectFromFile -Bucket $bucket -ObjectName $objectName -Path $localPath
+    Write-Host "Collected diagnostics for the unhealthy site: gs://$bucket/$objectName"
+    Write-Host "Read it with: gsutil cat gs://$bucket/$objectName"
+}
+
 function Stop-EnvironmentAppPool {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -503,6 +644,11 @@ try {
     Write-Host "Deployed $EnvironmentName ($Sha) to https://$HostName"
 
     if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds)) {
+        # Gather the evidence while it is still fresh, and never let a problem
+        # gathering it replace the failure it was meant to explain.
+        try { Save-UnhealthyDiagnostics -SiteRoot $SitePath -Url "https://$HostName/" }
+        catch { Write-Warning "Could not collect diagnostics: $($_.Exception.Message)" }
+
         if ($Mode -eq 'InPlace') {
             throw "Deploy completed but the site did not become healthy. Roll back from $backupPath if needed."
         }
