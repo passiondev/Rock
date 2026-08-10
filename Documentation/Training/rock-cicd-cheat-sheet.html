@@ -1,0 +1,385 @@
+<title>Rock CI/CD Cheat Sheet</title>
+
+<style>
+  /* Passion tokens (passion-jira: client/src/theme.ts). Print is the primary
+     medium here, so the sheet is laid out to fit one Letter/A4 page; the screen
+     view is the same document at a comfortable reading size. */
+
+  :root {
+    --canvas: #ffffff;
+    --surface: #f8f9fa;
+    --sage: #e2e3da;
+    --panel: #f0f0f0;
+    --ink: #333333;
+    --muted: #676263;
+    --line: #d9d9d9;
+    --bone: #dcdee0;
+    --accent: #00ceff;
+    --accent-ink: #000000;
+    --link: #00b8e4;
+    --was: #b1543c;
+    --now: #5c7a52;
+    --was-wash: rgba(177, 84, 60, 0.08);
+
+    --type-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --type-serif: 'Times New Roman', Times, serif;
+    --type-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --track-tight: -0.06em;
+    --track-body: 0.01em;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --canvas: #14181c;
+      --surface: #1c2126;
+      --sage: #232a26;
+      --panel: #1a1f24;
+      --ink: #eef0ee;
+      --muted: #9aa3ab;
+      --line: #333b42;
+      --bone: #2c343b;
+      --accent: #3ad5ff;
+      --accent-ink: #04222b;
+      --link: #5cd8f7;
+      --was: #e0917a;
+      --now: #9cbd8c;
+      --was-wash: rgba(224, 145, 122, 0.12);
+    }
+  }
+
+  :root[data-theme='dark'] {
+    --canvas: #14181c;
+    --surface: #1c2126;
+    --sage: #232a26;
+    --panel: #1a1f24;
+    --ink: #eef0ee;
+    --muted: #9aa3ab;
+    --line: #333b42;
+    --bone: #2c343b;
+    --accent: #3ad5ff;
+    --accent-ink: #04222b;
+    --link: #5cd8f7;
+    --was: #e0917a;
+    --now: #9cbd8c;
+    --was-wash: rgba(224, 145, 122, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--type-sans);
+    letter-spacing: var(--track-body);
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: clamp(1.25rem, 4vw, 2.5rem);
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding-bottom: 0.625rem;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 1rem;
+  }
+
+  h1 {
+    font-size: clamp(1.375rem, 3.4vw, 1.875rem);
+    letter-spacing: var(--track-tight);
+    margin: 0;
+    font-weight: 600;
+  }
+
+  .masthead-note {
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-align: right;
+  }
+
+  /* ---------- the one rule ---------- */
+
+  .rule {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem 0.875rem;
+    background: var(--sage);
+    border-radius: 12px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+  }
+
+  .rule-label {
+    font-family: var(--type-serif);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+  }
+
+  .rule-text { font-size: clamp(0.9375rem, 2vw, 1.0625rem); letter-spacing: var(--track-tight); }
+
+  /* ---------- columns ---------- */
+
+  .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+    gap: 1rem 1.75rem;
+    align-items: start;
+  }
+
+  section { break-inside: avoid; }
+
+  h2 {
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.11em;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 0 0 0.4rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  p { margin: 0 0 0.4rem; font-size: 0.8125rem; }
+  p:last-child { margin-bottom: 0; }
+
+  ol, ul { margin: 0; padding-left: 1.1rem; font-size: 0.8125rem; }
+  li { margin-bottom: 0.2rem; }
+  li:last-child { margin-bottom: 0; }
+  ul.bare { list-style: none; padding-left: 0; }
+
+  code {
+    font-family: var(--type-mono);
+    font-size: 0.9em;
+    background: var(--panel);
+    padding: 0.05em 0.3em;
+    border-radius: 4px;
+    letter-spacing: 0;
+  }
+
+  a { color: var(--link); }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.8125rem;
+  }
+
+  td {
+    padding: 0.2rem 0.5rem 0.2rem 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+
+  tr:last-child td { border-bottom: 0; }
+  td.k { white-space: nowrap; width: 1%; }
+
+  .tag {
+    display: inline-block;
+    font-family: var(--type-mono);
+    font-size: 0.6875rem;
+    padding: 0.08rem 0.42rem;
+    border-radius: 20px;
+    border: 1px solid var(--line);
+    background: var(--canvas);
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  /* House rule: the accent only ever marks something you act on. */
+  .tag-do { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+  .tag-state { background: var(--panel); color: var(--muted); }
+
+  .flow { font-size: 0.8125rem; }
+  .flow b { font-weight: 600; }
+  .arrow { color: var(--bone); padding: 0 0.15rem; }
+
+  .warn {
+    background: var(--was-wash);
+    border-left: 3px solid var(--was);
+    padding: 0.5rem 0.75rem;
+    border-radius: 0 8px 8px 0;
+    font-size: 0.8125rem;
+  }
+
+  .warn strong { color: var(--was); }
+
+  .foot {
+    margin-top: 1rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.6875rem;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.25rem;
+  }
+
+  /* ---------- print: one page ---------- */
+
+  @page { margin: 0.45in; }
+
+  @media print {
+    /* Force the light palette -- nobody wants a dark-mode page printed. */
+    :root {
+      --canvas: #ffffff; --surface: #f8f9fa; --sage: #e2e3da; --panel: #f0f0f0;
+      --ink: #000000; --muted: #555555; --line: #cccccc; --bone: #bbbbbb;
+      --accent: #00ceff; --accent-ink: #000000; --link: #000000;
+      --was: #8c3f2c; --was-wash: #ffffff;
+    }
+    body { font-size: 8.6pt; line-height: 1.28; }
+    .sheet { max-width: none; padding: 0; }
+    h1 { font-size: 15pt; }
+    h2 { font-size: 7pt; margin-bottom: 0.14rem; }
+    p, ol, ul, table, .flow, .warn, .rule-text { font-size: 8.2pt; }
+    .tag { font-size: 6.6pt; }
+    .cols { gap: 0.5rem 1.1rem; grid-template-columns: 1fr 1fr; }
+    .rule { padding: 0.4rem 0.6rem; margin-bottom: 0.55rem; }
+    .masthead { margin-bottom: 0.55rem; padding-bottom: 0.35rem; }
+    td { padding: 0.1rem 0.4rem 0.1rem 0; }
+    li { margin-bottom: 0.06rem; }
+    .warn { padding: 0.3rem 0.5rem; }
+    .foot { font-size: 6.6pt; margin-top: 0.5rem; }
+    a { text-decoration: none; }
+  }
+</style>
+
+<div class="sheet">
+
+  <header class="masthead">
+    <h1>Rock CI/CD &mdash; one page</h1>
+    <div class="masthead-note">
+      <span class="mono">github.com/passiondev/Rock</span><br>
+      Full guide: <code>Documentation/Local-Engineering-Training-Edit-Test-and-Deploy.md</code>
+    </div>
+  </header>
+
+  <div class="rule">
+    <span class="rule-label">The one rule</span>
+    <span class="rule-text">Branch from <code>passion-18.4.1</code> and open your PR <strong>into</strong> <code>passion-18.4.1</code>. Any other base branch and the robot silently ignores you &mdash; no error, no test site.</span>
+  </div>
+
+  <div class="cols">
+
+    <section>
+      <h2>The loop</h2>
+      <p class="flow">
+        <b>1.</b> Find the file (press <code>t</code>) <span class="arrow">&rarr;</span>
+        <b>2.</b> Edit, commit to a <em>new</em> branch <span class="arrow">&rarr;</span>
+        <b>3.</b> Open PR, base <code>passion-18.4.1</code> <span class="arrow">&rarr;</span>
+        <b>4.</b> Add <span class="tag tag-do">rock-test:start</span> <span class="arrow">&rarr;</span>
+        <b>5.</b> Wait ~30 min <span class="arrow">&rarr;</span>
+        <b>6.</b> Open the URL in the bot's comment <span class="arrow">&rarr;</span>
+        <b>7.</b> Get a review, merge <span class="arrow">&rarr;</span>
+        <b>8.</b> Add <span class="tag tag-do">rock-test:destroy</span> when done
+      </p>
+    </section>
+
+    <section>
+      <h2>Labels you press</h2>
+      <table>
+        <tbody>
+          <tr><td class="k"><span class="tag tag-do">rock-test:start</span></td><td>Build my branch, give me a site</td></tr>
+          <tr><td class="k"><span class="tag tag-do">rock-test:auto</span></td><td>Rebuild on every push</td></tr>
+          <tr><td class="k"><span class="tag tag-do">rock-test:stop</span></td><td>Shut down, keep files</td></tr>
+          <tr><td class="k"><span class="tag tag-do">rock-test:destroy</span></td><td>Delete it entirely</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Labels the robot sets &mdash; don't touch</h2>
+      <p>
+        <span class="tag tag-state">queued</span>
+        <span class="tag tag-state">building</span>
+        <span class="tag tag-state">deploying</span>
+        <span class="tag tag-state">deployed</span>
+        <span class="tag tag-state">stopped</span>
+        <span class="tag tag-state">failed</span>
+      </p>
+      <p><span class="tag tag-state">deployed</span> = your site is up; the URL is in the PR comment. <span class="tag tag-state">failed</span> = open <strong>Logs</strong> in that comment and find the red step.</p>
+    </section>
+
+    <section>
+      <h2>Where code lands</h2>
+      <table>
+        <tbody>
+          <tr><td class="k"><strong>Your PR</strong></td><td><code>pr-&lt;n&gt;.rock-dev.connect.passion.team</code><br>add <span class="tag tag-do">rock-test:start</span> &middot; anyone</td></tr>
+          <tr><td class="k"><strong>Staging</strong></td><td><code>staging.rock-dev.connect.passion.team</code><br><strong>merging into the trunk deploys this automatically</strong></td></tr>
+          <tr><td class="k"><strong>Production</strong></td><td>manual <em>Deploy Production</em> run + a second person's approval. Nothing merges here.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Cleanup &mdash; partly on you</h2>
+      <ul class="bare">
+        <li><strong>Merged PR</strong> &rarr; environment destroyed</li>
+        <li><strong>Closed, not merged</strong> &rarr; stopped, files kept</li>
+        <li><strong>Anything else</strong> &rarr; runs until you destroy it. Nothing reaps on a timer.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Timing &mdash; so it doesn't feel broken</h2>
+      <table>
+        <tbody>
+          <tr><td class="k">~25 min</td><td>Compile Rock + build both Vue workspaces on a fresh Windows runner</td></tr>
+          <tr><td class="k">~5 min</td><td>Package, upload, install, health check</td></tr>
+          <tr><td class="k">First load</td><td>Slow &mdash; Rock applies migrations on first request. Reload once.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Before you say it's broken</h2>
+      <ol>
+        <li>Is the PR's base branch <code>passion-18.4.1</code>?</li>
+        <li>Every page 500ing? Open staging. If it's broken too, it isn't your change.</li>
+        <li>Is the file actually in your PR's <strong>Files changed</strong> tab?</li>
+        <li>Changed LESS? Recompile: <em>Admin &rarr; CMS &rarr; Themes</em>. Then hard-refresh.</li>
+        <li>Still stale? Hard-refresh (<code>Cmd-Shift-R</code>).</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Not everything is a file</h2>
+      <p>HTML Content block text, page names and routes, Lava in block settings, workflows and reports live in the <strong>database</strong>. You change those in the Rock admin UI on the live site &mdash; this pipeline only moves files. Unsure? Ask before you start.</p>
+    </section>
+
+    <section>
+      <h2>Test environments are not safe for data</h2>
+      <p>The database is <strong>shared and gets reset</strong>. No email, no texts, no payments, no scheduled jobs. A migration in your PR changes that shared database for everyone. Don't build a demo on data you need next week.</p>
+    </section>
+
+    <section>
+      <h2 style="border-color: var(--was)">Two things that actually matter</h2>
+      <div class="warn">
+        <p><strong>The repo is public.</strong> Rock is open source and our fork is too. Never commit a password, connection string, API key, or any export with member names, emails, phones or giving data. Deleting it later does not remove it from history &mdash; tell DevOps so the credential gets rotated.</p>
+        <p style="margin-top:.35rem"><strong>A migration in your PR touches the shared database.</strong> Tell DevOps <em>before</em> you apply <code>rock-test:start</code> &mdash; it runs against the sandbox everyone else is using, and it is not something you can take back.</p>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="foot">
+    <span>Trunk branch: <code>passion-18.4.1</code> &mdash; matches production, and is the repo default</span>
+    <span>Base branch is set by <code>.github/pr-test-environments.json</code></span>
+    <span>Never open a PR against <code>develop</code> &mdash; it is a clean mirror of upstream Rock</span>
+    <span>Verified 2026-08-10</span>
+  </div>
+
+</div>
