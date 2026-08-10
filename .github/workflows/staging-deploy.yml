@@ -44,9 +44,13 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      # github.event.inputs, not inputs. The `inputs` context does not exist on a
+      # push event, and referencing it there fails the whole run before any job
+      # starts -- a "startup_failure" with no logs to read. github.event.inputs is
+      # simply null on push, so this expression is valid for both triggers.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.event.inputs.ref || github.sha }}
           fetch-depth: 1
 
       - name: Resolve SHA
