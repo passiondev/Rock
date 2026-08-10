@@ -317,6 +317,73 @@ jobs:
           $totalDlls = (Get-ChildItem "RockWeb\bin\*.dll").Count
           Write-Host "Total DLLs in RockWeb\bin: $totalDlls"
 
+      # RockWeb is a Web Site project, not a .csproj, so nothing in this job ever
+      # builds it -- the step above just sweeps every Release folder into
+      # RockWeb\bin. That covers assemblies some project emits as build output, but
+      # Rock also ships 84 *.dll.refresh pointers for packages no project
+      # references directly, and resolving those is what Visual Studio does on a
+      # developer's machine. Without this step they ride into the artifact as inert
+      # .refresh files and the assembly is simply absent.
+      #
+      # This is not hypothetical: Google.Protobuf.dll going missing exactly this
+      # way took staging and every PR environment down with a 500 at
+      # Application_Start. The build stayed green, because nothing here looked.
+      #
+      # Fill gaps only. A DLL a project actually built is the authoritative one and
+      # must win over the copy sitting in packages\.
+      - name: Resolve .refresh assemblies into RockWeb bin
+        run: |
+          $copied = @()
+          $unresolved = @()
+          $alreadyBuilt = 0
+
+          # Written with mixed encodings across the repo -- some UTF-16LE, some
+          # UTF-8 with a BOM -- so read raw, drop NULs (covers a BOM-less UTF-16
+          # file being read as single bytes) and trim the BOM character itself.
+          $trimChars = [char[]]@(0xFEFF, 0x20, 0x09, 0x0D, 0x0A)
+
+          foreach ($refresh in Get-ChildItem "RockWeb\bin" -Filter "*.dll.refresh" -ErrorAction SilentlyContinue) {
+            $targetName = $refresh.Name -replace '\.refresh$', ''
+            $targetPath = Join-Path $refresh.DirectoryName $targetName
+            if (Test-Path $targetPath) { $alreadyBuilt++; continue }
+
+            $relative = ((Get-Content -Raw -Path $refresh.FullName) -replace "`0", '').Trim($trimChars)
+            if ([string]::IsNullOrWhiteSpace($relative)) {
+              $unresolved += "$targetName (empty .refresh)"
+              continue
+            }
+
+            # The pointer is relative to the web site root, so its leading
+            # ..\packages lands on the solution-level packages folder that
+            # nuget restore populates. The repo root and bin are tried as
+            # fallbacks so a differently-rooted pointer still resolves.
+            $resolved = $null
+            foreach ($base in @("RockWeb", ".", "RockWeb\bin")) {
+              $candidate = Join-Path $base $relative
+              if (Test-Path $candidate) { $resolved = (Resolve-Path $candidate).Path; break }
+            }
+
+            if ($null -eq $resolved) {
+              $unresolved += "$targetName -> $relative"
+              continue
+            }
+
+            Copy-Item -Path $resolved -Destination $targetPath -Force
+            $copied += $targetName
+          }
+
+          Write-Host "Already emitted by a project build: $alreadyBuilt"
+          Write-Host "Copied from packages\:             $($copied.Count)"
+          foreach ($name in $copied) { Write-Host "  + $name" }
+
+          if ($unresolved.Count -gt 0) {
+            Write-Host "::warning::$($unresolved.Count) .refresh pointer(s) did not resolve; those assemblies are absent from the artifact."
+            foreach ($name in $unresolved) { Write-Host "::warning::unresolved: $name" }
+          }
+
+          "UNRESOLVED_REFRESH_COUNT=$($unresolved.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RESOLVED_REFRESH_COUNT=$($copied.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Cleanup tsconfig.json
         run: |
           if (Test-Path RockWeb\tsconfig.json) { Remove-Item RockWeb\tsconfig.json -Force }
@@ -338,7 +405,15 @@ jobs:
             "Rock.Rest.dll",
             "Rock.Migrations.dll",
             "Rock.WebStartup.dll",
-            "DotLiquid.dll"
+            "DotLiquid.dll",
+
+            # Not a Rock assembly, and the only third-party one gated here.
+            # Application_Start loads it through the Google/Firebase stack, so when
+            # it is missing IIS returns a 500 on every request and Rock's own error
+            # page cannot render either -- a double fault that hides the cause.
+            # It reaches bin only via .refresh resolution, so it is the canary for
+            # that step regressing.
+            "Google.Protobuf.dll"
           )
           foreach ($dll in $essentialDlls) {
             if (!(Test-Path "RockWeb\bin\$dll")) { $failures += "missing assembly: $dll" }
@@ -375,7 +450,9 @@ jobs:
             "| --- | --- |",
             "| Essential assemblies | $($essentialDlls.Count)/$($essentialDlls.Count) present |",
             "| Compiled Obsidian blocks | $($obsidianBlocks.Count) |",
-            "| DLLs in ``RockWeb\bin`` | $dllCount |"
+            "| DLLs in ``RockWeb\bin`` | $dllCount |",
+            "| Assemblies resolved from ``.refresh`` | $env:RESOLVED_REFRESH_COUNT |",
+            "| Unresolved ``.refresh`` pointers | $env:UNRESOLVED_REFRESH_COUNT |"
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Package RockWeb zip and metadata
