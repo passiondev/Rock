@@ -28,8 +28,12 @@ class PrArtifactWorkflowTests(unittest.TestCase):
 
         self.assertIn("workflow_call", workflow["on"])
         self.assertIn("workflow_dispatch", workflow["on"])
-        self.assertRegex(workflow_text, r"RockWeb-pr-\$\{\{\s*env\.PR_NUMBER\s*\}\}-\$\{\{\s*env\.SHORT_SHA\s*\}\}\.zip")
-        self.assertIn("pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}", workflow_text)
+        # The artifact name and GCS folder are keyed on ARTIFACT_SLUG, which
+        # defaults to pr-<pr_number>, so the same build also serves staging and
+        # production without their artifacts colliding with a PR's.
+        self.assertRegex(workflow_text, r"RockWeb-\$\{\{\s*env\.ARTIFACT_SLUG\s*\}\}-\$\{\{\s*env\.SHORT_SHA\s*\}\}\.zip")
+        self.assertIn("pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}", workflow_text)
+        self.assertIn("format('pr-{0}', inputs.pr_number)", workflow_text)
         self.assertIn("artifact_gcs_object_path", workflow_text)
         self.assertIn("actions/upload-artifact@v4", workflow_text)
         self.assertIn("google-github-actions/upload-cloud-storage@v2", workflow_text)

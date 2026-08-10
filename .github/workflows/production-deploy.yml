@@ -1,0 +1,131 @@
+name: Deploy Production
+
+# Production deploys are manual, gated, and reversible.
+#
+# Nothing here fires on a push. Someone has to open Actions, pick a commit, and
+# then a second person has to approve the "production" environment before the
+# deploy job starts. The default run is a DRY RUN that reports what it would do
+# and changes nothing -- you have to explicitly set apply=true to deploy.
+#
+# What the VM-side script does, in order (Deploy-RockEnvironment.ps1, InPlace mode):
+#   1. download and unpack the artifact
+#   2. back up the current site to C:\RockBackups\production\<utc>-<sha>
+#   3. stop the app pool and wait for the worker process to release its files
+#   4. copy the artifact over the site, preserving Content, App_Data, Logs,
+#      Uploads and web.ConnectionStrings.config
+#   5. start the app pool and poll the site until it answers
+#
+# The database connection string is NOT managed here on purpose. Production's
+# web.ConnectionStrings.config stays exactly as it is on disk, so CI never needs
+# production database credentials and cannot point production at the wrong server.
+#
+# Rock applies its own EF and plugin migrations on first request after a deploy,
+# which is why step 5 waits several minutes before calling the site unhealthy.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or SHA to deploy. Use the trunk branch unless you are rolling back.
+        required: true
+        default: passion-18.4.1
+        type: string
+      apply:
+        description: Actually deploy. Leave unchecked for a dry run that only reports its plan.
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  # Never two production deploys at once, and never cancel one midway -- a
+  # half-copied site is worse than a queued deploy.
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve commit to deploy
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Resolve SHA and summarize the request
+        id: resolve
+        shell: bash
+        run: |
+          sha="$(git rev-parse HEAD)"
+          short="$(git rev-parse --short HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short" >> "$GITHUB_OUTPUT"
+
+          mode="DRY RUN (nothing will change)"
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            mode="APPLY -- this will replace the production site files"
+          fi
+
+          {
+            echo "### Production deploy request"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Ref | \`${{ inputs.ref }}\` |"
+            echo "| Commit | \`$short\` |"
+            echo "| Subject | $(git log -1 --pretty=%s) |"
+            echo "| Mode | **$mode** |"
+            echo "| Requested by | @${{ github.actor }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build production artifact
+    needs: resolve
+    uses: ./.github/workflows/pr-test-artifact.yml
+    with:
+      head_sha: ${{ needs.resolve.outputs.sha }}
+      host_name: ${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
+      artifact_slug: production
+    secrets: inherit
+
+  approve:
+    name: Await production approval
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    # The "production" GitHub Environment carries the required-reviewer rule. This
+    # job exists only to hold the run at that gate. It sits after the build on
+    # purpose: an approver should never be asked to approve a commit that turned
+    # out not to compile.
+    environment:
+      name: production
+      url: https://${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
+    steps:
+      - name: Record approval
+        run: |
+          echo "Approved by @${{ github.actor }} for commit ${{ needs.resolve.outputs.short_sha }}."
+
+  deploy:
+    name: Deploy to production
+    needs: [resolve, build, approve]
+    uses: ./.github/workflows/env-deploy-command.yml
+    with:
+      environment_name: production
+      host_name: ${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
+      sha: ${{ needs.resolve.outputs.sha }}
+      artifact_gcs_object_path: ${{ needs.build.outputs.artifact_gcs_object_path }}
+      mode: InPlace
+      # Production runs its own queue on its own VM. Sharing the test VM's queue
+      # would let either box pick up either environment's commands.
+      queue_name: commands-prod
+      target_site_path: ${{ vars.PRODUCTION_SITE_PATH || 'C:\inetpub\wwwroot' }}
+      target_site_name: ${{ vars.PRODUCTION_SITE_NAME || 'Default Web Site' }}
+      apply: ${{ inputs.apply }}
+      # Production keeps the connection string that is already on the box.
+      write_connection_string: false
+    secrets: inherit

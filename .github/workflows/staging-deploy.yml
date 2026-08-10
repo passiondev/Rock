@@ -1,0 +1,82 @@
+name: Deploy Staging
+
+# Staging is the shared "does it work on a real server" environment. It tracks the
+# trunk branch: whatever is merged into passion-18.4.1 is what staging runs.
+#
+#   https://staging.rock-dev.connect.passion.team
+#
+# It is its own IIS site on the test VM (connect-srv-test), pointed at the same
+# sandbox database the PR environments use. Nothing here can touch production.
+
+"on":
+  push:
+    branches:
+      - passion-18.4.1
+    paths-ignore:
+      # Documentation-only commits do not change the built site, and a 30-minute
+      # Windows build per typo fix is not a good trade.
+      - '**/*.md'
+      - 'Documentation/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'Tests/PrTestEnvironments/**'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or SHA to deploy. Defaults to the trunk branch.
+        required: false
+        default: passion-18.4.1
+        type: string
+
+concurrency:
+  # A newer commit supersedes an in-flight staging deploy. Two deploys writing the
+  # same site directory at once would interleave files; the VM-side mutex would
+  # serialize them, but building the older commit is wasted time either way.
+  group: staging-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve commit to deploy
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Resolve SHA
+        id: resolve
+        shell: bash
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha to staging."
+
+  build:
+    name: Build staging artifact
+    needs: resolve
+    uses: ./.github/workflows/pr-test-artifact.yml
+    with:
+      head_sha: ${{ needs.resolve.outputs.sha }}
+      host_name: staging.rock-dev.connect.passion.team
+      artifact_slug: staging
+    secrets: inherit
+
+  deploy:
+    name: Deploy to staging
+    needs: [resolve, build]
+    uses: ./.github/workflows/env-deploy-command.yml
+    with:
+      environment_name: staging
+      host_name: staging.rock-dev.connect.passion.team
+      sha: ${{ needs.resolve.outputs.sha }}
+      artifact_gcs_object_path: ${{ needs.build.outputs.artifact_gcs_object_path }}
+      mode: DedicatedSite
+      queue_name: commands
+      write_connection_string: true
+    secrets: inherit
