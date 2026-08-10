@@ -86,6 +86,30 @@ jobs:
       - name: Setup Git CRLF
         run: git config --global core.autocrlf true
 
+      # The runner image moves Visual Studio between major versions (the install
+      # root went 2022 -> 18), so pinning the version folder silently rots. Only
+      # vswhere.exe has a stable location; ask it where MSBuild actually landed.
+      # Runs before the npm builds so a bad image fails in seconds, not minutes.
+      - name: Locate MSBuild
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+
+          $msbuild = & $vswhere -latest -products * `
+                       -requires Microsoft.Component.MSBuild `
+                       -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+
+          if (-not $msbuild -or !(Test-Path $msbuild)) {
+            Write-Host "::error::Could not locate MSBuild.exe via vswhere"
+            & $vswhere -latest -products * -format value
+            exit 1
+          }
+
+          Write-Host "Using MSBuild: $msbuild"
+          & $msbuild -version
+          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Setup NuGet
         uses: actions/setup-dotnet@v4
         with:
@@ -109,6 +133,7 @@ jobs:
           path: |
             Rock.JavaScript/node_modules
             Rock.JavaScript.Obsidian/node_modules
+            Rock.JavaScript.Obsidian.Blocks/node_modules
             Rock.JavaScript.EditorJs/node_modules
           key: js-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
@@ -138,6 +163,18 @@ jobs:
         working-directory: Rock.JavaScript.Obsidian
         run: npm run build
 
+      # The compiled .obs.js block files are NOT committed to the repo (0 tracked
+      # files under RockWeb/Obsidian/Blocks), so without this the artifact ships a
+      # site with no Obsidian blocks at all. Must run after Rock.JavaScript.Obsidian,
+      # which it imports its framework types from.
+      - name: Install Rock.JavaScript.Obsidian.Blocks Dependencies
+        working-directory: Rock.JavaScript.Obsidian.Blocks
+        run: npm ci
+
+      - name: Build Rock.JavaScript.Obsidian.Blocks
+        working-directory: Rock.JavaScript.Obsidian.Blocks
+        run: npm run build
+
       - name: Move Plugins Folder
         run: |
           Move-Item RockWeb\Plugins C:\
@@ -149,12 +186,44 @@ jobs:
       - name: Create Empty ConnectionStrings Config
         run: New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
 
+      # Failure policy: anything the deployed site actually loads is FATAL, so a
+      # broken build can never be packaged and shipped as a green deploy. Test
+      # projects and plugin projects are advisory -- test assemblies are not
+      # served, and plugins are third-party/org-specific -- but every one of them
+      # is surfaced as a ::warning:: and listed in the job summary so a plugin
+      # silently dropping out of the artifact is visible rather than invisible.
       - name: Build Rock Projects (Dependency Order)
-        continue-on-error: true
         timeout-minutes: 30
         run: |
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" DotLiquid\DotLiquid.csproj /p:Configuration=Release /verbosity:minimal
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $msbuild = $env:MSBUILD_PATH
+          $advisoryFailures = @()
+
+          function Invoke-Build {
+            param(
+              [Parameter(Mandatory = $true)][string]$Project,
+              [Parameter(Mandatory = $false)][string[]]$ExtraArgs = @(),
+              [Parameter(Mandatory = $false)][switch]$Advisory
+            )
+
+            $name = Split-Path $Project -Leaf
+            Write-Host "::group::Building $name"
+            & $msbuild $Project /p:Configuration=Release /verbosity:minimal @ExtraArgs
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+
+            if ($code -eq 0) { return }
+
+            if ($Advisory) {
+              Write-Host "::warning::$name failed to build (exit $code); continuing."
+              $script:advisoryFailures += $name
+              return
+            }
+
+            Write-Host "::error::$name failed to build (exit $code). This assembly is required by the deployed site."
+            exit $code
+          }
+
+          Invoke-Build -Project "DotLiquid\DotLiquid.csproj"
 
           $coreProjects = @(
             "Rock.Enums\Rock.Enums.csproj",
@@ -162,17 +231,11 @@ jobs:
             "Rock.Version\Rock.Version.csproj",
             "Rock.ViewModels\Rock.ViewModels.csproj"
           )
-
           foreach ($project in $coreProjects) {
-            if (Test-Path $project) {
-              Write-Host "Building core project: $project"
-              & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project /p:Configuration=Release /verbosity:minimal
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
+            if (Test-Path $project) { Invoke-Build -Project $project }
           }
 
-          & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" Rock\Rock.csproj /p:Configuration=Release /verbosity:minimal /m:4
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Invoke-Build -Project "Rock\Rock.csproj" -ExtraArgs @("/m:4")
 
           $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*")
           $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object {
@@ -184,11 +247,9 @@ jobs:
           }
 
           foreach ($project in $rockProjects) {
-            Write-Host "Building $($project.Name)"
-            & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /verbosity:minimal /m:4
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "Warning: Failed to build $($project.Name), continuing with other projects..."
-            }
+            # Test assemblies are never served by the site, so they stay advisory.
+            $isTestProject = $project.Name -like "*Tests*"
+            Invoke-Build -Project $project.FullName -ExtraArgs @("/m:4") -Advisory:$isTestProject
           }
 
           $pluginProjects = Get-ChildItem "C:\Plugins\**\*.csproj" -Recurse
@@ -198,19 +259,18 @@ jobs:
           Copy-Item "$PWD/DotLiquid/bin/Release/DotLiquid.dll" $tempRefDir -Force -ErrorAction SilentlyContinue
 
           foreach ($project in $pluginProjects) {
-            Write-Host "Building plugin project: $($project.Name)"
-            $originalErrorActionPreference = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            try {
-              & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" $project.FullName /p:Configuration=Release /p:SolutionDir="$PWD\" /verbosity:minimal
-            } finally {
-              $ErrorActionPreference = $originalErrorActionPreference
-            }
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "Warning: Failed to build plugin $($project.Name), continuing..."
-            }
+            Invoke-Build -Project $project.FullName -ExtraArgs @("/p:SolutionDir=$PWD\") -Advisory
           }
-          exit 0
+
+          if ($advisoryFailures.Count -gt 0) {
+            $lines = @("### Advisory build failures", "", "These did not fail the build, but their assemblies are missing from the artifact:", "")
+            $lines += $advisoryFailures | ForEach-Object { "- ``$_``" }
+            $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            Write-Host "$($advisoryFailures.Count) advisory failure(s): $($advisoryFailures -join ', ')"
+          }
+          else {
+            "### Build clean`n`nAll Rock, test, and plugin projects compiled." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
 
       - name: Restore Plugins Folder
         if: always()
@@ -248,21 +308,62 @@ jobs:
         run: |
           if (Test-Path RockWeb\tsconfig.json) { Remove-Item RockWeb\tsconfig.json -Force }
 
+      # Gating on Rock.dll alone let artifacts ship that were missing Obsidian
+      # blocks, the REST API, or migrations -- each of which yields a site that
+      # boots and then fails at the first page load. Check everything RockWeb
+      # actually needs to serve a request.
       - name: Verify Build Artifacts
         run: |
-          $missingDlls = @()
-          foreach ($dll in @("Rock.dll")) {
-            if (!(Test-Path "RockWeb\bin\$dll")) { $missingDlls += $dll }
+          $failures = @()
+
+          $essentialDlls = @(
+            "Rock.dll",
+            "Rock.Common.dll",
+            "Rock.Enums.dll",
+            "Rock.ViewModels.dll",
+            "Rock.Blocks.dll",
+            "Rock.Rest.dll",
+            "Rock.Migrations.dll",
+            "Rock.WebStartup.dll",
+            "DotLiquid.dll"
+          )
+          foreach ($dll in $essentialDlls) {
+            if (!(Test-Path "RockWeb\bin\$dll")) { $failures += "missing assembly: $dll" }
           }
 
-          if ($missingDlls.Count -gt 0) {
-            Write-Host "Missing essential DLLs: $($missingDlls -join ', ')"
+          # Obsidian block JS is built, never committed, so an artifact with zero
+          # .obs.js files means the Rock.JavaScript.Obsidian.Blocks build silently
+          # produced nothing and every Obsidian block on the site would be blank.
+          $obsidianBlocks = @(Get-ChildItem "RockWeb\Obsidian\Blocks" -Recurse -Filter "*.obs.js" -ErrorAction SilentlyContinue)
+          if ($obsidianBlocks.Count -eq 0) {
+            $failures += "no compiled Obsidian blocks found under RockWeb\Obsidian\Blocks"
+          }
+
+          if (!(Test-Path "RockWeb\Obsidian\obsidian-core.js")) {
+            Write-Host "::warning::RockWeb\Obsidian\obsidian-core.js not found; Obsidian framework bundle may be missing."
+          }
+
+          if ($failures.Count -gt 0) {
+            foreach ($failure in $failures) { Write-Host "::error::$failure" }
+            Write-Host "::error::Artifact is incomplete and will not be packaged."
             exit 1
           }
 
-          Write-Host "All essential DLLs present ✓"
+          $dllCount = (Get-ChildItem "RockWeb\bin" -File -Filter "*.dll").Count
+          Write-Host "All essential assemblies present ✓"
+          Write-Host "Obsidian blocks compiled: $($obsidianBlocks.Count)"
           Write-Host "Total files in RockWeb: $((Get-ChildItem RockWeb -Recurse -File).Count)"
-          Write-Host "DLLs in bin folder: $((Get-ChildItem RockWeb\bin -File).Count)"
+          Write-Host "DLLs in bin folder: $dllCount"
+
+          @(
+            "### Artifact verification",
+            "",
+            "| Check | Result |",
+            "| --- | --- |",
+            "| Essential assemblies | $($essentialDlls.Count)/$($essentialDlls.Count) present |",
+            "| Compiled Obsidian blocks | $($obsidianBlocks.Count) |",
+            "| DLLs in ``RockWeb\bin`` | $dllCount |"
+          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Package RockWeb zip and metadata
         id: package-metadata

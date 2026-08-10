@@ -55,3 +55,12 @@ node_modules
 
 # Dev Tools
 Dev Tools/Scripts/obsidian-backend-watch/logs/
+
+# Local environment files (may contain connection strings / credentials)
+.env
+*.env
+!*.example.env
+
+# Python bytecode from the PR test environment test suite
+__pycache__/
+*.py[cod]

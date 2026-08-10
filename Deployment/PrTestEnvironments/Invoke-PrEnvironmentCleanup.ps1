@@ -1,0 +1,118 @@
+# Supports -WhatIf for manual verification without stopping or destroying environments.
+[CmdletBinding(SupportsShouldProcess = $true)]
+param(
+    [Parameter(Mandatory = $false)]
+    [string]
+    $EnvironmentRoot = "C:\RockTestEnvs",
+
+    [Parameter(Mandatory = $false)]
+    [int]
+    $StopAfterHours = 6,
+
+    [Parameter(Mandatory = $false)]
+    [int]
+    $DestroyAfterDays = 7,
+
+    [Parameter(Mandatory = $false)]
+    [string]
+    $GitHubToken,
+
+    [Parameter(Mandatory = $false)]
+    [string]
+    $GitHubRepository = "passiondev/Rock"
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$StopScript = Join-Path $ScriptRoot "Stop-PrEnvironment.ps1"
+$DestroyScript = Join-Path $ScriptRoot "Destroy-PrEnvironment.ps1"
+$NowUtc = (Get-Date).ToUniversalTime()
+
+function Get-ManifestActivityUtc {
+    param([Parameter(Mandatory = $true)]$Manifest)
+
+    foreach ($propertyName in @("lastLifecycleAtUtc", "deployedAtUtc", "stoppedAtUtc", "destroyedAtUtc")) {
+        if ($Manifest.ContainsKey($propertyName) -and ![string]::IsNullOrWhiteSpace($Manifest[$propertyName])) {
+            return ([DateTime]::Parse($Manifest[$propertyName])).ToUniversalTime()
+        }
+    }
+
+    return [DateTime]::MinValue.ToUniversalTime()
+}
+
+function Update-GitHubStatusIfConfigured {
+    param(
+        [Parameter(Mandatory = $true)][int]$PrNumber,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    if ([string]::IsNullOrWhiteSpace($GitHubToken)) {
+        return
+    }
+
+    Write-Host "GitHubToken supplied; external PR status update hook would report PR $PrNumber as $Status. $Message"
+    # Intentionally leave the full sticky-comment update to GitHub Actions where the shared
+    # .github/scripts/pr-test-status.js helper runs with a repository-scoped token.
+}
+
+if (!(Test-Path $EnvironmentRoot)) {
+    Write-Host "Environment root $EnvironmentRoot does not exist; nothing to clean."
+    return
+}
+
+$manifestFiles = Get-ChildItem -Path $EnvironmentRoot -Recurse -Filter "env.json" -File -ErrorAction SilentlyContinue
+foreach ($manifestFile in $manifestFiles) {
+    try {
+        $manifest = Get-Content $manifestFile.FullName -Raw | ConvertFrom-Json -AsHashtable
+        if (!$manifest.ContainsKey("prNumber")) {
+            Write-Warning "Skipping manifest without prNumber: $($manifestFile.FullName)"
+            continue
+        }
+
+        if ($manifest.prNumber -le 0) {
+            Write-Warning "Skipping manifest with invalid prNumber: $($manifestFile.FullName)"
+            continue
+        }
+
+        $status = if ($manifest.ContainsKey("status")) { [string]$manifest.status } else { "unknown" }
+        $activityUtc = Get-ManifestActivityUtc -Manifest $manifest
+        $idle = $NowUtc - $activityUtc
+        $prNumber = [int]$manifest.prNumber
+
+        if (($status -eq "stopped" -or $status -eq "closed") -and $idle.TotalDays -ge $DestroyAfterDays) {
+            Write-Host "Destroying PR $prNumber after $([Math]::Round($idle.TotalDays, 2)) idle days."
+            if ($PSCmdlet.ShouldProcess("PR $prNumber", "Destroy idle PR environment")) {
+                & $DestroyScript -PrNumber $prNumber -EnvironmentRoot $EnvironmentRoot
+                Update-GitHubStatusIfConfigured -PrNumber $prNumber -Status "destroyed" -Message "Destroyed by scheduled cleanup."
+            }
+            continue
+        }
+
+        if ($status -eq "deployed" -and $idle.TotalHours -ge $StopAfterHours) {
+            Write-Host "Stopping PR $prNumber after $([Math]::Round($idle.TotalHours, 2)) idle hours."
+            if ($PSCmdlet.ShouldProcess("PR $prNumber", "Stop idle PR environment")) {
+                & $StopScript -PrNumber $prNumber -EnvironmentRoot $EnvironmentRoot
+                Update-GitHubStatusIfConfigured -PrNumber $prNumber -Status "stopped" -Message "Stopped by scheduled cleanup."
+            }
+            continue
+        }
+
+        if ($idle.TotalDays -ge $DestroyAfterDays -and $status -ne "deployed") {
+            Write-Host "Destroying PR $prNumber with status $status after $([Math]::Round($idle.TotalDays, 2)) idle days."
+            if ($PSCmdlet.ShouldProcess("PR $prNumber", "Destroy stale PR environment")) {
+                & $DestroyScript -PrNumber $prNumber -EnvironmentRoot $EnvironmentRoot
+                Update-GitHubStatusIfConfigured -PrNumber $prNumber -Status "destroyed" -Message "Destroyed by scheduled cleanup."
+            }
+            continue
+        }
+
+        Write-Host "Keeping PR $prNumber with status $status; idle for $([Math]::Round($idle.TotalHours, 2)) hours."
+    }
+    catch {
+        Write-Warning "Skipping corrupt or unreadable manifest $($manifestFile.FullName): $($_.Exception.Message)"
+        continue
+    }
+}

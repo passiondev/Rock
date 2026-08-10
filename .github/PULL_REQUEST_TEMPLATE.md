@@ -1,58 +1,69 @@
-
-## Notice
-
-**In case you are submitting a non bug-fix-PR, we highly recommend you to engage in a PR discussion first.**
-
-There are many factors we consider before accepting a pull request. This includes:
-1. Whether or not the Rock system you run is a standard, main-line build. If it is not, there is a lower chance we will accept your request since it may impact some other part of the system you don't regularly use.
-2. Features that would be used by less than 80% of Rock organizations, or ones that don't match the goals of Rock.
-
-With the PR discussion we can assess your proposed changes before you start working on it so that we can come up with the best possible approach to it. This may include:
-1. Coming up with an alternate approach that does not involve changes to core.
-2. Advising how your proposed solution be done in a different way that is more efficient and consistent with the rest of the system.
-3. Have one of our core developers make the changes for you. This may be the case if the change involves intricate tasks like an EF migration or something similar.
-
-
-## Proposed Changes
-
 <!--
-Describe the big picture of your changes here to communicate to the maintainers why we should accept this pull request. If it fixes a bug or resolves a feature request, be sure to link to that issue.
+This is the template for internal Passion City Church work.
 
-Please include screenshots if your pull request either alters existing UI or provides new UI. Arrows and labels are helpful.
+Contributing a fix back to core Rock (SparkDevNetwork/Rock) instead? Open your PR
+with ?template=upstream-contribution.md appended to the URL to get Spark's
+template, which asks for the things their maintainers need.
 -->
 
-Fixes: #
+## What changed
 
-## Types of changes
+<!-- One or two sentences a non-engineer could follow. What did you change, and why? -->
 
-What types of changes does your code introduce to Rock?
-_Put an `x` in the boxes that apply_
+## Ticket
 
-- [ ] Bugfix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality, which has been approved by the core team)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
+<!-- Jira key, e.g. PTP-12345. Write "none" for chores with no ticket. -->
 
-## Checklist
+PTP-
 
-_Put an `x` in the boxes that apply. You can also fill these out after creating the PR. If you're unsure about any of them, don't hesitate to ask. We're here to help! This is simply a reminder of what we are going to look for before merging your code._
+## How to test it
 
-- [ ] This is a single-commit PR. (If not, please squash your commit and re-submit it.)
-- [ ] I verified my PR does not include whitespace/formatting changes -- because if it does it will be closed without merging.
-- [ ] I have read the [Contributing to Rock](https://github.com/SparkDevNetwork/Rock/blob/master/.github/CONTRIBUTING.md) doc
-- [ ] By contributing code, I agree to license my contribution under the [Rock Community License Agreement](https://www.rockrms.com/license)
-- [ ] Unit tests pass locally with my changes
-- [ ] I have added any required [unit tests](https://github.com/SparkDevNetwork/Rock/blob/develop/Rock.Tests/README.md) or [integration tests](https://github.com/SparkDevNetwork/Rock/blob/develop/Rock.Tests.Integration/README.md) that prove my fix is effective or that my feature works
-- [ ] I have included updated language for the [Rock Documentation](https://www.rockrms.com/Learn/Documentation) (if appropriate)
-
-## Further comments
 <!--
-If this is a relatively large or complex change, kick off the discussion by explaining why you chose the solution you did and what alternatives you considered, etc...
+Where in Rock does a reviewer go to see this? Be specific enough that someone who
+did not write the change can confirm it works.
+
+Example:
+1. Go to Admin Tools > Communications > Communication Templates
+2. Open "Weekend Recap"
+3. The Header Image field should now appear above Body
 -->
 
-## Documentation
-<!--
-If your change effects the UI or needs to be documented in one of the existing docs http://www.rockrms.com/Learn/Documentation, please provide the brief write-up here.
--->
+1.
+2.
+3.
 
-## Migrations
-If your pull request requires a migration, please *exclude the migration from the Rock.Migration project*, but submit it with your pull request. Please add a note to your pull request that provides a heads up that a migration file is present.
+## Deploy notes
+
+<!-- Delete any line that does not apply. -->
+
+- [ ] Includes a database migration
+- [ ] Requires a Rock setting / block attribute change after deploy (describe it below)
+- [ ] Touches a theme, stylesheet, or other file under `RockWeb/Themes`
+- [ ] Safe to deploy on its own, in any order
+
+---
+
+<!--
+### Getting a live test site for this PR
+
+Add the `rock-test:start` label to this PR. CI builds the branch on a Windows
+runner and deploys it to its own site at:
+
+    https://pr-<this PR number>.rock-dev.connect.passion.team
+
+The build takes roughly 25-35 minutes. Labels track progress:
+
+  rock-test:queued -> rock-test:building -> rock-test:deploying -> rock-test:deployed
+
+A comment on this PR is updated with the URL and a link to the logs. Other labels:
+
+  rock-test:auto      redeploy automatically on every new push to this branch
+  rock-test:stop      shut the site down but keep it (frees memory on the server)
+  rock-test:destroy   delete the site entirely
+
+The environment is destroyed automatically when this PR merges, and stopped when
+it closes without merging.
+
+Note: the test site runs against the shared sandbox database, not production.
+Data you create there is not real and may be wiped by a sandbox refresh.
+-->
