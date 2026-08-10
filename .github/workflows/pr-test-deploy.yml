@@ -50,7 +50,14 @@ jobs:
 
             let pull;
             if (context.eventName === 'workflow_dispatch') {
-              const prNumber = Number(core.getInput('pr_number'));
+              // core.getInput reads the *action's* inputs, not the workflow's, so it
+              // always returned '' here -- Number('') is 0 and pulls.get(0) 404s.
+              // Manual redeploys were impossible; only the label path ever worked.
+              const prNumber = Number(context.payload.inputs.pr_number);
+              if (!Number.isInteger(prNumber) || prNumber <= 0) {
+                core.setFailed(`pr_number input must be a positive integer; got '${context.payload.inputs.pr_number}'.`);
+                return;
+              }
               const response = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
               pull = response.data;
             } else {
@@ -79,7 +86,7 @@ jobs:
               ref: pull.base.ref
             });
             const config = JSON.parse(Buffer.from(configResponse.data.content, 'base64').toString('utf8'));
-            const configuredBaseBranch = config.baseBranch || 'develop-17.6.1';
+            const configuredBaseBranch = config.baseBranch || 'passion-18.4.1';
             const environmentDomain = config.environmentDomain || 'rock-dev.connect.passion.team';
             if (pull.base.ref !== configuredBaseBranch) {
               core.info(`PR ${pull.number} targets ${pull.base.ref}; PR test environments are configured for ${configuredBaseBranch}.`);

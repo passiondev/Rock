@@ -52,3 +52,12 @@ node_modules
 /Installers/CheckScannerInstall/UpgradeLog.htm
 /Installers/CheckScannerInstall/UpgradeLog2.htm
 /Installers/CheckScannerInstall_2017/CheckScannerInstall
+
+# Local environment files (may contain connection strings / credentials)
+.env
+*.env
+!*.example.env
+
+# Python bytecode from the PR test environment test suite
+__pycache__/
+*.py[cod]
