@@ -152,28 +152,37 @@ a new repo variable (`STAGING_DB_NAME`, say) and a real database to point it at:
 
 ### 8. `build-develop.yml` still deploys by rebooting a VM
 
-"Rock Build Pipeline" predates this work. It deploys with **no health gate and no rollback**,
-by rebooting a VM. Its GCP half is gated on `branches: [staging]` and has therefore never
-executed — which is the only reason it hasn't hurt anything.
-
-Now that the staging and production paths exist, reduce it to a build-only CI check or delete
-it. Leaving a second, worse deploy path in the repo is how someone eventually uses it.
+**Fixed 2026-08-10 — deleted from `passion-18.4.1`.** Details in the Fixed table below. The
+build-only copy on `develop` is a different file and was left alone.
 
 ---
 
 ## P2 — hygiene
 
-### 9. Seven stale branches
+### 9. Stale branches — but two of them are not safe to delete
 
-`develop-17.6.1`, `develop-18.3`, `deploy/ptp-14803-18.4.1`, `bump`, `staging`,
-`fix/group-sync`, `pilot/pr-test-env-doc-smoke-v1761` are all superseded by
-`passion-18.4.1`.
+`develop-17.6.1`, `deploy/ptp-14803-18.4.1`, `bump`, `fix/group-sync`, and
+`pilot/pr-test-env-doc-smoke-v1761` are superseded by `passion-18.4.1`. Pruning them removes
+several ways to target the wrong base branch. Confirm `fix/group-sync` is genuinely abandoned
+before deleting; the rest are safe.
 
-Pruning them removes several ways to target the wrong base branch — and `staging` is
-actively misleading now that it's a deploy target name rather than a branch. Confirm
-`fix/group-sync` is genuinely abandoned before deleting; the others are safe.
+**Do not delete `develop` or `staging`.** An earlier revision of this list called `develop` a
+"pristine upstream mirror" and put `staging` in the safe-to-prune set. Both were wrong, and
+measurably so:
 
-Keep `develop` — it is the pristine upstream mirror and must stay.
+- `develop` is **489 commits ahead of upstream tag `18.4.1`** and tracks all **276** files
+  under `RockWeb/Plugins/`. It is not a mirror of anything; it is where Passion's plugin work
+  lives. It is also the branch the last production build came from — run on 2026-05-06 from
+  `dd6d189b`, which is `origin/develop` HEAD today.
+- `staging` is 73 commits ahead of `develop` and holds **five plugin files that are newer than
+  `develop`'s copies** — `org_passion/RSVP/RsvpDetailBETA.ascx`,
+  `org_passion/RSVP/RsvpResponse.ascx.cs`, `org_passion/RSVP/RsvpResponseBETA.ascx.cs` (all
+  2026-02-24 vs. develop's 2026-01-09), plus `org_secc/Authentication/Arena.cs` and
+  `org.secc.Authentication.csproj` (2026-01-28 vs. 2026-01-09). Two of its commits
+  (`fix datetime issue in plugin`, `Optimizations`) exist nowhere else.
+
+Neither branch can be pruned until item 15 is settled, because between them they are the only
+copy of some of this code.
 
 ### 10. `GCP_COMPUTE_PROJECT_ID` is a dead secret
 
@@ -215,6 +224,86 @@ events, the tail of `App_Data\Logs`, and the response body — to
 `gs://<bucket>/pr-environments/diagnostics/<environment>/`. Installing the agent would still
 be better for anything that isn't a deploy.
 
+### 14. Plugin blocks are outside version control, so no test environment has them
+
+**Priority: P1 despite the number** — this list is append-only so the numbers stay stable
+across revisions and the cross-references above keep working.
+
+`RockWeb/Plugins/.gitignore` is a single rule, `*/*`, so every plugin subfolder is ignored.
+That is upstream Rock's convention — plugins are installed packages, not source. The
+consequence for *us* is that Passion's own customizations are not in this repository:
+measured 2026-08-10, git tracks two files under `RockWeb/Plugins/` (`.gitignore`,
+`readme.txt`) and **zero** paths matching `org_passion` or `team_passion`, against 448 tracked
+core blocks under `RockWeb/Blocks/`.
+
+So:
+
+- No `pr-*` site or `staging` renders a plugin block. `DedicatedSite` replaces the site
+  directory with the artifact, and the artifact has no plugins; the shared-asset overlay
+  backfills only `Themes`, `Content`, `Assets`, `Styles`.
+- A plugin-block change cannot go through this pipeline at all — there is no tracked file to
+  commit. Today that work is manual and server-side.
+- Production is not at risk. `InPlace` copies with robocopy `/E` and no `/PURGE`, so plugin
+  folders already on the box survive an artifact that lacks them. Worth stating explicitly,
+  because the opposite would have been catastrophic and it is one line of script away.
+
+Two things worth deciding, and they are independent:
+
+1. **Should test environments render plugin pages?** Cheap if yes — `Sync-SharedSiteAssets`
+   takes its directory list from `PR_TEST_SHARED_ASSET_DIRECTORIES`, so adding `Plugins`
+   backfills them from the default site with no script change. The copy is
+   only-if-absent, so it cannot clobber a branch.
+2. **Should Passion's plugins be version-controlled at all?** A larger question, and a real
+   trade-off against upstream's convention and against this repo being public. Not something
+   to decide in a training session, but the team should know it is currently *unanswered*
+   rather than *answered no*.
+
+---
+
+### 15. Nothing establishes which branch production is supposed to deploy from
+
+**Priority: P0 despite the number** — this list is append-only so the numbers stay stable
+across revisions and the cross-references above keep working. This is the largest unresolved
+question in the repository and it should be settled before the first real production deploy.
+
+`production-deploy.yml` defaults its `ref` input to `passion-18.4.1`. That is a defensible
+default — it is the trunk, it matches the version production runs, and it is the branch this
+pipeline was built on. But it is a default that was chosen for pipeline reasons, and nobody has
+confirmed it is the right *source* for production. The measured situation:
+
+| Branch | Ahead of upstream `18.4.1` | Files under `RockWeb/Plugins/` | Last commit |
+| --- | --- | --- | --- |
+| `passion-18.4.1` (trunk) | 20 commits | **2** | 2026-08-10 |
+| `develop` | 489 commits | **276** | 2026-05-06 |
+| `staging` | 72 commits | **276** | 2026-02-24 |
+
+The last production build ran on **2026-05-06 from `develop`** (`dd6d189b`), and the copy of
+`build-develop.yml` on `develop` is build-only — it produces a downloadable artifact and stops.
+So production has been updated by hand from that artifact, which is consistent with the
+production `bin` being a mixed-version assembly set rather than the output of any single build.
+
+Two things follow, and they are independent:
+
+1. **Production is not at risk of losing its plugins.** The `InPlace` deploy path uses
+   `robocopy /E` with no `/MIR` and no `/PURGE` (`Deploy-RockEnvironment.ps1:647-659`), so
+   files present on the server and absent from the artifact are left untouched. A trunk-based
+   deploy overwrites core Rock files and leaves `RockWeb\Plugins\` alone. Verified by reading
+   the script, not by deploying.
+2. **But a trunk-based deploy is still a version change, not a no-op.** Trunk is the 18.4.1
+   release line plus this pipeline; `develop` carries 489 commits of drift, some upstream and
+   some Passion's. Whether replacing production's core assemblies with trunk's is an upgrade,
+   a downgrade, or a mix cannot be determined from the repository — it needs the assembly
+   versions actually on the production box.
+
+**What to do, in order:** read the assembly versions off `connect-srv-prod` and compare them
+against what trunk builds; decide whether trunk, `develop`, or a reconciliation of the two is
+production's source of truth; then reconcile the plugin files (item 14) so one branch holds all
+of it. Until that is done, the production workflow is proven mechanically — it builds, gates,
+backs up, copies, and health-checks — but the question of *what* it should be shipping is open.
+
+This is why the production path is deliberately unfired. The gate is not the only thing
+standing between this pipeline and production; this item is.
+
 ---
 
 ## Fixed since the last revision — recorded so nobody re-diagnoses these
@@ -237,7 +326,9 @@ example: a build cannot verify what it never attempted, and nothing in the job e
 | `.env` files were not git-ignored — in a public repo | Ignored (`.gitignore` 57–59), with `!*.example.env` preserved |
 | A deploy that failed on the VM reached GitHub as one sentence, and diagnosing it meant an RDP session | The queue agent uploads each command's redacted output to `pr-environments/<queue>/logs/`, and the workflows print it. Redaction happens on the VM because a deploy command carries a database password and this repo is public |
 | Nothing captured the application's own error when a site deployed but would not start | The health-check failure path uploads a diagnostic report to the private bucket and prints only its object name — an application log can carry someone's email address |
-| **`RockWeb` is a Web Site project, not a `.csproj`,** so the per-project build never built it and never resolved its 85 `*.dll.refresh` pointers. The 20 packages that reach `bin` *only* that way were absent from every artifact ever produced. `Application_Start` loads `Google.Protobuf` through the Google/Firebase stack, so **staging and every PR environment returned 500 on every request** — while the build reported green, because nothing looked | A step resolves each `.refresh` pointer out of `packages\` into `RockWeb\bin`, filling gaps only so a project-built DLL still wins. `Google.Protobuf.dll` joined the artifact gate as the canary, and the run summary reports resolved and unresolved counts |
+| **`RockWeb` is a Web Site project, not a `.csproj`,** so the per-project build never built it and never resolved its 84 `*.dll.refresh` pointers. The 20 packages that reach `bin` *only* that way were absent from every artifact ever produced. `Application_Start` loads `Google.Protobuf` through the Google/Firebase stack, so **staging and every PR environment returned 500 on every request** — while the build reported green, because nothing looked | A step resolves each `.refresh` pointer out of `packages\` into `RockWeb\bin`, filling gaps only so a project-built DLL still wins. `Google.Protobuf.dll` joined the artifact gate as the canary, and the run summary reports resolved and unresolved counts |
+| The resolver above then found `packages\` **empty**, because nothing restored it. Rock's `.csproj` projects use `PackageReference`, whose packages land in the global `~/.nuget/packages` cache; the 84 `.refresh` pointers are written in the older packages.config convention, `..\packages\<Id>.<Version>\lib\<tfm>\`. `nuget restore Rock.sln` walks projects, and a Web Site project has none to walk, so `RockWeb\packages.config` was never restored. All 20 pointers still failed — the run reported `RESOLVED_REFRESH_COUNT: 0` and `UNRESOLVED_REFRESH_COUNT: 20` and the artifact gate caught it | `nuget restore RockWeb\packages.config -PackagesDirectory packages` runs alongside the solution restore, which is what Visual Studio does for a Web Site project. All 20 packages are declared there at exactly the versions the pointers name |
+| `build-develop.yml` was a second, worse production deploy path: it set a `windows-startup-script-ps1` on the production VM, then stopped and started the VM to run it. The script copied the package over `C:\inetpub\wwwroot\` — not the site path this pipeline uses — and mixed cmd.exe syntax (`%errorlevel%`, `2>nul`, `if (…) (…) else (…)`) into PowerShell. It was gated on `branches: [staging]`, dormant since 2026-02-24, and one push away from firing | Deleted from `passion-18.4.1`; `production-deploy.yml` supersedes it. The separate build-only copy on `develop` was left alone |
 | The `DedicatedSite` deploy path deleted the site directory wholesale and never consulted `$PreservedFiles` — only the `InPlace` path did. A deploy that supplied no connection string therefore destroyed `web.ConnectionStrings.config`, and since `web.config` binds it through a `configSource`, the site 500'd on every request including its own error page | Preserved files are stashed and restored across the replace, and `Write-RuntimeConfiguration` now throws when no connection string was supplied *and* none exists, instead of reporting that it is "leaving the existing" file in place |
 | A syntax error in a deployment script surfaced as a scheduled task dying quietly on the VM | The bootstrap workflow parses every `Deployment/PrTestEnvironments/*.ps1` before uploading any of them |
 
@@ -253,11 +344,19 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 
 1. Item 2 — create the `production` Environment (~10 min, unblocks the gate)
 2. Item 3 — protect `passion-18.4.1` (~10 min, makes the training true)
-3. Item 7 — decide the staging database question (a decision, then a restore)
-4. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window)
-5. Item 4 — re-run renewal once staging is healthy, then leave the schedule to it
-6. Items 8–13 — cleanup, any time
-7. Items 5 and 6 — the two "CI can't see this" gaps, once the above is stable
+3. Item 15 — establish what production should deploy *from*, starting by reading the assembly
+   versions off `connect-srv-prod`. This gates the first real production deploy, and it is a
+   decision rather than a task
+4. Item 7 — decide the staging database question (a decision, then a restore)
+5. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window)
+6. Item 4 — re-run renewal once staging is healthy, then leave the schedule to it
+7. Item 14 — decide whether test sites should render plugin pages (a config line, then a
+   decision about version control that is bigger than this pipeline), and reconcile it with
+   item 15 — they are the same reconciliation seen from two ends
+8. Items 9–13 — cleanup, any time. Note item 9's warning: `develop` and `staging` are **not**
+   safe to prune yet
+9. Items 5 and 6 — the two "CI can't see this" gaps, once the above is stable
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
-approval gate with nothing behind it, and a trunk anyone can push to.
+approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
+needs a conversation rather than a keyboard.
