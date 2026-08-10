@@ -49,5 +49,22 @@ class CertificateRenewalTests(unittest.TestCase):
         self.assertNotIn("Deploy over SSH", text)
 
 
+class CertificateBindResilienceTests(unittest.TestCase):
+    def test_one_dead_environment_does_not_block_renewal_for_the_others(self):
+        """The bind pass used to throw on the first host with no certificate, so a
+        PR environment whose DNS or site had gone away took every healthy
+        environment's certificate renewal down with it. It should now bind each
+        host independently and fail only when nothing could be bound."""
+        text = RENEWAL_SCRIPT.read_text()
+
+        self.assertNotIn(
+            'throw "No Let\'s Encrypt certificate is available for $hostName after renewal."',
+            text,
+            "bind pass must not abort the whole run on the first host without a certificate",
+        )
+        self.assertIn("$bindFailures", text)
+        self.assertIn("if ($boundCount -eq 0)", text)
+
+
 if __name__ == "__main__":
     unittest.main()
