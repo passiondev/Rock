@@ -208,23 +208,49 @@ if (@($hostsNeedingCertificate).Length -gt 0) {
     }
 }
 
+# The bind pass used to throw on the first host without a certificate, which made
+# one dead environment fail renewal for every healthy one -- a PR environment whose
+# DNS or site had gone away took the whole fleet's certificates down with it. Now
+# each host is bound independently and the failures are reported together at the
+# end, so the command fails only if nothing could be bound.
+$bindFailures = @()
+$boundCount = 0
+
 foreach ($manifest in $manifests) {
     $hostName = [string]$manifest.hostName
     $siteName = [string]$manifest.siteName
     $appPoolName = [string]$manifest.appPoolName
-    $cert = Get-NewestLetsEncryptCertificate -HostName $hostName
 
-    if ($null -eq $cert) {
-        throw "No Let's Encrypt certificate is available for $hostName after renewal."
-    }
+    try {
+        $cert = Get-NewestLetsEncryptCertificate -HostName $hostName
+        if ($null -eq $cert) {
+            throw "no Let's Encrypt certificate is available after renewal"
+        }
 
-    Bind-CertificateToSite -SiteName $siteName -HostName $hostName -Thumbprint $cert.Thumbprint
-    if (![string]::IsNullOrWhiteSpace($appPoolName) -and (Test-Path "IIS:\AppPools\$appPoolName")) {
-        Start-WebAppPool -Name $appPoolName -ErrorAction Continue
-    }
-    if (Test-Path "IIS:\Sites\$siteName") {
-        Start-Website -Name $siteName -ErrorAction Continue
-    }
+        Bind-CertificateToSite -SiteName $siteName -HostName $hostName -Thumbprint $cert.Thumbprint
+        if (![string]::IsNullOrWhiteSpace($appPoolName) -and (Test-Path "IIS:\AppPools\$appPoolName")) {
+            Start-WebAppPool -Name $appPoolName -ErrorAction Continue
+        }
+        if (Test-Path "IIS:\Sites\$siteName") {
+            Start-Website -Name $siteName -ErrorAction Continue
+        }
 
-    Write-Host "Bound Let's Encrypt certificate for $hostName to $siteName; expires $($cert.NotAfter)."
+        $boundCount++
+        Write-Host "Bound Let's Encrypt certificate for $hostName to $siteName; expires $($cert.NotAfter)."
+    }
+    catch {
+        $bindFailures += "${hostName}: $($_.Exception.Message)"
+        Write-Warning "Could not bind a certificate for ${hostName}: $($_.Exception.Message)"
+    }
 }
+
+if ($bindFailures.Count -gt 0) {
+    Write-Warning "$($bindFailures.Count) of $(@($manifests).Length) environment(s) have no usable certificate:"
+    foreach ($failure in $bindFailures) { Write-Warning "  $failure" }
+
+    if ($boundCount -eq 0) {
+        throw "No PR environment could be bound to a Let's Encrypt certificate. Failures: $($bindFailures -join '; ')"
+    }
+}
+
+Write-Host "Certificate renewal complete: $boundCount bound, $($bindFailures.Count) failed."

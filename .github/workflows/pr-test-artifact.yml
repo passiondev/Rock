@@ -4,8 +4,9 @@ name: PR Test Environment Artifact
   workflow_call:
     inputs:
       pr_number:
-        description: Pull request number to package for deployment.
-        required: true
+        description: Pull request number to package for deployment. Omit for long-lived environments.
+        required: false
+        default: '0'
         type: string
       head_sha:
         description: Pull request head commit SHA to package.
@@ -14,6 +15,13 @@ name: PR Test Environment Artifact
       host_name:
         description: Intended PR test environment host name.
         required: true
+        type: string
+      artifact_slug:
+        description: >-
+          Names the artifact and its GCS folder. Defaults to pr-<pr_number>.
+          Long-lived environments (staging, production) pass their own name so
+          they do not collide with PR builds or with each other.
+        required: false
         type: string
     outputs:
       artifact_name:
@@ -45,6 +53,10 @@ name: PR Test Environment Artifact
         description: Intended PR test environment host name.
         required: true
         type: string
+      artifact_slug:
+        description: Names the artifact and its GCS folder. Defaults to pr-<pr_number>.
+        required: false
+        type: string
 
 defaults:
   run:
@@ -63,6 +75,7 @@ jobs:
       PR_NUMBER: ${{ inputs.pr_number }}
       HEAD_SHA: ${{ inputs.head_sha || github.sha }}
       HOST_NAME: ${{ inputs.host_name }}
+      ARTIFACT_SLUG: ${{ inputs.artifact_slug || format('pr-{0}', inputs.pr_number) }}
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     outputs:
       artifact_name: ${{ steps.package-metadata.outputs.artifact_name }}
@@ -181,7 +194,25 @@ jobs:
           Write-Output "Plugins moved"
 
       - name: NuGet Restore
-        run: nuget restore -verbosity quiet -NonInteractive -Recursive Rock.sln
+        run: |
+          nuget restore -verbosity quiet -NonInteractive -Recursive Rock.sln
+
+          # The solution restore above only covers the .csproj projects, and
+          # those use PackageReference -- their packages land in the global
+          # cache under ~/.nuget/packages, never in a solution packages\ folder.
+          #
+          # RockWeb is a Web Site project, so it has no .csproj for the
+          # solution restore to walk. Its 93 packages are declared in
+          # RockWeb\packages.config, and the 84 *.dll.refresh pointers that
+          # accompany them are written in the packages.config convention:
+          # ..\packages\<Id>.<Version>\lib\<tfm>\<Name>.dll, relative to the
+          # web site root. Nothing creates that folder unless the config is
+          # restored explicitly with -PackagesDirectory, which is what Visual
+          # Studio does for a Web Site project. Without it the 20 pointers
+          # whose assemblies no project build happens to emit -- among them
+          # Google.Protobuf.dll, which Application_Start needs -- resolve to
+          # nothing and drop out of the artifact.
+          nuget restore RockWeb\packages.config -PackagesDirectory packages -verbosity quiet -NonInteractive
 
       - name: Create Empty ConnectionStrings Config
         run: New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
@@ -304,6 +335,87 @@ jobs:
           $totalDlls = (Get-ChildItem "RockWeb\bin\*.dll").Count
           Write-Host "Total DLLs in RockWeb\bin: $totalDlls"
 
+      # RockWeb is a Web Site project, not a .csproj, so nothing in this job ever
+      # builds it -- the step above just sweeps every Release folder into
+      # RockWeb\bin. That covers assemblies some project emits as build output, but
+      # Rock also ships 84 *.dll.refresh pointers for packages no project
+      # references directly, and resolving those is what Visual Studio does on a
+      # developer's machine. Without this step they ride into the artifact as inert
+      # .refresh files and the assembly is simply absent.
+      #
+      # This is not hypothetical: Google.Protobuf.dll going missing exactly this
+      # way took staging and every PR environment down with a 500 at
+      # Application_Start. The build stayed green, because nothing here looked.
+      #
+      # Fill gaps only. A DLL a project actually built is the authoritative one and
+      # must win over the copy sitting in packages\.
+      #
+      # Deliberately NOT recursive, and deliberately limited to *.dll.refresh:
+      #
+      #   * RockWeb\Bin\roslyn\ holds 20 more pointers (csc.exe, vbc.exe, the
+      #     Microsoft.CodeAnalysis assemblies) for the compiler that web.config's
+      #     <system.codedom> uses to compile .ascx at run time. All 20 targets are
+      #     committed to git alongside their pointers, so checkout already supplies
+      #     that folder and resolving it would be a no-op. Verified file by file --
+      #     do not "fix" this by adding -Recurse.
+      #   * RockWeb\Bin\Microsoft.Extensions.Primitives.refresh is malformed
+      #     upstream: it omits the .dll before .refresh, and it points at version
+      #     2.0.0 while packages.config pins 8.0.0. The filter skips it rather than
+      #     creating an extensionless file, and it would report as permanently
+      #     unresolved if included, which would blunt the count below.
+      - name: Resolve .refresh assemblies into RockWeb bin
+        run: |
+          $copied = @()
+          $unresolved = @()
+          $alreadyBuilt = 0
+
+          # Written with mixed encodings across the repo -- some UTF-16LE, some
+          # UTF-8 with a BOM -- so read raw, drop NULs (covers a BOM-less UTF-16
+          # file being read as single bytes) and trim the BOM character itself.
+          $trimChars = [char[]]@(0xFEFF, 0x20, 0x09, 0x0D, 0x0A)
+
+          foreach ($refresh in Get-ChildItem "RockWeb\bin" -Filter "*.dll.refresh" -ErrorAction SilentlyContinue) {
+            $targetName = $refresh.Name -replace '\.refresh$', ''
+            $targetPath = Join-Path $refresh.DirectoryName $targetName
+            if (Test-Path $targetPath) { $alreadyBuilt++; continue }
+
+            $relative = ((Get-Content -Raw -Path $refresh.FullName) -replace "`0", '').Trim($trimChars)
+            if ([string]::IsNullOrWhiteSpace($relative)) {
+              $unresolved += "$targetName (empty .refresh)"
+              continue
+            }
+
+            # The pointer is relative to the web site root, so its leading
+            # ..\packages lands on the solution-level packages folder that
+            # nuget restore populates. The repo root and bin are tried as
+            # fallbacks so a differently-rooted pointer still resolves.
+            $resolved = $null
+            foreach ($base in @("RockWeb", ".", "RockWeb\bin")) {
+              $candidate = Join-Path $base $relative
+              if (Test-Path $candidate) { $resolved = (Resolve-Path $candidate).Path; break }
+            }
+
+            if ($null -eq $resolved) {
+              $unresolved += "$targetName -> $relative"
+              continue
+            }
+
+            Copy-Item -Path $resolved -Destination $targetPath -Force
+            $copied += $targetName
+          }
+
+          Write-Host "Already emitted by a project build: $alreadyBuilt"
+          Write-Host "Copied from packages\:             $($copied.Count)"
+          foreach ($name in $copied) { Write-Host "  + $name" }
+
+          if ($unresolved.Count -gt 0) {
+            Write-Host "::warning::$($unresolved.Count) .refresh pointer(s) did not resolve; those assemblies are absent from the artifact."
+            foreach ($name in $unresolved) { Write-Host "::warning::unresolved: $name" }
+          }
+
+          "UNRESOLVED_REFRESH_COUNT=$($unresolved.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RESOLVED_REFRESH_COUNT=$($copied.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Cleanup tsconfig.json
         run: |
           if (Test-Path RockWeb\tsconfig.json) { Remove-Item RockWeb\tsconfig.json -Force }
@@ -325,7 +437,15 @@ jobs:
             "Rock.Rest.dll",
             "Rock.Migrations.dll",
             "Rock.WebStartup.dll",
-            "DotLiquid.dll"
+            "DotLiquid.dll",
+
+            # Not a Rock assembly, and the only third-party one gated here.
+            # Application_Start loads it through the Google/Firebase stack, so when
+            # it is missing IIS returns a 500 on every request and Rock's own error
+            # page cannot render either -- a double fault that hides the cause.
+            # It reaches bin only via .refresh resolution, so it is the canary for
+            # that step regressing.
+            "Google.Protobuf.dll"
           )
           foreach ($dll in $essentialDlls) {
             if (!(Test-Path "RockWeb\bin\$dll")) { $failures += "missing assembly: $dll" }
@@ -362,14 +482,16 @@ jobs:
             "| --- | --- |",
             "| Essential assemblies | $($essentialDlls.Count)/$($essentialDlls.Count) present |",
             "| Compiled Obsidian blocks | $($obsidianBlocks.Count) |",
-            "| DLLs in ``RockWeb\bin`` | $dllCount |"
+            "| DLLs in ``RockWeb\bin`` | $dllCount |",
+            "| Assemblies resolved from ``.refresh`` | $env:RESOLVED_REFRESH_COUNT |",
+            "| Unresolved ``.refresh`` pointers | $env:UNRESOLVED_REFRESH_COUNT |"
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Package RockWeb zip and metadata
         id: package-metadata
         run: |
-          $artifactName = "RockWeb-pr-${{ env.PR_NUMBER }}-${{ env.SHORT_SHA }}.zip"
-          $gcsPrefix = "pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}"
+          $artifactName = "RockWeb-${{ env.ARTIFACT_SLUG }}-${{ env.SHORT_SHA }}.zip"
+          $gcsPrefix = "pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}"
           $gcsObjectPath = "$gcsPrefix/$artifactName"
           $gcsPath = "gs://$env:PR_TEST_GCS_BUCKET/$gcsObjectPath"
 
@@ -421,10 +543,10 @@ jobs:
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: ${{ steps.package-metadata.outputs.artifact_name }}
-          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}
+          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}
 
       - name: Upload package metadata to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: pr-test-artifact.json
-          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/pr-${{ env.PR_NUMBER }}/${{ env.HEAD_SHA }}
+          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}

@@ -1,0 +1,1164 @@
+<title>Rock CI/CD Training</title>
+
+<style>
+  /* ------------------------------------------------------------------
+     Navigation is deliberately CSS-only.
+
+     The page scrolls at the document level with scroll-snap, and the rail is
+     plain anchor links -- so arrow keys, space, PageDown, the scroll wheel and
+     the rail all work with no JavaScript at all. This matters because the deck
+     is presented live: an artifact renders inside a sandboxed cross-origin
+     iframe, and a deck whose "next slide" depends on a script is a deck that
+     can fail in front of an audience. The only script on the page highlights
+     the current rail node, which is cosmetic.
+     ------------------------------------------------------------------ */
+
+  html {
+    scroll-snap-type: y mandatory;
+  }
+
+  /* Do NOT add scroll-behavior: smooth here. Mandatory snap and animated
+     scrolling fight each other in Chrome: the snap engine re-targets the
+     in-flight animation and lands you back on the slide you started from, so
+     every rail link and every #hash silently does nothing. Measured on this
+     file -- an instant scroll to 5000px snapped correctly to 4985, while the
+     same scroll with smooth behaviour ended at 0. Instant jumps are also what
+     a slide deck should do. */
+
+  /* Snap is a presentation nicety, not a requirement. Turn it off where it
+     could trap content taller than the viewport. */
+  @media (max-height: 700px), (max-width: 700px) {
+    html { scroll-snap-type: none; }
+  }
+
+  /* ------------------------------------------------------------------
+     Passion design tokens.
+
+     Lifted from the house system (passion-jira: client/src/theme.ts,
+     client/src/style.css), which was measured off passion.team rather than the
+     marketing site. Two rules from that system are load-bearing here:
+
+       1. The accent is only ever on something to act on.
+       2. The type stacks are deliberately system-native -- that is what
+          passion.team renders, so no webfont is loaded and nothing can
+          silently fall back.
+     ------------------------------------------------------------------ */
+
+  :root {
+    --canvas: #ffffff;
+    --surface: #f8f9fa;
+    --sage: #e2e3da;
+    --panel: #f0f0f0;
+
+    --ink: #333333;
+    --muted: #676263;
+    --line: #d9d9d9;
+    --bone: #dcdee0;
+
+    --accent: #00ceff;
+    --accent-ink: #000000;
+    --link: #00b8e4;
+
+    /* Semantic, and deliberately not the accent: was-broken / now-safe. */
+    --was: #b1543c;
+    --now: #5c7a52;
+    --was-wash: rgba(177, 84, 60, 0.08);
+    --now-wash: rgba(92, 122, 82, 0.09);
+    --accent-wash: rgba(0, 206, 255, 0.1);
+
+    --radius-card: 18px;
+    --radius-pill: 20px;
+
+    --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.05);
+    --shadow-popover: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.12);
+
+    --type-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --type-serif: 'Times New Roman', Times, serif;
+    --type-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    --track-hero: -0.07em;
+    --track-tight: -0.06em;
+    --track-body: 0.01em;
+
+    --rail: 5.5rem;
+  }
+
+  /* Only the tokens change per theme -- never a component rule, so the
+     un-stamped "system" state resolves as a complete set either way. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --canvas: #14181c;
+      --surface: #1c2126;
+      --sage: #232a26;
+      --panel: #1a1f24;
+      --ink: #eef0ee;
+      --muted: #9aa3ab;
+      --line: #333b42;
+      --bone: #2c343b;
+      --accent: #3ad5ff;
+      --accent-ink: #04222b;
+      --link: #5cd8f7;
+      --was: #e0917a;
+      --now: #9cbd8c;
+      --was-wash: rgba(224, 145, 122, 0.12);
+      --now-wash: rgba(156, 189, 140, 0.12);
+      --accent-wash: rgba(58, 213, 255, 0.12);
+      --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.4);
+      --shadow-popover: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.5);
+    }
+  }
+
+  :root[data-theme='dark'] {
+    --canvas: #14181c;
+    --surface: #1c2126;
+    --sage: #232a26;
+    --panel: #1a1f24;
+    --ink: #eef0ee;
+    --muted: #9aa3ab;
+    --line: #333b42;
+    --bone: #2c343b;
+    --accent: #3ad5ff;
+    --accent-ink: #04222b;
+    --link: #5cd8f7;
+    --was: #e0917a;
+    --now: #9cbd8c;
+    --was-wash: rgba(224, 145, 122, 0.12);
+    --now-wash: rgba(156, 189, 140, 0.12);
+    --accent-wash: rgba(58, 213, 255, 0.12);
+    --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.4);
+    --shadow-popover: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.5);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    /* The viewer paints its own ground in its own theme, so this must be an
+       explicit token or the page borrows the host's background. */
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--type-sans);
+    letter-spacing: var(--track-body);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- the deck ---------- */
+
+  .slide {
+    min-height: 100dvh;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: clamp(1.25rem, 2.5vh, 2.25rem);
+    padding: clamp(2rem, 5vh, 4rem) clamp(1.5rem, 4vw, 4.5rem) clamp(2.5rem, 6vh, 4rem) calc(var(--rail) + clamp(1rem, 2vw, 2.5rem));
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* ---------- the rail: a git graph that happens to be the nav ---------- */
+
+  .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: var(--rail);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    z-index: 10;
+  }
+
+  .rail-node {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    color: var(--muted);
+    font-family: var(--type-mono);
+    font-size: 0.6875rem;
+    line-height: 1;
+    height: 2.75rem;
+    text-decoration: none;
+  }
+
+  /* The connecting track between nodes -- this is the branch line. */
+  .rail-node::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+  }
+
+  .rail-node:first-child::before { top: 50%; }
+  .rail-node:last-child::before { bottom: 50%; }
+
+  .rail-dot {
+    position: relative;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--bone);
+    box-shadow: 0 0 0 4px var(--surface);
+    transition: background 160ms ease, transform 160ms ease;
+  }
+
+  .rail-node[aria-current='true'] .rail-dot {
+    /* The only place the accent appears in the chrome: where you are now. */
+    background: var(--accent);
+    transform: scale(1.55);
+  }
+
+  .rail-node:hover .rail-dot { background: var(--muted); }
+  .rail-node[aria-current='true']:hover .rail-dot { background: var(--accent); }
+
+  .rail-node:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -4px;
+  }
+
+  .rail-label {
+    position: absolute;
+    left: calc(100% + 0.5rem);
+    white-space: nowrap;
+    background: var(--ink);
+    color: var(--canvas);
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.6875rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+    box-shadow: var(--shadow-popover);
+  }
+
+  .rail-node:hover .rail-label,
+  .rail-node:focus-visible .rail-label { opacity: 1; }
+
+  /* ---------- slide typography ---------- */
+
+  .eyebrow {
+    display: flex;
+    align-items: baseline;
+    gap: 0.875rem;
+    color: var(--muted);
+  }
+
+  .eyebrow-num {
+    font-family: var(--type-serif);
+    font-size: clamp(2rem, 4.5vh, 3rem);
+    line-height: 0.8;
+    letter-spacing: var(--track-tight);
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .eyebrow-text {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.11em;
+  }
+
+  h1 {
+    font-size: clamp(2.25rem, 7.5vh, 4.75rem);
+    line-height: 1.02;
+    letter-spacing: var(--track-hero);
+    margin: 0;
+    text-wrap: balance;
+    font-weight: 600;
+  }
+
+  h2 {
+    font-size: clamp(1.6rem, 4.6vh, 3rem);
+    line-height: 1.06;
+    letter-spacing: var(--track-hero);
+    margin: 0;
+    text-wrap: balance;
+    font-weight: 600;
+  }
+
+  h3 {
+    font-size: clamp(0.9375rem, 1.9vh, 1.0625rem);
+    letter-spacing: var(--track-body);
+    margin: 0 0 0.5rem;
+    font-weight: 600;
+  }
+
+  .lede {
+    font-size: clamp(1.0625rem, 2.4vh, 1.4375rem);
+    line-height: 1.4;
+    letter-spacing: var(--track-tight);
+    color: var(--muted);
+    max-width: 34ch;
+    margin: 0;
+  }
+
+  p { margin: 0; max-width: 68ch; }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(1rem, 2.2vh, 1.75rem);
+    min-width: 0;
+  }
+
+  .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+    gap: clamp(0.875rem, 1.8vw, 1.5rem);
+    align-content: start;
+  }
+
+  .cols-2 { grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
+
+  code, kbd, .mono { font-family: var(--type-mono); }
+
+  code {
+    font-size: 0.9em;
+    background: var(--panel);
+    padding: 0.1em 0.36em;
+    border-radius: 5px;
+    letter-spacing: 0;
+  }
+
+  kbd {
+    font-size: 0.8125rem;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 0.1em 0.4em;
+  }
+
+  a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+  /* ---------- cards ---------- */
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-card);
+    padding: clamp(0.875rem, 2vh, 1.375rem);
+    box-shadow: var(--shadow-card);
+    min-width: 0;
+  }
+
+  /* Sage is the one warm neutral in the system. Reserved for the surfaces that
+     represent a real machine, so "server" is legible as a material, not a label. */
+  .card-server { background: var(--sage); }
+
+  .card p, .card li { font-size: clamp(0.875rem, 1.75vh, 0.9688rem); }
+
+  .card-note {
+    color: var(--muted);
+    font-size: clamp(0.8125rem, 1.6vh, 0.9063rem);
+  }
+
+  .tag {
+    display: inline-block;
+    font-family: var(--type-mono);
+    font-size: 0.75rem;
+    padding: 0.15rem 0.55rem;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--line);
+    background: var(--canvas);
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  /* The accent, per the house rule: only on the thing you actually do. */
+  .tag-do {
+    background: var(--accent);
+    color: var(--accent-ink);
+    border-color: transparent;
+    font-weight: 600;
+  }
+
+  .tag-state { background: var(--panel); color: var(--muted); }
+
+  .was, .now { border-left: 3px solid; padding-left: 0.875rem; }
+  .was { border-color: var(--was); background: var(--was-wash); }
+  .now { border-color: var(--now); background: var(--now-wash); }
+  .was h3 { color: var(--was); }
+  .now h3 { color: var(--now); }
+
+  ul, ol { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.45rem; }
+  li { max-width: 62ch; }
+  ul.bare { list-style: none; padding-left: 0; }
+
+  /* ---------- tables ---------- */
+
+  .table-wrap { overflow-x: auto; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: clamp(0.8125rem, 1.7vh, 0.9375rem);
+    font-variant-numeric: tabular-nums;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.875rem 0.55rem 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+
+  th {
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--muted);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: 0; }
+
+  /* ---------- the flow diagram ---------- */
+
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .flow-step {
+    flex: 1 1 150px;
+    min-width: 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 0.75rem 0.875rem;
+  }
+
+  .flow-step .mono { font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.25rem; }
+  .flow-step strong { font-size: clamp(0.8125rem, 1.7vh, 0.9375rem); }
+
+  .flow-arrow {
+    align-self: center;
+    color: var(--bone);
+    font-size: 1.125rem;
+    flex: 0 0 auto;
+  }
+
+  /* ---------- the branch graph ---------- */
+
+  .graph {
+    display: grid;
+    gap: 0.3rem;
+    font-family: var(--type-mono);
+    font-size: clamp(0.75rem, 1.65vh, 0.875rem);
+    letter-spacing: 0;
+    overflow-x: auto;
+  }
+
+  .graph-row { display: flex; align-items: center; gap: 0.625rem; white-space: nowrap; }
+  .graph-track { color: var(--bone); }
+  .graph-name { color: var(--ink); }
+  .graph-note { color: var(--muted); font-family: var(--type-sans); font-size: 0.8125rem; letter-spacing: var(--track-body); }
+  .graph-live { color: var(--accent); font-weight: 700; }
+
+  /* ---------- title slide ---------- */
+
+  .slide-title { grid-template-rows: 1fr auto; align-content: center; }
+  .title-block { display: flex; flex-direction: column; gap: 1.25rem; justify-content: center; }
+
+  .title-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.75rem;
+    color: var(--muted);
+    font-size: 0.875rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--line);
+  }
+
+  .hint {
+    color: var(--muted);
+    font-size: 0.8125rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  /* ---------- q&a ---------- */
+
+  .qa { display: flex; flex-direction: column; gap: 0.875rem; }
+
+  .qa-item {
+    border-top: 1px solid var(--line);
+    padding-top: 0.75rem;
+    display: grid;
+    gap: 0.2rem;
+  }
+
+  .qa-q {
+    font-size: clamp(0.9375rem, 1.95vh, 1.0625rem);
+    font-weight: 600;
+    letter-spacing: var(--track-tight);
+  }
+
+  .qa-a { color: var(--muted); font-size: clamp(0.8438rem, 1.7vh, 0.9375rem); max-width: 74ch; }
+
+  /* ---------- print: unroll the deck ---------- */
+
+  @media print {
+    html { scroll-snap-type: none; }
+    .rail { display: none; }
+    .slide {
+      min-height: 0;
+      page-break-after: always;
+      break-after: page;
+      padding: 1.5rem 0;
+      border-bottom: 0;
+    }
+    .hint { display: none; }
+  }
+
+  @media (max-width: 700px) {
+    :root { --rail: 2.75rem; }
+    .rail-label { display: none; }
+    .slide { min-height: 0; padding-top: 2.5rem; padding-bottom: 2.5rem; }
+  }
+</style>
+
+<nav class="rail" aria-label="Sections">
+  <a class="rail-node" href="#s0" aria-current="true">
+    <span class="rail-dot"></span><span class="rail-label">Title</span>
+  </a>
+  <a class="rail-node" href="#s1">
+    <span class="rail-dot"></span><span class="rail-label">Why this exists</span>
+  </a>
+  <a class="rail-node" href="#s2">
+    <span class="rail-dot"></span><span class="rail-label">1 &middot; Git in five minutes</span>
+  </a>
+  <a class="rail-node" href="#s6">
+    <span class="rail-dot"></span><span class="rail-label">2 &middot; The fork</span>
+  </a>
+  <a class="rail-node" href="#s8">
+    <span class="rail-dot"></span><span class="rail-label">3 &middot; Version branches</span>
+  </a>
+  <a class="rail-node" href="#s10">
+    <span class="rail-dot"></span><span class="rail-label">4 &middot; Making changes</span>
+  </a>
+  <a class="rail-node" href="#s13">
+    <span class="rail-dot"></span><span class="rail-label">5 &middot; Why GitHub builds it</span>
+  </a>
+  <a class="rail-node" href="#s15">
+    <span class="rail-dot"></span><span class="rail-label">6 &middot; Three doors</span>
+  </a>
+  <a class="rail-node" href="#s17">
+    <span class="rail-dot"></span><span class="rail-label">7 &middot; Demo</span>
+  </a>
+  <a class="rail-node" href="#s18">
+    <span class="rail-dot"></span><span class="rail-label">Q&amp;A</span>
+  </a>
+</nav>
+
+<main class="deck" id="deck">
+
+  <!-- ============================ 0 ============================ -->
+  <section class="slide slide-title" id="s0">
+    <div class="title-block">
+      <div class="eyebrow"><span class="eyebrow-text">Passion City Church &middot; Global Engineering</span></div>
+      <h1>Rock CI/CD Training</h1>
+      <p class="lede">How the new GitHub repo works, and how a change gets from your browser onto a live server without anyone touching the production box.</p>
+    </div>
+    <div class="title-meta">
+      <span>Justin Barnett</span>
+      <span class="mono">passiondev/Rock</span>
+      <span>60 minutes</span>
+      <span class="hint"><kbd>&darr;</kbd><kbd>&rarr;</kbd><kbd>space</kbd> to advance</span>
+    </div>
+  </section>
+
+  <!-- ============================ 1 ============================ -->
+  <section class="slide" id="s1">
+    <div class="eyebrow"><span class="eyebrow-num">00</span><span class="eyebrow-text">Why any of this exists</span></div>
+    <div class="body">
+      <h2>Everyone here has a MacBook. Rock only builds on Windows.</h2>
+      <p class="lede">That single sentence is the reason this pipeline exists. Everything else follows from it.</p>
+      <div class="cols cols-2">
+        <div class="card was">
+          <h3>The wall</h3>
+          <p>Rock is ASP.NET&nbsp;4.5 WebForms on the .NET&nbsp;<em>Framework</em> &mdash; not .NET Core. It compiles with MSBuild and Visual Studio build tools, which exist only on Windows. There is no macOS build. There is no Linux build. Not "it's harder" &mdash; it does not run.</p>
+        </div>
+        <div class="card now">
+          <h3>The way around it</h3>
+          <p>GitHub rents us a clean Windows machine for the length of a build. It compiles Rock, packages the site, and installs it on a server in Google Cloud. You do all of your work in a browser and never install Windows.</p>
+        </div>
+      </div>
+      <p class="card-note">So the pipeline is not process for its own sake. It is the only way this team can ship Rock at all.</p>
+    </div>
+  </section>
+
+  <!-- ============================ 2 ============================ -->
+  <section class="slide" id="s2">
+    <div class="eyebrow"><span class="eyebrow-num">01</span><span class="eyebrow-text">Git in five minutes</span></div>
+    <div class="body">
+      <h2>A branch is a copy of everything that you cannot break.</h2>
+      <div class="cols">
+        <div class="card">
+          <h3>Repository</h3>
+          <p>The folder holding every Rock file, plus the full history of every change ever made. Ours is <code>passiondev/Rock</code>.</p>
+        </div>
+        <div class="card">
+          <h3>Branch</h3>
+          <p>Your own copy of all of it. Edit freely &mdash; nobody else sees your branch and nothing you do there can affect the live site.</p>
+        </div>
+        <div class="card">
+          <h3>Commit</h3>
+          <p>One save point, with a note saying what you changed and why. History is a list of commits, so anything can be undone.</p>
+        </div>
+      </div>
+      <div class="card card-note">
+        <p>Two things make git feel strange at first, and both are actually the point: <strong>nothing is ever overwritten</strong> &mdash; old versions stay reachable forever &mdash; and <strong>you work on a copy, then ask for it to be merged</strong>. There is no "save to the server."</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 3 ============================ -->
+  <section class="slide" id="s3">
+    <div class="eyebrow"><span class="eyebrow-num">01</span><span class="eyebrow-text">Git in five minutes</span></div>
+    <div class="body">
+      <h2>A pull request is the request, the conversation, and the button.</h2>
+      <p class="lede">"Pull request" is a bad name. Read it as: <em>please pull my changes into the shared branch.</em></p>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>What it is</h3>
+          <ul>
+            <li>A proposal to merge your branch into a shared one</li>
+            <li>A page showing exactly which lines you changed</li>
+            <li>Where review, comments, and approval happen</li>
+            <li>Where the robot reports whether your change builds</li>
+            <li>Where you press the buttons that give you a test site</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>The tabs you'll use</h3>
+          <ul class="bare">
+            <li><strong>Conversation</strong> &mdash; description, comments, the robot's status</li>
+            <li><strong>Files changed</strong> &mdash; the actual diff. Red removed, green added. <em>Always look here before asking for review.</em></li>
+            <li><strong>Checks</strong> &mdash; the build, live, with logs</li>
+            <li><strong>Labels</strong> (sidebar) &mdash; your buttons</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 4 ============================ -->
+  <section class="slide" id="s4">
+    <div class="eyebrow"><span class="eyebrow-num">01</span><span class="eyebrow-text">Git in five minutes</span></div>
+    <div class="body">
+      <h2>Branching strategy: one trunk, many short branches.</h2>
+      <div class="graph" role="img" aria-label="Branch diagram: short-lived feature branches off the passion-18.4.1 trunk, merging back in">
+        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">the trunk &middot; matches production &middot; repo default</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&#9586;___&#9679;___&#9585;</span><span class="graph-name">fix/homepage-typo</span><span class="graph-note">2 days</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;___&#9679;___&#9679;___&#9585;</span><span class="graph-name">feat/rsvp-copy</span><span class="graph-note">4 days</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;___&#9679;___&#9585;</span><span class="graph-name">fix/checkin-label</span><span class="graph-note">1 day</span></div>
+      </div>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>Why short branches</h3>
+          <p>A branch that lives for two days merges cleanly. A branch that lives for two months collides with everything and becomes a project of its own. Small and frequent beats big and careful.</p>
+        </div>
+        <div class="card">
+          <h3>Why one trunk</h3>
+          <p>There is exactly one branch that represents "what we run." Everything merges there and staging always shows it. No guessing which branch is real.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 5 ============================ -->
+  <section class="slide" id="s6">
+    <div class="eyebrow"><span class="eyebrow-num">02</span><span class="eyebrow-text">The fork</span></div>
+    <div class="body">
+      <h2>We didn't write Rock. We forked it.</h2>
+      <div class="flow">
+        <div class="flow-step">
+          <strong>Spark Development Network</strong>
+          <span class="mono">SparkDevNetwork/Rock</span>
+          <span class="mono">the open-source original</span>
+        </div>
+        <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+        <div class="flow-step">
+          <strong>Our fork</strong>
+          <span class="mono">passiondev/Rock</span>
+          <span class="mono">everything theirs + everything ours</span>
+        </div>
+        <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+        <div class="flow-step card-server">
+          <strong>Our servers</strong>
+          <span class="mono">Google Cloud</span>
+          <span class="mono">built from our fork only</span>
+        </div>
+      </div>
+      <p class="lede">A fork is a full copy of someone else's repository that you own, with the family tree intact &mdash; so you can still pull their updates down and still send fixes back up.</p>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>What's ours</h3>
+          <p>On the trunk, <strong>20 commits</strong> and <strong>69 files</strong> upstream doesn't have &mdash; and 55 of the 69 are this pipeline itself.</p>
+          <p style="margin-top:.5rem">Our long-standing custom blocks &mdash; check-in, scheduling, RSVP, finance, CMS &mdash; are <strong>276 files under <code>RockWeb/Plugins/</code></strong>, and they live on the older <code>develop</code> branch rather than on the trunk. Reconciling those two is the next piece of work, and it's on the open-items list.</p>
+        </div>
+        <div class="card">
+          <h3>Why fork instead of starting clean</h3>
+          <p>Rock is roughly two gigabytes of application we get for free and did not have to build. Forking means we keep receiving their security fixes and features instead of freezing in time.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 6 ============================ -->
+  <section class="slide" id="s7">
+    <div class="eyebrow"><span class="eyebrow-num">02</span><span class="eyebrow-text">The fork</span></div>
+    <div class="body">
+      <h2>A fork is a two-way street. Both directions have rules.</h2>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>Down: their work into ours</h3>
+          <p>Our <code>develop</code> branch is a <strong>pristine mirror of theirs</strong>. Nothing of ours is ever committed to it. That is what makes upgrades possible: we can always see exactly what changed upstream, with our customizations not in the way.</p>
+          <p class="card-note" style="margin-top:.6rem">Never open a PR against <code>develop</code>.</p>
+        </div>
+        <div class="card">
+          <h3>Up: our work into theirs</h3>
+          <p>If we fix a genuine bug in core Rock, we can contribute it back. The repo has a separate PR template for that &mdash; open the PR with <code class="mono">?template=upstream-contribution.md</code> and it asks for what Spark's maintainers need.</p>
+        </div>
+      </div>
+      <div class="card was">
+        <h3>The public consequence</h3>
+        <p>Because Rock is open source, <strong>our fork is public.</strong> Anything committed is visible to the entire internet, permanently, including after you "delete" it in a later commit. No passwords, no connection strings, no exports with member names, emails, phone numbers, or giving data. If it happens, tell DevOps immediately so the credential gets rotated &mdash; deleting it is not enough.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 7 ============================ -->
+  <section class="slide" id="s8">
+    <div class="eyebrow"><span class="eyebrow-num">03</span><span class="eyebrow-text">Version branches</span></div>
+    <div class="body">
+      <h2>The trunk is named after the Rock version it runs.</h2>
+      <div class="graph" role="img" aria-label="Diagram: upstream develop mirror, and the passion-18.4.1 trunk branched from Rock 18.4.1">
+        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">untouched mirror of SparkDevNetwork/Rock</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">Rock 18.4.1 + our 233 commits = production</span></div>
+      </div>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>Why the version is in the name</h3>
+          <p>A Rock upgrade is not a normal change &mdash; it moves thousands of files at once. Naming the trunk after the version makes the answer to "what is production running?" a thing you can read, not a thing you ask about.</p>
+        </div>
+        <div class="card card-server">
+          <h3>What production runs today</h3>
+          <p><span class="mono">passion-18.4.1</span> &mdash; and the branch is the repository's default, so it is what you land on when you open the repo. If they match, there is nothing to remember.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 8 ============================ -->
+  <section class="slide" id="s9">
+    <div class="eyebrow"><span class="eyebrow-num">03</span><span class="eyebrow-text">Version branches</span></div>
+    <div class="body">
+      <h2>How the next upgrade happens.</h2>
+      <p class="lede">You will not do this. It's here so the branch names you'll see next year make sense.</p>
+      <ol>
+        <li>Pull Spark's <code>develop</code> down so the mirror is current.</li>
+        <li>Cut <code>passion-18.5</code> from the upstream tag for that release.</li>
+        <li>Replay our 233 commits onto it and fix what conflicts.</li>
+        <li>Point <code>.github/pr-test-environments.json</code> at the new branch &mdash; <strong>one file decides which base branch gets test environments.</strong></li>
+        <li>Make it the repo default. Deploy it to staging. Live on staging until it's boring.</li>
+        <li>Deploy to production. Retire the old trunk.</li>
+      </ol>
+      <div class="card card-note">
+        <p>The practical consequence for you: <strong>the branch you target changes on every upgrade.</strong> Don't memorize <code>passion-18.4.1</code>. Read the default branch, or read that one config file.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 9 ============================ -->
+  <section class="slide" id="s10">
+    <div class="eyebrow"><span class="eyebrow-num">04</span><span class="eyebrow-text">Making changes</span></div>
+    <div class="body">
+      <h2>One decision matters more than all the rest: the base branch.</h2>
+      <div class="cols cols-2">
+        <div class="card now">
+          <h3>Right</h3>
+          <p>Branch <strong>from</strong> <code>passion-18.4.1</code>, and open the PR <strong>into</strong> <code>passion-18.4.1</code>.</p>
+          <p class="card-note" style="margin-top:.6rem">You get a review, a build, and a private test site.</p>
+        </div>
+        <div class="card was">
+          <h3>Wrong</h3>
+          <p>Any other base branch.</p>
+          <p class="card-note" style="margin-top:.6rem">The robot <strong>quietly does nothing.</strong> No error, no comment, no test site. It looks like the pipeline is broken. It isn't &mdash; it's ignoring you.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>The whole loop, in the browser</h3>
+        <div class="flow">
+          <div class="flow-step"><strong>Edit the file</strong><span class="mono">press t to find it</span></div>
+          <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+          <div class="flow-step"><strong>Commit to a new branch</strong><span class="mono">fix/what-you-did</span></div>
+          <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+          <div class="flow-step"><strong>Open the PR</strong><span class="mono">base: passion-18.4.1</span></div>
+          <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+          <div class="flow-step"><strong>Add a label</strong><span class="mono">rock-test:start</span></div>
+          <span class="flow-arrow" aria-hidden="true">&rarr;</span>
+          <div class="flow-step"><strong>Test your own site</strong><span class="mono">~30 min later</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 10 ============================ -->
+  <section class="slide" id="s11">
+    <div class="eyebrow"><span class="eyebrow-num">04</span><span class="eyebrow-text">Making changes</span></div>
+    <div class="body">
+      <h2>Labels are buttons. That's the whole control panel.</h2>
+      <p class="lede">GitHub has no "deploy" button we can add, so we used the one thing on a PR that anyone can click.</p>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>You press these</h3>
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                <tr><td><span class="tag tag-do">rock-test:start</span></td><td>Build my branch and give me a site</td></tr>
+                <tr><td><span class="tag tag-do">rock-test:auto</span></td><td>Rebuild it every time I push</td></tr>
+                <tr><td><span class="tag tag-do">rock-test:stop</span></td><td>Shut it down, keep the files</td></tr>
+                <tr><td><span class="tag tag-do">rock-test:destroy</span></td><td>Delete it entirely</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h3>The robot sets these &mdash; don't touch them</h3>
+          <p style="display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.6rem">
+            <span class="tag tag-state">queued</span>
+            <span class="tag tag-state">building</span>
+            <span class="tag tag-state">deploying</span>
+            <span class="tag tag-state">deployed</span>
+            <span class="tag tag-state">stopped</span>
+            <span class="tag tag-state">failed</span>
+          </p>
+          <p class="card-note">They're a status light. <span class="tag tag-state">deployed</span> means your site is up and the URL is in the PR comment.</p>
+        </div>
+      </div>
+      <p class="card-note"><strong>Cleanup:</strong> merging the PR destroys its environment &middot; closing it without merging only <em>stops</em> it and keeps the files. Nothing else reaps anything on a timer &mdash; if you're done with an environment, add <span class="tag tag-do">rock-test:destroy</span> yourself.</p>
+    </div>
+  </section>
+
+  <!-- ============================ 11 ============================ -->
+  <section class="slide" id="s12">
+    <div class="eyebrow"><span class="eyebrow-num">04</span><span class="eyebrow-text">Making changes</span></div>
+    <div class="body">
+      <h2>Why a pull request, even for a one-word typo.</h2>
+      <div class="cols">
+        <div class="card">
+          <h3>It's the only way to get a test site</h3>
+          <p>Test environments are built per PR. No PR, no build, no site, no way to see your change before it's live.</p>
+        </div>
+        <div class="card">
+          <h3>It proves the thing compiles</h3>
+          <p>One stray character in a C# file takes the whole site down. The build catches that in CI instead of on the live site at 9am Sunday.</p>
+        </div>
+        <div class="card">
+          <h3>It's the record</h3>
+          <p>Six months from now, "why is this like this?" has an answer: the PR, the discussion, and who approved it.</p>
+        </div>
+        <div class="card">
+          <h3>It makes undo cheap</h3>
+          <p>A merged PR is one revertible unit. Edits made straight on a server are archaeology.</p>
+        </div>
+      </div>
+      <div class="card card-note">
+        <p><strong>One real exception.</strong> A lot of what looks like "editing the website" in Rock is not a file at all &mdash; HTML Content block text, page names and routes, Lava in block settings, workflows, reports. Those live in the database and you change them in the Rock admin UI on the live site. This pipeline only moves <em>files</em>. If you're unsure which side of that line you're on, ask before you start.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 12 ============================ -->
+  <section class="slide" id="s13">
+    <div class="eyebrow"><span class="eyebrow-num">05</span><span class="eyebrow-text">Why GitHub builds it</span></div>
+    <div class="body">
+      <h2>What "build" actually means for Rock.</h2>
+      <p class="lede">Not a website that gets uploaded. An application that gets compiled &mdash; roughly 25 minutes of work on a machine none of us owns.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Step</th><th>What runs</th><th>Needs</th></tr></thead>
+          <tbody>
+            <tr><td>Restore packages</td><td>NuGet, across ~40 projects</td><td class="mono">Windows</td></tr>
+            <tr><td>Compile Rock</td><td>MSBuild, in dependency order</td><td class="mono">Windows + VS build tools</td></tr>
+            <tr><td>Build the Obsidian framework</td><td>Node &middot; TypeScript &middot; Vue</td><td class="mono">Node 18</td></tr>
+            <tr><td>Build the Obsidian blocks</td><td>Node, a second workspace</td><td class="mono">the framework above, first</td></tr>
+            <tr><td>Verify</td><td>every assembly + the compiled block JS exists</td><td class="mono">&mdash;</td></tr>
+            <tr><td>Package &amp; publish</td><td>zip the site, upload to Google Cloud</td><td class="mono">cloud credentials</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card card-note">
+        <p>The compiled Obsidian block JavaScript is <strong>not stored in the repo</strong> &mdash; it only exists after a build. That is exactly why "just copy the files up" doesn't work: half the site isn't in the files.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 13 ============================ -->
+  <section class="slide" id="s14">
+    <div class="eyebrow"><span class="eyebrow-num">05</span><span class="eyebrow-text">Why GitHub builds it</span></div>
+    <div class="body">
+      <h2>Four reasons it can't be your laptop.</h2>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>1 &middot; It physically can't</h3>
+          <p>MSBuild and the .NET Framework targeting packs are Windows-only. A Mac cannot produce these binaries at all.</p>
+        </div>
+        <div class="card">
+          <h3>2 &middot; "Works on my machine" stops existing</h3>
+          <p>The runner is a brand-new, identical Windows box every single time. Nobody's stale local install can make a build pass or fail.</p>
+        </div>
+        <div class="card">
+          <h3>3 &middot; Credentials stay out of laptops</h3>
+          <p>Database passwords and cloud keys live in GitHub secrets and are only ever read by the build. They never land on anyone's machine, and they're never printed in a log.</p>
+        </div>
+        <div class="card">
+          <h3>4 &middot; It runs while you don't</h3>
+          <p>25 minutes of compiling happens on someone else's computer. You close the tab and come back to a working URL.</p>
+        </div>
+      </div>
+      <p class="card-note">The trade: you can't get a 10-second feedback loop. Budget ~30 minutes from label to live site, and batch your changes accordingly.</p>
+    </div>
+  </section>
+
+  <!-- ============================ 14 ============================ -->
+  <section class="slide" id="s15">
+    <div class="eyebrow"><span class="eyebrow-num">06</span><span class="eyebrow-text">Three doors</span></div>
+    <div class="body">
+      <h2>Three places code can land. Only one of them is production.</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Where</th><th>How it's triggered</th><th>Who can</th><th>Database</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>Your PR environment</strong><br><span class="mono card-note">pr-&lt;n&gt;.rock-dev.connect.passion.team</span></td>
+              <td>add <span class="tag tag-do">rock-test:start</span></td>
+              <td>anyone</td>
+              <td>shared sandbox</td>
+            </tr>
+            <tr>
+              <td><strong>Staging</strong><br><span class="mono card-note">staging.rock-dev.connect.passion.team</span></td>
+              <td>merge into <code>passion-18.4.1</code><br><span class="card-note">automatic, no button</span></td>
+              <td>anyone who can merge</td>
+              <td>shared sandbox</td>
+            </tr>
+            <tr>
+              <td><strong>Production</strong><br><span class="mono card-note">the real site</span></td>
+              <td>run <strong>Deploy Production</strong> by hand, then a second person approves</td>
+              <td>DevOps / Global Eng</td>
+              <td>production</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card was">
+        <h3>Things a test environment is not</h3>
+        <p>The database is <strong>shared and gets reset</strong> &mdash; don't build a demo on data you need. No email, no texts, no payments, no scheduled jobs. A migration in your PR changes that shared database <em>for everyone</em>. The URLs themselves are public HTTPS, so no VPN is needed to open one.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 15 ============================ -->
+  <section class="slide" id="s16">
+    <div class="eyebrow"><span class="eyebrow-num">06</span><span class="eyebrow-text">Three doors</span></div>
+    <div class="body">
+      <h2>Merging deploys staging. Nothing merges to production.</h2>
+      <p class="lede">There is no branch you can push, and no label you can add, that reaches the live site.</p>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>Staging &mdash; automatic, and safe</h3>
+          <p>Merge your PR and ~30 minutes later it's live on staging for the whole team. It's a separate site on the test server, on the sandbox database. It cannot see production data and cannot take production down.</p>
+          <p class="card-note" style="margin-top:.6rem">Documentation-only commits are skipped &mdash; a 30-minute Windows build per typo fix isn't a good trade.</p>
+        </div>
+        <div class="card card-server">
+          <h3>Production &mdash; two locks</h3>
+          <ol style="gap:.35rem">
+            <li>Someone opens Actions and runs <strong>Deploy Production</strong> deliberately. The default run is a <strong>dry run</strong> that reports its plan and changes nothing.</li>
+            <li>It builds, then <strong>stops and waits for a second person to approve</strong> &mdash; after the build, so nobody is asked to approve a commit that doesn't compile.</li>
+          </ol>
+        </div>
+      </div>
+      <div class="card">
+        <h3>What it does on the server, and what it refuses to do</h3>
+        <p>Backs up the current site &rarr; stops the app pool &rarr; copies the new files &rarr; starts it &rarr; polls until the site answers. It <strong>never mirrors</strong>: uploaded content, logs, and the cache are server-owned and cannot be deleted by a deploy. And <strong>CI never writes production's connection string</strong> &mdash; so the production database password doesn't have to exist as a secret here, and a deploy can't point production at the wrong server.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 16 ============================ -->
+  <section class="slide" id="s17">
+    <div class="eyebrow"><span class="eyebrow-num">07</span><span class="eyebrow-text">Demo</span></div>
+    <div class="body">
+      <h2>Let's go look at a real one.</h2>
+      <p class="lede">A PR was opened before this meeting so the 25-minute build is already done &mdash; like taking the finished cake out of the oven.</p>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>On the PR page</h3>
+          <ul>
+            <li>The diff &mdash; one visible text change</li>
+            <li>The label I added, and the state labels the robot set in response</li>
+            <li>The robot's status comment, with the URL</li>
+            <li>The Checks tab &mdash; every build step, with logs</li>
+          </ul>
+        </div>
+        <div class="card card-server">
+          <h3>On the live sites</h3>
+          <ul class="bare">
+            <li><strong>The PR's own copy</strong><br><span class="mono">pr-4.rock-dev.connect.passion.team</span></li>
+            <li style="margin-top:.5rem"><strong>Staging, built from the trunk</strong><br><span class="mono">staging.rock-dev.connect.passion.team</span></li>
+          </ul>
+          <p class="card-note" style="margin-top:.75rem">Both are public HTTPS with real certificates &mdash; open them from your phone if you want. Same trunk on staging, so the PR site is the only one with the change in it.</p>
+        </div>
+      </div>
+      <p class="card-note">Then I'll add a second commit live, so you can see <span class="tag tag-state">deployed</span> flip back to <span class="tag tag-state">building</span> the moment a push lands.</p>
+    </div>
+  </section>
+
+  <!-- ============================ 17 ============================ -->
+  <section class="slide" id="s18">
+    <div class="eyebrow"><span class="eyebrow-num">08</span><span class="eyebrow-text">Questions you're about to ask</span></div>
+    <div class="body">
+      <h2>Anticipated questions.</h2>
+      <div class="qa">
+        <div class="qa-item">
+          <div class="qa-q">Do I have to learn command-line git?</div>
+          <div class="qa-a">No. Everything in this deck happens in a browser: edit, commit, PR, label, review, merge. A local clone is optional and only pays off if you're editing dozens of files at once.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">I merged and my change isn't on the live site.</div>
+          <div class="qa-a">Correct and expected. Merging deploys <em>staging</em>. Production is a separate, deliberate run that someone has to start and someone else has to approve.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">Can I break production by doing this wrong?</div>
+          <div class="qa-a">Not by merging, pushing, or labelling. The only path to production is a manual workflow run behind an approval gate, and its default mode changes nothing. The realistic risks are a migration in your PR (it hits the shared sandbox database for everyone) and committing something secret to a public repo.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">Why does it take thirty minutes?</div>
+          <div class="qa-a">About 25 of it is genuinely compiling Rock and building two separate Vue workspaces on a fresh Windows machine. The rest is packaging, uploading, installing, and waiting for Rock to apply its migrations on first request. It is not queueing.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">Why did nothing happen when I added the label?</div>
+          <div class="qa-a">Almost always the base branch. Test environments are only built for PRs targeting the branch named in <code>.github/pr-test-environments.json</code>. Anything else is silently ignored &mdash; no error, by design of GitHub, not by choice.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 18 ============================ -->
+  <section class="slide" id="s19">
+    <div class="eyebrow"><span class="eyebrow-num">08</span><span class="eyebrow-text">Questions you're about to ask</span></div>
+    <div class="body">
+      <h2>And the harder ones.</h2>
+      <div class="qa">
+        <div class="qa-item">
+          <div class="qa-q">Someone needs a fix live in twenty minutes. What actually happens?</div>
+          <div class="qa-a">Because Rock compiles our custom blocks at runtime, an operator can copy two files onto the server &mdash; with a drift check, a hash-verified backup, and automatic rollback on mismatch. It's operator-only, it's the mechanism recent urgent fixes actually used, and it exists so you can ask for it rather than attempt it.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">How do we roll back?</div>
+          <div class="qa-a">Run <strong>Deploy Production</strong> again with the previous good commit &mdash; rolling back is the same operation as rolling forward, which is the point. If you need it faster than a build, the previous site is still on the VM under <code>C:\RockBackups\production\</code>.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">Was this pipeline working before today?</div>
+          <div class="qa-a">Parts of it were reporting green while being broken &mdash; the test VM had been off for three months, the build was looking for Visual Studio in a folder that no longer existed, build failures were being forced green, the compiled Obsidian block JavaScript was never built, and the deploy was overwriting the very theme files people were trying to test. All five are fixed, with tests that fail if they come back. There's a written list of what's still open.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">What if GitHub is down?</div>
+          <div class="qa-a">We can't build. Production keeps serving &mdash; nothing about a running site depends on GitHub. The operator hot-deploy path also doesn't need it.</div>
+        </div>
+        <div class="qa-item">
+          <div class="qa-q">Why is my change not showing even though the build was green?</div>
+          <div class="qa-a">Check that the file is actually in your PR's diff and on the right path. If it's LESS, Rock's theme compiler has to recompile it (Admin &rarr; CMS &rarr; Themes). If it's an HTML Content block or a page setting, it was never a file &mdash; it's a database record you change in the admin UI.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 19 ============================ -->
+  <section class="slide" id="s20">
+    <div class="eyebrow"><span class="eyebrow-num">09</span><span class="eyebrow-text">Where we go from here</span></div>
+    <div class="body">
+      <h2>Four things, and then it's yours.</h2>
+      <div class="cols cols-2">
+        <div class="card">
+          <h3>Everyone</h3>
+          <ol>
+            <li>Confirm you can sign in to <code>passiondev/Rock</code>, that 2FA is on, and that you can add a label to a PR.</li>
+            <li>Read Parts 0&ndash;2 of the training doc, then ship one real change end to end &mdash; a typo is a perfect first PR.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>DevOps</h3>
+          <ol>
+            <li>Install the command-queue agent on the production VM, together, so the last step of the production path is proven.</li>
+            <li>Create the <code>production</code> environment with required reviewers, and get the certificate renewal green.</li>
+          </ol>
+        </div>
+      </div>
+      <div class="card card-note">
+        <p><strong>Take with you:</strong> the one-page cheat sheet, and <code>Documentation/Local-Engineering-Training-Edit-Test-and-Deploy.md</code> in the repo &mdash; the long version, including nine specific traps and what to do about each. The separate open-issues list is for DevOps.</p>
+      </div>
+      <p class="lede">The pipeline's job is to make a change boring. If any part of it still feels like a risk, that's a bug &mdash; tell me.</p>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // Cosmetic only: moves the accent dot to the section you are in. Scrolling,
+  // the keyboard and the rail links all work without this -- if it never runs,
+  // the deck presents fine and the first dot just stays lit.
+  (function () {
+    if (!('IntersectionObserver' in window)) { return; }
+
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('.rail-node'));
+    if (!slides.length || !nodes.length) { return; }
+
+    // A rail node owns every slide from its own target up to the next node's
+    // target, so the dot tracks the section rather than the individual slide.
+    var ownerFor = {};
+    var currentOwner = nodes[0];
+    slides.forEach(function (slide) {
+      nodes.forEach(function (n) {
+        if ((n.getAttribute('href') || '').slice(1) === slide.id) { currentOwner = n; }
+      });
+      ownerFor[slide.id] = currentOwner;
+    });
+
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) { return; }
+        var owner = ownerFor[entry.target.id];
+        nodes.forEach(function (n) {
+          if (n === owner) { n.setAttribute('aria-current', 'true'); }
+          else { n.removeAttribute('aria-current'); }
+        });
+      });
+    }, { threshold: 0.5 });
+
+    slides.forEach(function (s) { observer.observe(s); });
+  })();
+</script>
