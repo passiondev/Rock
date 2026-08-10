@@ -87,9 +87,18 @@ wants to discuss trunk-based vs. GitFlow, park it: *"Worth a conversation, not t
 ### 0:12 — The fork (slides 7–8, 6 min)
 
 Slide 7's diagram is the answer to "where does our code come from." Numbers to say out loud:
-**233 commits and 658 files** that don't exist upstream.
+**68 files on the trunk that don't exist upstream, and 63 of them are this pipeline** — the
+workflows, the deploy scripts, the docs, the tests. Five are product code. The point of saying
+it that way: the trunk is almost entirely *plumbing* so far, and the plumbing is what this
+meeting is about.
 
 Slide 8 is the most important non-demo slide in the deck. Two directions, then the warning.
+
+If anyone asks about `develop` being a "mirror" — the deck used to say that and it was wrong.
+`develop` carries 276 files under `RockWeb/Plugins/`, 78 of them ours; upstream's 18.4.1 tag
+carries 2. The clean reference is Spark's **tag**, not a branch of ours. Say it as a
+correction if it comes up; don't volunteer it, because the rule people need is unchanged:
+never open a PR against `develop`.
 
 **Do not soften the public-repo warning.** Say it plainly, and give the recovery path so it
 doesn't read as a threat:

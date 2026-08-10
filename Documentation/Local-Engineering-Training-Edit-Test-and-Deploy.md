@@ -181,8 +181,8 @@ says is what you must branch **from** and target **into**. If you target anythin
 robot will quietly do nothing — no error, no comment.
 
 `passion-18.4.1` is also the repository's **default branch**, so it is what you get by
-default when you open the repo. It matches what production runs. Re-read the file rather
-than trusting your memory — this value changes on every Rock upgrade.
+default when you open the repo, and it is the Rock version production runs. Re-read the file
+rather than trusting your memory — this value changes on every Rock upgrade.
 
 ### Step 2 — Find the file
 
@@ -812,13 +812,16 @@ re-diagnosing them. All verified 2026-08-10.
    deploy will build, gate, queue, and then time out. Being done with DevOps rather than
    unattended.
 
-3. **Which branch production should deploy *from* is genuinely unsettled.** The trunk tracks
-   2 files under `RockWeb/Plugins/`; `develop` and `staging` track 276 each. The last
-   production build ran from `develop` on 2026-05-06 and produced only an artifact — the
-   server was then updated by hand. Production will not lose its plugins either way (the copy
-   is `robocopy /E` with no `/PURGE`, so server-only files stay), but choosing a source of
-   truth needs the assembly versions read off the production box. This is why the production
-   path is built and proven but deliberately unfired.
+3. **Production deploys from the trunk, and only the trunk.** Each branch declares its own Rock
+   version: the trunk is **18.4.1**, `develop` is **19.0.3**, `staging` is **17.6.1**.
+   Production's own assemblies are 18.x — a mix of 18.1.0, 18.3.1, and 18.4.1 — so a trunk
+   deploy brings the older ones forward, which is what production needs. Deploying `develop`
+   would be a jump to Rock 19 whose database migrations cannot be walked back; the workflow
+   should refuse any ref but the trunk. The remaining real risk is narrower than the branch
+   question: production's `Rock.Migrations.dll` is 18.3.1 and the trunk's is 18.4.1, so the
+   first deploy runs the 18.3.1 → 18.4.1 migrations at startup. That needs a verified database
+   backup taken immediately beforehand, which is why the production path is built and proven
+   but deliberately unfired.
 
 4. **`GCP_COMPUTE_PROJECT_ID` is a dead secret** — no workflow references it. Worth removing
    so the secret list reflects reality.
