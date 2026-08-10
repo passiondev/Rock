@@ -273,5 +273,72 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
 
 
+class ReusableWorkflowPermissionTests(unittest.TestCase):
+    """A called workflow can only narrow the caller's GITHUB_TOKEN, never widen it.
+
+    If a callee's `permissions` block asks for a scope the caller did not grant,
+    GitHub kills the entire run as a `startup_failure`: no jobs, no logs, and
+    `actionlint` reports the files clean. This cost a real debugging cycle on
+    staging-deploy.yml, which granted only `contents: read` while the build
+    workflow it calls asks for `actions: read`.
+
+    This walks every local `uses: ./.github/workflows/...` edge in the repo rather
+    than naming the two known callers, so a future caller cannot reintroduce it.
+    """
+
+    #: Ordered weakest to strongest -- a caller granting `write` satisfies a callee
+    #: asking for `read`, but not the reverse.
+    _RANK = {"none": 0, "read": 1, "write": 2}
+
+    def _permissions(self, workflow):
+        declared = workflow.get("permissions")
+        if declared in ("read-all", "write-all") or declared is None:
+            # Inherited or blanket permissions are always a superset of anything a
+            # callee can ask for, so there is nothing to check.
+            return None
+        return declared
+
+    def test_every_caller_grants_at_least_what_its_called_workflows_request(self):
+        workflow_dir = REPO_ROOT / ".github" / "workflows"
+        edges = 0
+
+        for caller_path in sorted(workflow_dir.glob("*.yml")):
+            caller = yaml.safe_load(caller_path.read_text())
+            caller_permissions = self._permissions(caller)
+
+            for job_id, job in (caller.get("jobs") or {}).items():
+                uses = (job or {}).get("uses", "")
+                if not uses.startswith("./.github/workflows/"):
+                    continue
+
+                # removeprefix, not lstrip: lstrip("./") strips a character set and
+                # would eat the dot off ".github" as well.
+                callee_path = REPO_ROOT / uses.removeprefix("./")
+                self.assertTrue(callee_path.exists(), f"{caller_path.name}:{job_id} calls missing {uses}")
+
+                callee_permissions = self._permissions(yaml.safe_load(callee_path.read_text()))
+                edges += 1
+
+                # A job-level `permissions` block on the calling job overrides the
+                # workflow-level one for that call.
+                effective = (job.get("permissions") if "permissions" in job else caller_permissions)
+                if effective is None or callee_permissions is None:
+                    continue
+
+                for scope, level in callee_permissions.items():
+                    granted = effective.get(scope, "none")
+                    self.assertGreaterEqual(
+                        self._RANK[granted],
+                        self._RANK[level],
+                        f"{caller_path.name} job '{job_id}' grants {scope}: {granted} but "
+                        f"{callee_path.name} requests {scope}: {level}. GitHub will fail the "
+                        f"whole run as a startup_failure with no logs.",
+                    )
+
+        # Guard against the walk silently finding nothing, which would make this
+        # test pass forever without checking anything.
+        self.assertGreaterEqual(edges, 3, "expected to find local reusable workflow calls")
+
+
 if __name__ == "__main__":
     unittest.main()

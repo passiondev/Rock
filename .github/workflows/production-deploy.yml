@@ -43,7 +43,13 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  # A called workflow can only narrow the caller's token, never widen it. The build
+  # workflow asks for `actions: read`, so a caller that grants only `contents: read`
+  # is an escalation and GitHub kills the run before any job starts -- a
+  # "startup_failure" with no jobs and no logs. Keep this a superset of the
+  # permissions in every workflow reached through `uses:` below.
   contents: read
+  actions: read
 
 jobs:
   resolve:
