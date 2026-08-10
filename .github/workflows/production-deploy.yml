@@ -35,6 +35,14 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      acknowledge_version_change:
+        description: >-
+          Only for a real Rock upgrade. Confirms you intend to ship a different Rock
+          minor version than the default branch declares, and that a verified database
+          backup exists. Migrations run on first request and cannot be walked back.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Never two production deploys at once, and never cancel one midway -- a
@@ -89,6 +97,75 @@ jobs:
             echo "| Mode | **$mode** |"
             echo "| Requested by | @${{ github.actor }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse a ref from a different Rock version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Branch names in this repository do not tell you the Rock version, and
+          # two of them are actively misleading: `develop` declares 19.0.3 and
+          # `staging` declares 17.6.1, while the trunk declares 18.4.1. Production's
+          # bin is a patchwork inside the 18.x line. Rock applies its EF and plugin
+          # migrations on the first request after a deploy, so a ref from another
+          # minor line migrates the production database with no way back short of a
+          # restore. The last production build (2026-05-06) ran from `develop` --
+          # a 19.0 artifact -- and the only reason that was not an incident is that
+          # nobody installed it. This step replaces that luck with a control.
+          #
+          # The expected version is read from the repository's default branch rather
+          # than hardcoded, so this needs no editing at upgrade time: promote the new
+          # trunk to default and deploys of that line begin passing on their own.
+          # Rolling back to an older commit on the same minor still passes.
+          version_of() {
+            sed -n 's/.*AssemblyVersion( *"\([^"]*\)".*/\1/p' "$1" | head -1
+          }
+
+          ref_version="$(version_of Rock.Version/AssemblySharedInfo.cs)"
+          if [ -z "$ref_version" ]; then
+            echo "::error::Could not read AssemblyVersion from the chosen ref. Refusing to deploy a ref whose Rock version cannot be established."
+            exit 1
+          fi
+
+          default_branch='${{ github.event.repository.default_branch }}'
+          gh api "repos/${{ github.repository }}/contents/Rock.Version/AssemblySharedInfo.cs?ref=$default_branch" \
+            --jq '.content' | tr -d '\n' | base64 -d > default-shared-info.cs
+          expected_version="$(version_of default-shared-info.cs)"
+          rm -f default-shared-info.cs
+          if [ -z "$expected_version" ]; then
+            echo "::error::Could not read AssemblyVersion from the default branch ($default_branch)."
+            exit 1
+          fi
+
+          ref_minor="${ref_version%.*}"
+          expected_minor="${expected_version%.*}"
+
+          {
+            echo "| Rock version of ref | \`$ref_version\` |"
+            echo "| Expected (from \`$default_branch\`) | \`$expected_version\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ref_minor" = "$expected_minor" ]; then
+            echo "Rock $ref_version is on the expected $expected_minor line."
+            exit 0
+          fi
+
+          if [ "${{ inputs.acknowledge_version_change }}" = "true" ]; then
+            echo "::warning::Deploying Rock $ref_version against an expected $expected_minor line. Acknowledged by @${{ github.actor }} -- migrations will run on the first request after this deploy."
+            echo "| Version change | **acknowledged by @${{ github.actor }}** |" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "::error::Ref '${{ inputs.ref }}' declares Rock $ref_version, but production is expected to run $expected_minor (per the default branch '$default_branch'). Rock migrates the database on first request after a deploy and that is not reversible. If this is a deliberate upgrade, take a verified database backup and re-run with 'acknowledge_version_change' checked."
+          {
+            echo ""
+            echo "> **Refused.** \`${{ inputs.ref }}\` is Rock \`$ref_version\`; production expects \`$expected_minor\`."
+            echo "> Rock runs its migrations on the first request after a deploy, so this would change the"
+            echo "> production database in a way a file rollback does not undo. If the version change is"
+            echo "> intended, back up the database, verify the backup, then re-run with"
+            echo "> **acknowledge_version_change** checked."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   build:
     name: Build production artifact
