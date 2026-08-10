@@ -209,6 +209,17 @@ class StagingWorkflowTests(unittest.TestCase):
         self.assertEqual(deploy["queue_name"], "commands")
         self.assertTrue(deploy["write_connection_string"])
 
+    def test_dual_trigger_workflow_does_not_use_the_inputs_context(self):
+        """The `inputs` context does not exist on a push event. Referencing it in a
+        workflow that has both push and workflow_dispatch triggers fails the entire
+        run as a startup_failure -- no jobs, no logs, and actionlint does not catch
+        it. github.event.inputs is null on push instead of undefined."""
+        text = STAGING_WORKFLOW.read_text()
+        body = text.split("jobs:", 1)[1]
+
+        self.assertNotIn("${{ inputs.", body)
+        self.assertIn("${{ github.event.inputs.ref || github.sha }}", body)
+
     def test_documentation_only_commits_do_not_trigger_a_thirty_minute_build(self):
         workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())
         ignored = workflow["on"]["push"]["paths-ignore"]
