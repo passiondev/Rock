@@ -91,14 +91,18 @@ file when you needed the admin UI produces a change that appears to do nothing.
 
 ## Part 1 — GitHub primer
 
-### Before your first change: three prerequisites
+### Before your first change: two prerequisites
 
 1. **A GitHub account, added to the `passiondev` organization with write access.**
    You need write access to create branches and to add labels. Ask DevOps. Without it, the
    "Commit changes" button will offer to fork the repo instead — see the warning below.
 2. **Two-factor authentication (2FA) turned on.** Required by the organization.
-3. **VPN or office network.** The test environments are firewalled to the office/VPN
-   egress IP (`159.63.145.194`). From home without VPN, the URL simply will not load.
+
+That is the whole list. In particular **you do not need VPN or the office network** to open a
+test environment: port 443 on the test VM is open to `0.0.0.0/0` (firewall rule
+`https-from-world`), so the URLs work from home, a phone tether, or a hotel. The allowlisted
+office IP `159.63.145.194` restricts only Remote Desktop (3389) and direct SQL Server (1433)
+— DevOps paths you will never use from a browser.
 
 > ### ⚠️ This repository is PUBLIC
 >
@@ -275,13 +279,11 @@ Go do something else; the comment updates itself.
 https://pr-<your PR number>.rock-dev.connect.passion.team
 ```
 
-**You must be on VPN or the office network.** Otherwise the page won't load at all.
+This works from anywhere — no VPN, no office network. It is ordinary public HTTPS with a real
+Let's Encrypt certificate, so you should see a normal padlock and no browser warning.
 
-Two things to expect on first visit:
+One thing to expect on first visit:
 
-- **A certificate warning.** Right now this is expected — see
-  [Trap 6](#trap-6-expect-a-certificate-warning-right-now). Confirm you're on VPN first,
-  then proceed.
 - **A very slow first page load.** Rock compiles and warms up on the first request; a
   minute or more is normal. Subsequent pages are fast. If it times out, reload once
   before reporting a problem.
@@ -323,16 +325,21 @@ Getting from staging to **production** is a separate, deliberate act that a pers
 perform and a second person has to approve. Merging never triggers it. See
 [Part 5](#part-5--deploying-to-staging-and-production).
 
-### Step 11 — Cleanup happens for you
+### Step 11 — Cleanup, and the part you have to do yourself
+
+Closing the PR is the only thing that triggers cleanup:
 
 - **Merged PR** → environment destroyed immediately.
-- **Closed without merging** → environment stopped, then destroyed after 7 days.
-- **Idle 6 hours** → stopped automatically (files kept). Re-add `rock-test:start` to bring
-  it back — which is a full rebuild, so budget ~30 minutes rather than expecting it to pop
-  straight back up.
+- **Closed without merging** → environment **stopped**, files kept.
 
-You don't need to clean up by hand. If you want to free the server sooner, add
-`rock-test:destroy`.
+That is the entire list. **Nothing reaps environments on a timer.** There is no idle
+timeout and no scheduled sweep — the only scheduled job in the repo is certificate
+renewal. A stopped environment keeps its files on the test VM until a person destroys it,
+and an environment on an open PR stays running indefinitely.
+
+So when you are finished with a PR's environment, add `rock-test:destroy` yourself. If you
+stopped one and want it back, `rock-test:start` is a full rebuild — budget ~30 minutes
+rather than expecting it to pop straight back up.
 
 ---
 
@@ -454,15 +461,30 @@ effect:
 If your project is in that list, the deployment doesn't contain your change. Bring the log
 to DevOps.
 
-### Trap 6: Expect a certificate warning right now
+### Trap 6: A 500 on every page is probably not your change
 
-The weekly certificate renewal job has been failing since 2026-05-18 (last success
-2026-05-11), so the TLS certificates on `pr-*` and `staging.rock-dev.connect.passion.team`
-are expired. The renewal script is fixed but has not yet had a successful run.
+If *every* page of your environment returns a 500 — not one broken block, the whole site —
+the odds are it has nothing to do with your PR. A platform-level fault looks exactly like
+"I broke it," and the error page is deliberately unhelpful about the difference.
 
-Practically: **confirm you're on VPN, then click through the browser warning.** It is not
-evidence that your deploy failed. It is tracked in
-[Appendix C](#appendix-c--known-issues).
+**How to tell in thirty seconds:** open <https://staging.rock-dev.connect.passion.team>.
+Staging runs trunk with none of your changes in it. If staging is broken too, it is not you.
+
+Worth knowing why the error page is useless here. Rock's `web.config` sets
+`customErrors defaultRedirect="/Error.aspx"`, so a failure is supposed to render a friendly
+Rock error page. But when the fault happens at *application startup*, `/Error.aspx` cannot
+start either, so IIS gives up and returns a generic 1,789-byte page that says only that
+"another exception occurred while executing the custom error page." That page is the same
+for a missing assembly, a bad connection string, and a dozen other causes — so never try to
+read the cause off it.
+
+This is not hypothetical. On 2026-08-10 a single missing framework assembly
+(`Google.Protobuf.dll`, absent from every build artifact) took down staging and every PR
+environment at once, and the builds all stayed green. Diagnosing it needed the Windows
+event log on the VM, which is a DevOps task.
+
+Practically: **check staging, then report it** with your PR number. If both are down, say so
+— that one sentence saves an hour.
 
 ### Trap 7: Plugin code errors appear in the browser, not in the build
 
@@ -652,11 +674,12 @@ instructions do.
 | Applied `rock-test:start`, nothing happened at all | Wrong base branch ([Trap 9](#trap-9-the-wrong-base-branch-fails-silently)), or PR is from a fork ([Trap 8](#trap-8-prs-from-forks-never-deploy)) | Check base branch against `.github/pr-test-environments.json`; edit the PR's base if wrong |
 | Label `rock-test:failed` | Build or deploy error | Open **Logs** in the status comment; find the red step |
 | Build succeeded but my change isn't there | A project failed to compile ([Trap 5](#trap-5-a-green-build-does-not-prove-your-code-shipped)) or, before 2026-08-10, the file was under an overlaid directory ([Trap 1](#trap-1-themes-content-assets-and-styles-used-to-get-overwritten--fixed-2026-08-10)) | Search the build log for `Warning: Failed to build`. Build failures now fail the run, so a green build really did compile |
-| URL doesn't load at all | Not on VPN/office network | Connect to VPN, retry. If still failing, ask DevOps to confirm DNS |
-| Certificate warning | Renewal job failing; last success 2026-05-11 ([Trap 6](#trap-6-expect-a-certificate-warning-right-now)) | Confirm VPN, click through. Report only if it's new information |
+| URL doesn't load at all | Environment never deployed, or DNS | It is *not* VPN — these hosts are public. Confirm the status comment says `deployed`, then ask DevOps to check DNS |
+| Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
+| Certificate warning | Unexpected — `pr-*` hosts carry real Let's Encrypt certificates | Report it. Do not click through as a matter of course; on these hosts a warning is new information |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
 | Yellow-screen compiler error on a plugin page | Plugin code-behind compiles at runtime ([Trap 7](#trap-7-plugin-code-errors-appear-in-the-browser-not-in-the-build)) | Read the file/line on the error page, fix, commit, redeploy |
-| Environment was working, now says `stopped` | Idle 6+ hours | Add `rock-test:start` again |
+| Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
 | Test data vanished | Nightly sandbox refresh ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Recreate it; don't build multi-day scenarios |
 | Data I didn't create | Shared sandbox DB ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Expected. Ask in team chat if it's blocking |
 | Email/text/payment didn't happen | Disabled by design ([Trap 4](#trap-4-no-email-no-texts-no-payments-no-jobs)) | Not a bug. Ask DevOps for a testing plan if that's the change |
@@ -674,7 +697,7 @@ one message.
 | Situation | Who |
 | --- | --- |
 | No repo access, no write access, 2FA problems | DevOps |
-| VPN or network access | DevOps |
+| Remote Desktop or direct SQL access to the test VM (needs the office IP) | DevOps |
 | Build failed and the log doesn't make sense | DevOps |
 | My change is under `Themes/Content/Assets/Styles` and I can't verify it | DevOps |
 | My PR includes a migration | DevOps — **before** applying `rock-test:start` |
@@ -756,11 +779,17 @@ re-diagnosing them. All verified 2026-08-10.
 
 ### Still open
 
-1. **Certificate renewal is still failing weekly** (last success 2026-05-11; most recent
-   failure run `31370584850`, 2026-08-10). Users see TLS warnings on `pr-*` and `staging`
-   hosts. The renewal script itself has been fixed, but the workflow needs one successful
-   dispatch against a live environment to confirm it. Workflow:
-   `.github/workflows/pr-test-renew-certificates.yml`.
+1. **Certificate renewal works for `pr-*` but has not yet issued one for `staging`.**
+   Measured 2026-08-10: `pr-4` serves a valid Let's Encrypt certificate issued that day
+   (expires 2026-11-08) and verifies cleanly, so the renewal path is functional — the earlier
+   revision of this document, which said renewal was failing and told readers to click
+   through warnings on every host, was wrong. `staging` is a newer host and still serves an
+   untrusted certificate. Renewal only covers environments that have an `env.json` manifest
+   marked `deployed` under `C:\RockTestEnvs`, and staging's deploys have been failing, so it
+   has not been picked up yet. Re-dispatch renewal once a staging deploy actually succeeds,
+   and confirm from the run log that it names `staging` — the run on 2026-08-10 at 17:53
+   reported `succeeded` after 90 seconds with no per-host output, which is what "found nothing
+   to do" looks like. Workflow: `.github/workflows/pr-test-renew-certificates.yml`.
 
 2. **The production command-queue agent is not installed yet.** Everything upstream of it —
    build, approval gate, backup, copy, health check — is proven against staging. Until the
@@ -790,6 +819,23 @@ re-diagnosing them. All verified 2026-08-10.
    still says deployment fails at an SSH step. That was fixed by the Cloud Storage command
    queue.
 
+8. **Nothing reaps abandoned environments.** Closing a PR stops its environment but never
+   destroys it, and an environment on a long-lived open PR runs forever. The only scheduled
+   workflow in the repo is certificate renewal — there is no idle timeout and no sweep. Left
+   alone this grows the test VM's disk until it fills. Wants a scheduled job that stops
+   environments idle past some threshold and destroys ones whose PR closed more than a week
+   ago. *(Earlier revisions of this document claimed both behaviours already existed. They
+   never did.)*
+
+9. **The deploy health check accepts any TLS certificate.**
+   `Deploy-RockEnvironment.ps1` sets `ServerCertificateValidationCallback = { $true }`
+   before polling the site, so a deploy is green whether the certificate is valid, expired,
+   or self-signed. That is deliberate — a brand-new host has no certificate until its first
+   successful ACME run, so gating the health check on TLS would deadlock the very first
+   deploy of any environment (exactly staging's situation in item 1) — but it
+   means CI will never tell us the certificate is broken. Once renewal is green, this should
+   become a separate non-blocking check that reports certificate expiry.
+
 ### Fixed since the last revision — recorded so nobody re-diagnoses them
 
 | Was | Now |
@@ -815,8 +861,10 @@ Re-verify these before trusting this document:
 | Eligible base branch / repo default branch | `passion-18.4.1` | `.github/pr-test-environments.json` |
 | Environment domain | `rock-dev.connect.passion.team` | same file |
 | Staging URL | `staging.rock-dev.connect.passion.team` | `.github/workflows/staging-deploy.yml` |
-| Office/VPN allowlisted IP | `159.63.145.194` | Operator runbook / GCP firewall |
-| Certificate renewal health | Failing; last success 2026-05-11 | Actions → PR Test Environment Certificate Renewal |
+| Office allowlisted IP — **RDP (3389) and SQL (1433) only**, never HTTPS | `159.63.145.194` | GCP firewall rules |
+| Public reachability of test URLs | 443 and 80 open to `0.0.0.0/0` (`https-from-world`, `pr-test-acme-http`) | GCP firewall rules |
+| Certificate health, `pr-*` | Valid Let's Encrypt; `pr-4` issued 2026-08-10, expires 2026-11-08 | `curl -v https://pr-<n>.rock-dev.connect.passion.team` |
+| Certificate health, `staging` | **Untrusted** as of 2026-08-10 — renewal not yet run for this new host | same command against the staging URL |
 | Overlaid directories | `Themes,Content,Assets,Styles`, copy-if-absent only | `Deploy-PrEnvironment.ps1` |
 | Directories a deploy never touches | `Content`, `App_Data`, `Logs`, `Uploads`, `web.ConnectionStrings.config` | `Deploy-RockEnvironment.ps1` |
 | Typical build+deploy time | ~30 minutes | Recent Actions runs |
