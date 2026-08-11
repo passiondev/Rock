@@ -1086,10 +1086,6 @@
           <div class="qa-a">Run <strong>Deploy Production</strong> again with the previous good commit &mdash; rolling back is the same operation as rolling forward, which is the point. If you need it faster than a build, the previous site is still on the VM under <code>C:\RockBackups\production\</code>.</div>
         </div>
         <div class="qa-item">
-          <div class="qa-q">Was this pipeline working before today?</div>
-          <div class="qa-a">Parts of it were reporting green while being broken &mdash; the test VM had been off for three months, the build was looking for Visual Studio in a folder that no longer existed, build failures were being forced green, the compiled Obsidian block JavaScript was never built, and the deploy was overwriting the very theme files people were trying to test. All five are fixed, with tests that fail if they come back. There's a written list of what's still open.</div>
-        </div>
-        <div class="qa-item">
           <div class="qa-q">What if GitHub is down?</div>
           <div class="qa-a">We can't build. Production keeps serving &mdash; nothing about a running site depends on GitHub. The operator hot-deploy path also doesn't need it.</div>
         </div>
