@@ -340,7 +340,9 @@ to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
   `0.0.0.0/0` (rule `https-from-world`), so these hosts work from anywhere — a hotel, a phone
   tether, an attendee's laptop. The `159.63.145.194` office-egress restriction applies only to
   RDP and SQL. Don't spend demo time blaming VPN.
-- **First load times out** → reload once. Rock applies migrations on first request.
+- **First load times out** → reload once. Rock applies migrations on first request. Measured
+  cold on 2026-08-11 after a VM restart: **55 seconds** to the first response on `pr-4`, then
+  instant. This is why the checklist warms both sites; see below.
 - **Site is genuinely down** → fall back to the Checks tab and the bot's status comment.
   The build log is real evidence and it's just as convincing. Say what happened.
 - **Everything is down** → screenshots (take them the morning of, see checklist).
@@ -361,6 +363,27 @@ Do this at least 90 minutes before, so a rebuild is still possible.
 - [ ] Browser tabs pre-opened in demo order, logged in to GitHub.
 - [ ] Zoom/browser at a size the back of the room can read — bump to 125%.
 - [ ] Close Slack, mail, and anything that shows notifications.
+
+**Then, in the five minutes before you start — warm both sites.** This is separate from the
+90-minute check on purpose, and it is the single highest-value item on this list.
+
+An IIS app pool idles out, and Rock's first request after that rebuilds caches and applies any
+pending migrations before it renders anything. Cold, that measured **55 seconds** of blank
+browser on 2026-08-11. Warm, it is instant. Fifty-five seconds of white screen while a room
+watches is the demo failing even though nothing is broken.
+
+```bash
+# Run this immediately before presenting. Both should come back fast the second time.
+for h in pr-4 staging; do
+  curl -s -o /dev/null -k -w "$h  %{http_code}  %{time_total}s\n" \
+    --max-time 240 "https://$h.rock-dev.connect.passion.team/"
+done
+```
+
+Run it twice. The first pass may take a minute per host; the second should be well under a
+second. If the second pass is still slow, something is actually wrong — go to the runbook.
+Note `-k`: it skips certificate validation, so this warms the site without telling you anything
+about the certificate. Check that separately with the `openssl` line in the certificate item.
 
 ---
 

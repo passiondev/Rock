@@ -251,16 +251,92 @@ logic that makes it safe lives on the VM (`Deploy-RockEnvironment.ps1:597` — `
 `-Apply` prints its plan and returns before it downloads anything), so a dry run needs the
 agent every bit as much as a real deploy does.
 
-**The liveness signal is already there and costs one GCS list.** The scheduled task fires every
-minute and the agent has no single-instance guard, so each run claims whatever is in `pending/`
-and moves it to `processing/`, even while an earlier deploy still holds the mutex. A command
-that is *still in `pending/` after two or three minutes* therefore means nothing is consuming
-that queue — not that the queue is busy. Check for that after queueing and fail with "no agent
-is responding on queue `commands-prod`" instead of waiting out the hour.
+**Corrected 2026-08-11 — the liveness signal described here before does not work.** The earlier
+version of this item said each agent run moves the command from `pending/` to `processing/`, so
+a command still in `pending/` after two or three minutes proves nothing is listening. Reading
+the agent rather than the prefix names shows both halves of that are wrong:
+
+- `$ProcessingPrefix` is assigned at `Invoke-PrEnvironmentCommandQueue.ps1:21` and **never used
+  again**. Nothing is ever written to `processing/`; that prefix is dead. The command object is
+  deleted from `pending/` at line 305, at the *end* of the run, after the result is written.
+- So a command sits in `pending/` for the whole command — up to the 1800-second
+  `deploy-environment` timeout. A guard that fails a run because `pending/` is non-empty after
+  three minutes would abort healthy deploys roughly every time.
+- The agent is also not free of a single-instance guard: `schtasks /SC MINUTE /MO 1` takes the
+  Windows default `MultipleInstances: IgnoreNew`, so a firing is *skipped* while the previous
+  one is still running. The comment at line 137 says this outright.
+
+A real liveness signal has to come from the agent, not from the queue's shape. Cheapest version:
+have the agent write `heartbeat.json` on every firing, before it looks at the queue, and have the
+queueing workflow fail when that object is older than a few minutes. That distinguishes the three
+states this item cares about — nobody listening, listening and busy, listening and idle — which
+no amount of listing `pending/` can do.
+
+This correction matters beyond the guard, because that skipped-firing behaviour is a live failure
+mode, not a footnote. See item 19.
 
 Deliberately not built on 2026-08-10: it changes the shared deploy path, and the staging deploy
 being validated that night runs through it. Same reasoning as item 5a — don't add a new failure
 mode to the path a demo depends on, hours before the demo.
+
+### 17. Every queued command carries the database password in cleartext
+
+`env-deploy-command.yml:94` assembles `CONNECTION_STRING` from `PR_TEST_DB_DATA_SOURCE`,
+`DB_NAME`, `DB_USER` and `DB_PASSWORD`, and `:129-130` writes it into the command JSON that gets
+uploaded to `gs://connect-file-storage/pr-environments/commands/pending/`. The password is not
+encrypted, hashed or referenced indirectly — it is a literal `Password=...` inside a plain JSON
+object in a bucket. `pr-test-deploy.yml` does the same thing for PR environments.
+
+Scope it correctly before reacting, because two things make this *not* an emergency:
+
+- **The bucket is not public.** Uniform bucket-level access is on and
+  `public_access_prevention` is `enforced`. Reading these objects requires an IAM grant on the
+  project or bucket, so the exposure is to project members, not the internet.
+- **The catalog is not production.** The connection string points at `172.20.0.2`, which is
+  `connect-restore-test`, not `connect-prod` (`172.20.0.8`). The `RockConnectProd` catalog name
+  on that instance is an artifact of how the sandbox is restored, not production data. Verified
+  by listing the Cloud SQL instances and matching IPs, not by reading the name.
+
+And one thing that makes it worse than it first looks: **the bucket has a seven-day soft-delete
+retention** (`retentionDurationSeconds: 604800`). The agent deletes the command file when it
+finishes, so the queue looks clean — but every command JSON written in the last week is still
+recoverable, password included. "It's only there for a few seconds while in flight" is not true.
+
+The real fix is to stop shipping the secret through the queue at all. The VM already
+authenticates to GCP; it can read the password from Secret Manager itself at deploy time, and
+the command JSON can carry a secret *name* instead of a secret *value*. That is the change worth
+making. Rotating `DB_PASSWORD` without it just re-exposes the new password on the next deploy.
+
+Deliberately not changed on 2026-08-10: it touches the deploy path that the next morning's demo
+runs through, and the credential in question guards a restore sandbox on a private IP. Worth
+doing in the same pass as item 7, since both are about how environments get their database.
+
+### 18. Dispatching the bootstrap reboots the VM, with nothing checking what it interrupts
+
+`pr-test-bootstrap-command-queue.yml` is the only way for a change to
+`Deployment/PrTestEnvironments/*.ps1` to reach the VM — the VM has no self-update path. It
+delivers the change by uploading the scripts to GCS and then **stopping and starting
+`connect-srv-test`**, because the Windows startup script is what re-downloads them and
+reinstalls the scheduled task.
+
+That means a bootstrap is not a deploy-a-script operation, it is a reboot. Everything on that
+VM goes down with it: staging, every live PR environment, and any deploy currently mid-flight.
+Nothing in the workflow checks whether a deploy is running before it pulls the floor out.
+
+This bit us on 2026-08-10. A push at 00:05:41Z started a staging deploy; a bootstrap dispatched
+at 00:05:45Z rebooted the VM underneath it; the staging deploy's queued command was left
+unclaimed in `pending/` and the run sat waiting on a result that could never arrive. Worth being
+explicit that this was **operator sequencing, not a broken trigger** — the workflow is
+`workflow_dispatch` only and does not fire on push, so nothing does this to you automatically.
+Until there is a guard, the rule is: *never dispatch the bootstrap while a deploy is in flight,
+and expect roughly five minutes of downtime on every site on the box when you do.*
+
+The guard here is genuinely a `pending/` list, unlike item 16's: refuse to reboot while any
+command object exists, with an override input for the case where the queue is stuck precisely
+because the VM needs rebooting. The difference is what the signal means. A non-empty `pending/`
+does not tell you an agent is *alive* (item 16's mistake), but it does tell you a command is
+either running or waiting — and either one is a bad thing to reboot on top of. Same list, sound
+inference this time.
 
 ---
 
@@ -477,9 +553,13 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 7. Item 14 — decide whether test sites should render plugin pages (a config line, then a
    decision about version control that is bigger than this pipeline), and reconcile it with
    item 15 — they are the same reconciliation seen from two ends
-8. Items 9–13 — cleanup, any time. Note item 9's warning: `develop` and `staging` are **not**
+8. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
+   in the same pass as item 7; both are about how an environment gets its database, and
+   rotating the password before this change just re-exposes the new one
+9. Items 9–13 — cleanup, any time. Note item 9's warning: `develop` and `staging` are **not**
    safe to prune yet
-9. Items 5 and 6 — the two "CI can't see this" gaps, once the above is stable
+10. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
+    and item 16's are the same GCS list written twice; build them together
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
