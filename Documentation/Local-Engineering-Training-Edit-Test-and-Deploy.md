@@ -511,20 +511,31 @@ so this applies only to plugins.
 
 Two consequences, and both will surprise you:
 
-- **A `pr-*` environment shows no plugin blocks.** The build packages what git has, and the
-  shared-asset overlay backfills only `Themes`, `Content`, `Assets`, and `Styles`. A page
-  built from an `org_passion` or `team_passion` block will not render on a test site.
 - **You cannot ship a plugin-block change through this pipeline.** There is nothing to
   commit, because the file is not tracked. Changing one is a separate, manual, server-side
   job. Ask DevOps before you start.
+- **A test site shows the _server's_ copy of a plugin, never your branch's.** Since
+  2026-08-11 the shared-asset overlay backfills `Plugins` alongside `Themes`, `Content`,
+  `Assets`, and `Styles`, so plugin pages do render on `pr-*` and `staging`. What renders is
+  whatever is installed on the test server, though. Your branch cannot change it, and two
+  open PRs cannot show two different versions of it.
+
+That backfill was not a nicety. Passion's login page *is* a plugin block, so until it existed
+every test site opened on
+
+```
+Error Loading Block: Login
+The file '/Plugins/org_passion/Security/Login.ascx' does not exist.
+```
+
+and nobody could sign in to a test site at all. If you see that error again, it is not your
+change — say so in the PR and ask DevOps to check the overlay.
 
 Production keeps its plugins regardless, because a production deploy copies with robocopy
 `/E` and **no `/PURGE`** — files already on the server that the artifact does not contain are
 left untouched. That is deliberate, and it is why plugin folders survive a deploy that never
-contained them.
-
-If you need plugin pages to work on test sites, that is a config change, not a rewrite: the
-overlay list is read from `PR_TEST_SHARED_ASSET_DIRECTORIES`. It is on the open-items list.
+contained them. Nothing about the test-site overlay reaches production: it runs only for a
+site that owns its whole directory, which production is not.
 
 ### Trap 8: PRs from forks never deploy
 
@@ -647,7 +658,7 @@ calling the site unhealthy.
 
 For a fix to a plugin block, a full pipeline run and reboot is overkill. Because plugin
 `.ascx`/`.ascx.cs` files compile at runtime (see
-[Trap 7](#trap-7-plugin-code-errors-appear-in-the-browser-not-in-the-build)), copying the
+[Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)), copying the
 two files onto the server is a complete deploy — no MSBuild, no `iisreset`.
 
 This is **operator-only** (it requires RDP/SSH access to the production VM) and it is the
@@ -711,7 +722,7 @@ instructions do.
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
 | Certificate warning | Expected only on a **brand-new** environment, which starts self-signed until the weekly renewal covers its host name. `staging` and existing `pr-*` hosts hold real Let's Encrypt certificates (measured 2026-08-11, after a deploy) | Click through for `*.rock-dev.connect.passion.team` only. Report it if you see it on an established host, or on any *other* domain |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
-| A plugin page is missing or broken on a test site | Plugin blocks are not in the repo, so no test environment has them ([Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)) | Not a bug in your PR. Verify that page in production instead, and talk to DevOps |
+| A plugin page looks wrong on a test site, or shows `Error Loading Block` | Plugin blocks are not in the repo; test sites borrow the server's copy through the overlay ([Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)) | Not a bug in your PR, and your branch cannot fix it. Verify that page in production instead, and talk to DevOps |
 | Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
 | Test data vanished | Nightly sandbox refresh ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Recreate it; don't build multi-day scenarios |
 | Data I didn't create | Shared sandbox DB ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Expected. Ask in team chat if it's blocking |

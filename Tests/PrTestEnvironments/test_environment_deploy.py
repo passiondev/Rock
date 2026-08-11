@@ -29,6 +29,26 @@ TRUNK_BRANCH = "passion-18.4.1"
 STAGING_HOST = "staging.rock-dev.connect.passion.team"
 
 
+def _block_body(lines, opener_index):
+    """Line range [start, end) of the braced block opened at lines[opener_index].
+
+    Brace counting is crude but sufficient for these scripts, and the InPlace
+    assertion in the production guard below fails loudly if it ever stops being
+    sufficient -- it checks that a line unique to the InPlace branch landed
+    outside the range this returns.
+    """
+    depth = 0
+    start = None
+    for index in range(opener_index, len(lines)):
+        line = lines[index]
+        depth += line.count("{") - line.count("}")
+        if start is None and "{" in line:
+            start = index + 1
+        if start is not None and depth <= 0:
+            return start, index
+    raise AssertionError(f"unbalanced braces after line {opener_index + 1}")
+
+
 class EnvironmentDeployScriptTests(unittest.TestCase):
     def test_script_supports_both_dedicated_site_and_in_place_modes(self):
         text = DEPLOY_SCRIPT.read_text()
@@ -57,40 +77,82 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         DedicatedSite branch, and production deploys InPlace. An InPlace deploy
         copies over a live site that already has its own Plugins tree, maintained
         outside git -- backfilling it from another site is exactly the wrong thing
-        to do there. If this test ever fails, a change to the overlay list has
-        become a change to production."""
-        text = DEPLOY_SCRIPT.read_text()
+        to do there.
 
-        dedicated = text.index("if ($Mode -eq 'DedicatedSite') {")
-        overlay = text.index("Sync-SharedSiteAssets `")
-        in_place = text.index("$backupPath = Join-Path", dedicated)
+        Checked by brace nesting, not by text position. The first version of this
+        test did `text.index("if ($Mode -eq 'DedicatedSite') {")`, which matches an
+        unrelated app-pool naming block near the top of the script rather than the
+        deploy branch; it passed even when the overlay was hoisted out of the branch
+        and onto the production path, which is the one thing it existed to catch.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
 
-        self.assertLess(dedicated, overlay, "overlay must sit inside the DedicatedSite branch")
-        self.assertLess(
-            overlay, in_place,
-            "overlay must run before the InPlace branch begins, i.e. it is not on the production path",
-        )
+        openers = [
+            index for index, line in enumerate(lines)
+            if line.strip() == "if ($Mode -eq 'DedicatedSite') {"
+        ]
+        self.assertTrue(openers, "no DedicatedSite branch found")
+
+        guarded = set()
+        for opener in openers:
+            start, end = _block_body(lines, opener)
+            guarded.update(range(start, end))
+
+        in_place_only = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("$backupPath = Join-Path")
+        ]
+        self.assertTrue(in_place_only, "could not find the InPlace backup line to calibrate against")
+        for index in in_place_only:
+            self.assertNotIn(
+                index, guarded,
+                "brace walk is unreliable: it placed the InPlace-only backup line inside a "
+                "DedicatedSite branch, so the rest of this test proves nothing",
+            )
+
+        overlay = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Sync-SharedSiteAssets")
+        ]
+        self.assertTrue(overlay, "no Sync-SharedSiteAssets call site found")
+        for index in overlay:
+            self.assertIn(
+                index, guarded,
+                f"Sync-SharedSiteAssets at line {index + 1} is not inside a DedicatedSite branch, "
+                "so the shared-asset overlay now runs on the InPlace production path",
+            )
 
     def test_plugin_build_artifacts_are_stripped_after_the_overlay(self):
         """The strip runs on the freshly extracted artifact, which was sufficient
         while the overlay could not carry Plugins. Now that it does, the base
         site's Plugins/*/bin and Plugins/*/obj arrive after the strip has already
-        run, so a second strip has to follow the overlay."""
+        run, so a second strip has to follow the overlay.
+
+        The argument is asserted, not just the ordering. A later strip aimed at
+        $ExtractPath would satisfy any ordering check while doing nothing at all,
+        because Move-Item has already consumed that directory by then.
+        """
         lines = DEPLOY_SCRIPT.read_text().splitlines()
 
         overlay = [
             index for index, line in enumerate(lines)
             if line.lstrip().startswith("Sync-SharedSiteAssets")
         ]
-        strip = [
+        self.assertTrue(overlay, "no Sync-SharedSiteAssets call site found")
+
+        strips = [
             index for index, line in enumerate(lines)
-            if line.lstrip().startswith("Remove-PluginBuildArtifacts")
+            if re.match(r"Remove-PluginBuildArtifacts\s+-(?:Site)?Path\s+\$SitePath\b", line.strip())
         ]
-        self.assertTrue(overlay, "no call site found for Sync-SharedSiteAssets")
-        self.assertTrue(strip, "no call site found for Remove-PluginBuildArtifacts")
-        self.assertGreater(
-            max(strip), max(overlay),
-            f"a strip must follow the overlay; strip at lines {strip}, overlay at lines {overlay}",
+        self.assertTrue(
+            strips,
+            "no Remove-PluginBuildArtifacts call targets $SitePath; stripping $ExtractPath "
+            "is a no-op once Move-Item has consumed that directory",
+        )
+        self.assertTrue(
+            any(index > max(overlay) for index in strips),
+            f"a $SitePath strip must follow the overlay at line {max(overlay) + 1}; "
+            f"found strips at {[index + 1 for index in strips]}",
         )
 
     def test_in_place_deploy_is_a_dry_run_unless_apply_is_passed(self):
@@ -383,6 +445,26 @@ class StagingWorkflowTests(unittest.TestCase):
         ignored = workflow["on"]["push"]["paths-ignore"]
         self.assertIn("**/*.md", ignored)
         self.assertIn("Documentation/**", ignored)
+
+    def test_workflows_that_cannot_change_the_build_do_not_cancel_a_staging_deploy(self):
+        """`cancel-in-progress: true` means a needless trigger is not merely a
+        wasted 26 minutes -- it kills whatever deploy is in flight. Anything that
+        provably cannot change what staging builds belongs in paths-ignore. Both
+        entries below run somewhere else entirely: production's orchestration, and
+        the deployment test suite on an Ubuntu runner."""
+        workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())
+        ignored = workflow["on"]["push"]["paths-ignore"]
+        for path in [
+            ".github/workflows/production-deploy.yml",
+            ".github/workflows/deployment-pipeline-tests.yml",
+        ]:
+            self.assertIn(path, ignored)
+
+        self.assertNotIn(
+            ".github/workflows/**", ignored,
+            "a blanket workflow ignore would also ignore pr-test-artifact.yml, "
+            "which does change the artifact staging is built from",
+        )
 
 
 class ProductionWorkflowTests(unittest.TestCase):

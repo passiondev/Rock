@@ -108,22 +108,33 @@ class DeployPrEnvironmentScriptTests(unittest.TestCase):
         while the overlay could not carry Plugins at all -- now that it does, a
         strip that runs first is a strip that runs too early, because the base
         site's own Plugins/*/bin and Plugins/*/obj are copied in behind it. The
-        strip has to be the last thing that touches Plugins."""
+        strip has to be the last thing that touches Plugins.
+
+        The argument is asserted, not just the ordering. A later strip aimed at
+        $ExtractPath would satisfy any ordering check while doing nothing at all,
+        because Move-Item has already consumed that directory by then.
+        """
         lines = DEPLOY_SCRIPT.read_text().splitlines()
 
-        def call_sites(name):
-            hits = [
-                index for index, line in enumerate(lines)
-                if line.lstrip().startswith(name)
-            ]
-            self.assertTrue(hits, f"no call site found for {name}")
-            return hits
+        overlay = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Sync-SharedSiteAssets")
+        ]
+        self.assertTrue(overlay, "no Sync-SharedSiteAssets call site found")
 
-        overlay = call_sites("Sync-SharedSiteAssets")
-        strip = call_sites("Remove-PluginBuildArtifacts")
-        self.assertGreater(
-            max(strip), max(overlay),
-            f"the strip must follow the overlay; strip at lines {strip}, overlay at lines {overlay}",
+        strips = [
+            index for index, line in enumerate(lines)
+            if re.match(r"Remove-PluginBuildArtifacts\s+-(?:Site)?Path\s+\$SitePath\b", line.strip())
+        ]
+        self.assertTrue(
+            strips,
+            "no Remove-PluginBuildArtifacts call targets $SitePath; stripping $ExtractPath "
+            "is a no-op once Move-Item has consumed that directory",
+        )
+        self.assertTrue(
+            any(index > max(overlay) for index in strips),
+            f"a $SitePath strip must follow the overlay at line {max(overlay) + 1}; "
+            f"found strips at {[index + 1 for index in strips]}",
         )
 
 

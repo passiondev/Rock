@@ -25,6 +25,10 @@ name: Deploy Staging
       # Deliberately this one file and not '.github/workflows/**': a change to
       # pr-test-artifact.yml changes the artifact staging is built from.
       - '.github/workflows/production-deploy.yml'
+      # Same reasoning, and the same cost if it is left out: the deployment test
+      # suite runs on an Ubuntu runner and cannot change what staging builds, so
+      # editing it should not cancel an in-flight staging deploy.
+      - '.github/workflows/deployment-pipeline-tests.yml'
   workflow_dispatch:
     inputs:
       ref:
