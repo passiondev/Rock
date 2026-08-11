@@ -102,9 +102,24 @@ function Get-PrEnvironmentCertificateThumbprint {
     }
 
     $domain = ($HostHeader -replace '^[^.]+\.', '*.')
-    $cert = Get-ChildItem Cert:\LocalMachine\My |
+    $candidates = @(Get-ChildItem Cert:\LocalMachine\My |
         Where-Object { ($_.DnsNameList -contains $HostHeader) -or ($_.DnsNameList -contains $domain) -or ($_.Subject -eq "CN=$domain") } |
-        Sort-Object NotAfter -Descending |
+        Where-Object { $_.NotAfter -gt (Get-Date) })
+
+    # Rank CA-issued certificates ahead of the self-signed placeholder, and only
+    # then prefer the later expiry. This is the same selector as
+    # Deploy-RockEnvironment.ps1 and it is here for the same reason: the
+    # placeholder minted below lasts two years while a Let's Encrypt certificate
+    # lasts ninety days, so sorting on NotAfter alone made the placeholder win
+    # forever and every PR deploy silently rebound the site to an untrusted
+    # certificate. Measured 2026-08-11: pr-4 held a real Let's Encrypt
+    # certificate expiring 2026-11-08 while the placeholder expires 2028-05-06.
+    # A self-signed certificate is its own issuer; a CA-issued one is not.
+    $cert = $candidates |
+        Sort-Object -Property @(
+            @{ Expression = { $_.Issuer -eq $_.Subject }; Ascending = $true },
+            @{ Expression = { $_.NotAfter }; Descending = $true }
+        ) |
         Select-Object -First 1
 
     if ($null -eq $cert) {
