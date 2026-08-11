@@ -609,7 +609,11 @@ What the deploy does on the server, in order:
 3. Stops the app pool and waits for the worker process to release its file handles.
 4. Copies the new files over the site, **preserving** `Content`, `App_Data`, `Logs`,
    `Uploads` and `web.ConnectionStrings.config`.
-5. Starts the app pool and polls the site until it answers.
+5. Starts the app pool and polls the site until it answers — over the server's own loopback,
+   with the public host name in the `Host` header. Same site, same app pool, same app domain,
+   so it proves the application started without depending on DNS or the route in from
+   outside. GitHub then loads the public URL itself, from the internet, which is the only
+   vantage point that can honestly answer "can a person actually open this".
 
 Two design decisions worth knowing:
 
@@ -863,9 +867,16 @@ re-diagnosing them. All verified 2026-08-10.
    before polling the site, so a deploy is green whether the certificate is valid, expired,
    or self-signed. That is deliberate — a brand-new host has no certificate until its first
    successful ACME run, so gating the health check on TLS would deadlock the very first
-   deploy of any environment (exactly staging's situation in item 1) — but it
-   means CI will never tell us the certificate is broken. Once renewal is green, this should
-   become a separate non-blocking check that reports certificate expiry.
+   deploy of any environment (exactly staging's situation in item 1). It is now also
+   unavoidable: the probe goes to `127.0.0.1`, and no certificate issued for the public host
+   name will ever match that address.
+
+   **Partly addressed.** After every staging and production deploy, GitHub reads the
+   certificate from the internet side and prints its issuer in the run summary, warning when
+   the site is presenting a self-signed one. That is a warning and not an error on purpose —
+   a certificate due for renewal is not an outage, and a pipeline that reports it as one
+   teaches people to ignore red. Still to do: report days remaining rather than just who
+   issued it.
 
 ### Fixed since the last revision — recorded so nobody re-diagnoses them
 
