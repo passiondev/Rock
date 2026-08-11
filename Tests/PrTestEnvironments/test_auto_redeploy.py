@@ -12,8 +12,8 @@ class AutoRedeployConcurrencyTests(unittest.TestCase):
         text = DEPLOY_WORKFLOW.read_text()
 
         self.assertIn("types: [labeled, synchronize]", text)
-        self.assertIn("rock-test:auto", text)
-        self.assertIn("PR does not have rock-test:auto", text)
+        self.assertIn("rock:auto", text)
+        self.assertIn("PR does not have rock:auto", text)
         self.assertIn("cancel-in-progress: true", text)
         self.assertIn("group: pr-test-deploy-${{ github.event.pull_request.number || inputs.pr_number }}", text)
 

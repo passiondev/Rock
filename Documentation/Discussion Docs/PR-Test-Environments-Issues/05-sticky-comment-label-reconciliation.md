@@ -12,9 +12,9 @@ Add PR feedback that keeps one sticky bot comment up to date with the PR environ
 
 - [x] A single sticky PR comment is created or updated for each PR environment.
 - [x] The comment includes current status, environment URL, deployed SHA, last updated time, and available labels/commands.
-- [x] Successful deployments remove transient labels and apply `rock-test:deployed`.
-- [x] Failed deployments remove transient labels and apply `rock-test:failed`.
-- [x] Stopped environments apply `rock-test:stopped`.
+- [x] Successful deployments remove transient labels and apply `rock:deployed`.
+- [x] Failed deployments remove transient labels and apply `rock:failed`.
+- [x] Stopped environments apply `rock:stopped`.
 - [x] Destroyed environments remove deployed/stopped/failed state labels.
 - [x] Label reconciliation is safe to run repeatedly.
 - [x] The comment clearly states that VPN access is required and the DB is shared/sandboxed.

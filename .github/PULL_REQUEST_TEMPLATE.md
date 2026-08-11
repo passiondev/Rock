@@ -46,20 +46,20 @@ Example:
 <!--
 ### Getting a live test site for this PR
 
-Add the `rock-test:start` label to this PR. CI builds the branch on a Windows
+Add the `rock:start` label to this PR. CI builds the branch on a Windows
 runner and deploys it to its own site at:
 
     https://pr-<this PR number>.rock-dev.connect.passion.team
 
 The build takes roughly 25-35 minutes. Labels track progress:
 
-  rock-test:queued -> rock-test:building -> rock-test:deploying -> rock-test:deployed
+  rock:queued -> rock:building -> rock:deploying -> rock:deployed
 
 A comment on this PR is updated with the URL and a link to the logs. Other labels:
 
-  rock-test:auto      redeploy automatically on every new push to this branch
-  rock-test:stop      shut the site down but keep it (frees memory on the server)
-  rock-test:destroy   delete the site entirely
+  rock:auto      redeploy automatically on every new push to this branch
+  rock:stop      shut the site down but keep it (frees memory on the server)
+  rock:destroy   delete the site entirely
 
 The environment is destroyed automatically when this PR merges, and stopped when
 it closes without merging.

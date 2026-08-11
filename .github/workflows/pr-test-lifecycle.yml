@@ -42,7 +42,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const commandLabels = ['rock-test:stop', 'rock-test:destroy'];
+            const commandLabels = ['rock:stop', 'rock:destroy'];
             let pull;
             let command;
 
@@ -72,7 +72,7 @@ jobs:
                   core.setOutput('should_run', 'false');
                   return;
                 }
-                command = labelName === 'rock-test:destroy' ? 'destroy' : 'stop';
+                command = labelName === 'rock:destroy' ? 'destroy' : 'stop';
               }
             }
 

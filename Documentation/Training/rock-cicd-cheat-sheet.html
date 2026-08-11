@@ -280,11 +280,11 @@
         <b>1.</b> Find the file (press <code>t</code>) <span class="arrow">&rarr;</span>
         <b>2.</b> Edit, commit to a <em>new</em> branch <span class="arrow">&rarr;</span>
         <b>3.</b> Open PR, base <code>passion-18.4.1</code> <span class="arrow">&rarr;</span>
-        <b>4.</b> Add <span class="tag tag-do">rock-test:start</span> <span class="arrow">&rarr;</span>
+        <b>4.</b> Add <span class="tag tag-do">rock:start</span> <span class="arrow">&rarr;</span>
         <b>5.</b> Wait ~30 min <span class="arrow">&rarr;</span>
         <b>6.</b> Open the URL in the bot's comment <span class="arrow">&rarr;</span>
         <b>7.</b> Get a review, merge <span class="arrow">&rarr;</span>
-        <b>8.</b> Add <span class="tag tag-do">rock-test:destroy</span> when done
+        <b>8.</b> Add <span class="tag tag-do">rock:destroy</span> when done
       </p>
     </section>
 
@@ -292,10 +292,10 @@
       <h2>Labels you press</h2>
       <table>
         <tbody>
-          <tr><td class="k"><span class="tag tag-do">rock-test:start</span></td><td>Build my branch, give me a site</td></tr>
-          <tr><td class="k"><span class="tag tag-do">rock-test:auto</span></td><td>Rebuild on every push</td></tr>
-          <tr><td class="k"><span class="tag tag-do">rock-test:stop</span></td><td>Shut down, keep files</td></tr>
-          <tr><td class="k"><span class="tag tag-do">rock-test:destroy</span></td><td>Delete it entirely</td></tr>
+          <tr><td class="k"><span class="tag tag-do">rock:start</span></td><td>Build my branch, give me a site</td></tr>
+          <tr><td class="k"><span class="tag tag-do">rock:auto</span></td><td>Rebuild on every push</td></tr>
+          <tr><td class="k"><span class="tag tag-do">rock:stop</span></td><td>Shut down, keep files</td></tr>
+          <tr><td class="k"><span class="tag tag-do">rock:destroy</span></td><td>Delete it entirely</td></tr>
         </tbody>
       </table>
     </section>
@@ -317,7 +317,7 @@
       <h2>Where code lands</h2>
       <table>
         <tbody>
-          <tr><td class="k"><strong>Your PR</strong></td><td><code>pr-&lt;n&gt;.rock-dev.connect.passion.team</code><br>add <span class="tag tag-do">rock-test:start</span> &middot; anyone</td></tr>
+          <tr><td class="k"><strong>Your PR</strong></td><td><code>pr-&lt;n&gt;.rock-dev.connect.passion.team</code><br>add <span class="tag tag-do">rock:start</span> &middot; anyone</td></tr>
           <tr><td class="k"><strong>Staging</strong></td><td><code>staging.rock-dev.connect.passion.team</code><br><strong>merging into the trunk deploys this automatically</strong></td></tr>
           <tr><td class="k"><strong>Production</strong></td><td>manual <em>Deploy Production</em> run + a named reviewer's approval. Nothing merges here.</td></tr>
         </tbody>
@@ -379,7 +379,7 @@
       <h2 style="border-color: var(--was)">Two things that actually matter</h2>
       <div class="warn">
         <p><strong>The repo is public.</strong> Rock is open source and our fork is too. Never commit a password, connection string, API key, or any export with member names, emails, phones or giving data. Deleting it later does not remove it from history &mdash; tell DevOps so the credential gets rotated.</p>
-        <p style="margin-top:.35rem"><strong>A migration in your PR touches the shared database.</strong> Tell DevOps <em>before</em> you apply <code>rock-test:start</code> &mdash; it runs against the sandbox everyone else is using, and it is not something you can take back.</p>
+        <p style="margin-top:.35rem"><strong>A migration in your PR touches the shared database.</strong> Tell DevOps <em>before</em> you apply <code>rock:start</code> &mdash; it runs against the sandbox everyone else is using, and it is not something you can take back.</p>
       </div>
     </section>
 

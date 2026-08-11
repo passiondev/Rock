@@ -242,10 +242,10 @@ You'll land on the "Open a pull request" form.
 In the PR's right sidebar, click the gear next to **Labels** and select:
 
 ```
-rock-test:start
+rock:start
 ```
 
-That's it. That label is the button. Within a minute the robot adds `rock-test:queued` and
+That's it. That label is the button. Within a minute the robot adds `rock:queued` and
 posts a status comment.
 
 > **Do not** use the "Run workflow" button on the Actions tab. That path is currently
@@ -317,9 +317,9 @@ Write what you find in a PR comment. Screenshots help — drag them into the com
 Edit the file again on **your branch** (the branch selector will now offer it) and commit.
 Then either:
 
-- **Add `rock-test:start` again** to rebuild with your new commit. If the label is already
+- **Add `rock:start` again** to rebuild with your new commit. If the label is already
   on the PR, remove it and re-add it. Or
-- **Add `rock-test:auto` once**, and every future push to your branch rebuilds
+- **Add `rock:auto` once**, and every future push to your branch rebuilds
   automatically. Convenient while iterating; remember each rebuild is another ~40 minutes
   of build time, and pushing again cancels the in-flight run.
 
@@ -351,8 +351,8 @@ timeout and no scheduled sweep — the only scheduled job in the repo is certifi
 renewal. A stopped environment keeps its files on the test VM until a person destroys it,
 and an environment on an open PR stays running indefinitely.
 
-So when you are finished with a PR's environment, add `rock-test:destroy` yourself. If you
-stopped one and want it back, `rock-test:start` is a full rebuild — budget ~40 minutes
+So when you are finished with a PR's environment, add `rock:destroy` yourself. If you
+stopped one and want it back, `rock:start` is a full rebuild — budget ~40 minutes
 rather than expecting it to pop straight back up.
 
 ---
@@ -363,15 +363,15 @@ rather than expecting it to pop straight back up.
 
 | Label | What it does |
 | --- | --- |
-| `rock-test:start` | Build the PR's latest commit and deploy it. Use for the first deploy, for redeploys, and to wake a stopped environment. **Always a full rebuild (~30 min)** — there is no quick-start path. |
-| `rock-test:stop` | Stop the site but keep all files and state on the server. Note that waking it back up still means `rock-test:start`, so budget the full rebuild. |
-| `rock-test:destroy` | Delete the site, app pool, files, and state. Use when fully done. |
-| `rock-test:auto` | Opt in to automatic rebuild on every push to this PR. Apply once. |
+| `rock:start` | Build the PR's latest commit and deploy it. Use for the first deploy, for redeploys, and to wake a stopped environment. **Always a full rebuild (~30 min)** — there is no quick-start path. |
+| `rock:stop` | Stop the site but keep all files and state on the server. Note that waking it back up still means `rock:start`, so budget the full rebuild. |
+| `rock:destroy` | Delete the site, app pool, files, and state. Use when fully done. |
+| `rock:auto` | Opt in to automatic rebuild on every push to this PR. Apply once. |
 
 **The robot applies these — don't touch them:**
 
-`rock-test:queued` · `rock-test:building` · `rock-test:deploying` · `rock-test:deployed` ·
-`rock-test:stopped` · `rock-test:failed`
+`rock:queued` · `rock:building` · `rock:deploying` · `rock:deployed` ·
+`rock:stopped` · `rock:failed`
 
 Your environment is always at a predictable address: `pr-<number>.rock-dev.connect.passion.team`,
 IIS site `rock-pr-<number>`, files at `C:\RockTestEnvs\pr-<number>\site` on the test host.
@@ -438,7 +438,7 @@ one database, starting your environment applies your migration to the database e
 else is using — and it can't be undone by stopping your environment.
 
 **If your change touches `Rock.Migrations/` or adds a plugin migration, talk to DevOps
-before applying `rock-test:start`.** This is the one case where the self-service path is
+before applying `rock:start`.** This is the one case where the self-service path is
 not self-service.
 
 ### Trap 4: No email, no texts, no payments, no jobs
@@ -560,7 +560,7 @@ repo — see Part 1.
 ### Trap 9: The wrong base branch fails silently
 
 Covered in Step 1, repeated because it costs the most time: if your PR's base branch isn't
-the one in `.github/pr-test-environments.json`, applying `rock-test:start` does
+the one in `.github/pr-test-environments.json`, applying `rock:start` does
 **nothing**. No comment, no failure, no label change. If you apply the label and nothing at
 all happens within a couple of minutes, check your base branch first.
 
@@ -728,8 +728,8 @@ instructions do.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| Applied `rock-test:start`, nothing happened at all | Wrong base branch ([Trap 9](#trap-9-the-wrong-base-branch-fails-silently)), or PR is from a fork ([Trap 8](#trap-8-prs-from-forks-never-deploy)) | Check base branch against `.github/pr-test-environments.json`; edit the PR's base if wrong |
-| Label `rock-test:failed` | Build or deploy error | Open **Logs** in the status comment; find the red step |
+| Applied `rock:start`, nothing happened at all | Wrong base branch ([Trap 9](#trap-9-the-wrong-base-branch-fails-silently)), or PR is from a fork ([Trap 8](#trap-8-prs-from-forks-never-deploy)) | Check base branch against `.github/pr-test-environments.json`; edit the PR's base if wrong |
+| Label `rock:failed` | Build or deploy error | Open **Logs** in the status comment; find the red step |
 | Build succeeded but my change isn't there | A project failed to compile ([Trap 5](#trap-5-a-green-build-does-not-prove-your-code-shipped)) or, before 2026-08-10, the file was under an overlaid directory ([Trap 1](#trap-1-themes-content-assets-and-styles-used-to-get-overwritten--fixed-2026-08-10)) | Search the build log for `Warning: Failed to build`. Build failures now fail the run, so a green build really did compile |
 | URL doesn't load at all | Environment never deployed, or DNS | It is *not* VPN — these hosts are public. Confirm the status comment says `deployed`, then ask DevOps to check DNS |
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
@@ -737,11 +737,11 @@ instructions do.
 | First page load times out | Cold start | Reload once. Report if it fails twice |
 | The page looks exactly the same as before my change | Very likely the page is drawn by a file this branch does not contain — the sign-in page, `/checkin`, and anything on the `CONNECT` theme all are ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Add a nonsense path to the test URL and look at the 404 page. It is the one page a signed-out visitor sees that comes from this branch, so it tells you whether your build actually deployed |
 | A plugin page looks wrong on a test site, or shows `Error Loading Block` | Plugin blocks are not in the repo; test sites borrow the server's copy through the overlay ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Not a bug in your PR, and your branch cannot fix it. Verify that page in production instead, and talk to DevOps |
-| Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
+| Environment was working, now says `stopped` | Someone added `rock:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock:start` again (full rebuild, ~30 min) |
 | Test data vanished | Nightly sandbox refresh ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Recreate it; don't build multi-day scenarios |
 | Data I didn't create | Shared sandbox DB ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Expected. Ask in team chat if it's blocking |
 | Email/text/payment didn't happen | Disabled by design ([Trap 4](#trap-4-no-email-no-texts-no-payments-no-jobs)) | Not a bug. Ask DevOps for a testing plan if that's the change |
-| Stuck on `deploying` for a long time | Stale Actions run | Ask DevOps: cancel the run, then re-add `rock-test:start` |
+| Stuck on `deploying` for a long time | Stale Actions run | Ask DevOps: cancel the run, then re-add `rock:start` |
 | "Run workflow" button failed instantly | Wrong `pr_number`, or the PR does not target the eligible base branch | Check the number, then [Trap 9](#trap-9-the-wrong-base-branch-fails-silently) |
 
 When you report a problem, include: **PR number**, the **Logs** link from the status
@@ -758,7 +758,7 @@ one message.
 | Remote Desktop or direct SQL access to the test VM (needs the office IP) | DevOps |
 | Build failed and the log doesn't make sense | DevOps |
 | My change is under `Themes/Content/Assets/Styles` and I can't verify it | DevOps |
-| My PR includes a migration | DevOps — **before** applying `rock-test:start` |
+| My PR includes a migration | DevOps — **before** applying `rock:start` |
 | I need a production deploy | DevOps |
 | I need to test email, SMS, payments, or a scheduled job | DevOps |
 | Is this a file change or an admin-UI change? | Ask before starting — see Part 0 |

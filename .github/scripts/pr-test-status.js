@@ -1,21 +1,21 @@
 const STICKY_MARKER = '<!-- rock-test-environment-status -->';
 
 const STATE_LABELS = [
-  'rock-test:queued',
-  'rock-test:building',
-  'rock-test:deploying',
-  'rock-test:deployed',
-  'rock-test:failed',
-  'rock-test:stopped'
+  'rock:queued',
+  'rock:building',
+  'rock:deploying',
+  'rock:deployed',
+  'rock:failed',
+  'rock:stopped'
 ];
 
 const STATUS_TO_LABEL = {
-  queued: 'rock-test:queued',
-  building: 'rock-test:building',
-  deploying: 'rock-test:deploying',
-  deployed: 'rock-test:deployed',
-  failed: 'rock-test:failed',
-  stopped: 'rock-test:stopped',
+  queued: 'rock:queued',
+  building: 'rock:building',
+  deploying: 'rock:deploying',
+  deployed: 'rock:deployed',
+  failed: 'rock:failed',
+  stopped: 'rock:stopped',
   destroyed: null
 };
 
@@ -58,10 +58,10 @@ function renderPrTestStatusComment({ status, hostName, sha, artifactGcsPath, log
 
 Apply one of these labels to manage the environment:
 
-- \`rock-test:start\` — build and deploy the latest PR head.
-- \`rock-test:stop\` — stop the IIS site/app pool but keep files and state.
-- \`rock-test:destroy\` — remove IIS resources, files, and PR environment state.
-- \`rock-test:auto\` — opt into redeploying automatically on PR pushes.
+- \`rock:start\` — build and deploy the latest PR head.
+- \`rock:stop\` — stop the IIS site/app pool but keep files and state.
+- \`rock:destroy\` — remove IIS resources, files, and PR environment state.
+- \`rock:auto\` — opt into redeploying automatically on PR pushes.
 
 ### Access and data notes
 

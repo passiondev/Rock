@@ -42,17 +42,17 @@ All PR environments will share one sanitized, non-production sandbox Rock databa
 
 - Use PR labels as the user-facing environment state machine.
 - User-applied command labels:
-  - `rock-test:start`: ensure the PR environment exists, is running, and is deployed from latest PR head.
-  - `rock-test:stop`: stop the app pool/site while preserving deployed files and IIS configuration.
-  - `rock-test:destroy`: tear down IIS site, app pool, deployed files, and environment state.
-  - `rock-test:auto`: opt into automatic rebuild/redeploy on every push to the PR.
+  - `rock:start`: ensure the PR environment exists, is running, and is deployed from latest PR head.
+  - `rock:stop`: stop the app pool/site while preserving deployed files and IIS configuration.
+  - `rock:destroy`: tear down IIS site, app pool, deployed files, and environment state.
+  - `rock:auto`: opt into automatic rebuild/redeploy on every push to the PR.
 - Bot-managed state labels:
-  - `rock-test:queued`
-  - `rock-test:building`
-  - `rock-test:deploying`
-  - `rock-test:deployed`
-  - `rock-test:stopped`
-  - `rock-test:failed`
+  - `rock:queued`
+  - `rock:building`
+  - `rock:deploying`
+  - `rock:deployed`
+  - `rock:stopped`
+  - `rock:failed`
 - Labels are a status surface, not the only source of truth. The server should maintain per-PR environment state in a manifest such as `env.json`.
 - Use GitHub-hosted Windows runners for builds, reusing the existing working GitHub Actions build pipeline.
 - Extend the existing build to publish a PR-specific deployable artifact, such as `RockWeb-pr-123-abcdef.zip`.

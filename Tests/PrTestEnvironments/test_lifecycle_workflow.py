@@ -32,8 +32,8 @@ class PrTestLifecycleTests(unittest.TestCase):
         text = WORKFLOW.read_text()
 
         self.assertIn('types: [labeled, closed]', text)
-        self.assertIn('rock-test:stop', text)
-        self.assertIn('rock-test:destroy', text)
+        self.assertIn('rock:stop', text)
+        self.assertIn('rock:destroy', text)
         self.assertIn('merged', text)
         self.assertIn('commands/pending', text)
         self.assertIn('commands/results', text)

@@ -25,10 +25,10 @@ class PrTestStatusCommentScriptTests(unittest.TestCase):
         self.assertIn("migrations", text)
 
         self.assertIn("shared sanitized sandbox database", text)
-        self.assertIn("rock-test:start", text)
-        self.assertIn("rock-test:stop", text)
-        self.assertIn("rock-test:destroy", text)
-        self.assertIn("rock-test:auto", text)
+        self.assertIn("rock:start", text)
+        self.assertIn("rock:stop", text)
+        self.assertIn("rock:destroy", text)
+        self.assertIn("rock:auto", text)
 
     def test_status_script_reconciles_labels_for_deployed_failed_stopped_and_destroyed(self):
         text = STATUS_SCRIPT.read_text()
@@ -37,12 +37,12 @@ class PrTestStatusCommentScriptTests(unittest.TestCase):
         for state in ["deployed", "failed", "stopped", "destroyed"]:
             self.assertIn(state, text)
         for label in [
-            "rock-test:queued",
-            "rock-test:building",
-            "rock-test:deploying",
-            "rock-test:deployed",
-            "rock-test:failed",
-            "rock-test:stopped",
+            "rock:queued",
+            "rock:building",
+            "rock:deploying",
+            "rock:deployed",
+            "rock:failed",
+            "rock:stopped",
         ]:
             self.assertIn(label, text)
 

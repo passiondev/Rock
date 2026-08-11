@@ -467,13 +467,13 @@ running on that host.
    ran it before you got here."* Same lesson, no live wait, and it reinforces rather than
    apologises for the build time.
 
-   > **This only works because PR #4 carries `rock-test:auto`.** A push to a PR without that
+   > **This only works because PR #4 carries `rock:auto`.** A push to a PR without that
    > label is deliberately ignored: `pr-test-deploy.yml` handles the `synchronize` event, checks
-   > for `rock-test:auto`, and logs *"PR does not have rock-test:auto; skipping automatic
+   > for `rock:auto`, and logs *"PR does not have rock:auto; skipping automatic
    > redeploy"* if it is missing. Rebuilding a Windows artifact on every push to every branch is
    > 26 minutes of runner time nobody asked for, so opting in is the default. PR #4 has the
    > label; a PR someone opens in the room will not, and the answer to "why didn't mine deploy?"
-   > is either add `rock-test:auto` or apply `rock-test:start` once. Worth knowing before someone
+   > is either add `rock:auto` or apply `rock:start` once. Worth knowing before someone
    > pushes and nothing happens on the projector.
 
 **Fallbacks, in order:**
@@ -507,7 +507,7 @@ Do this at least 90 minutes before, so a rebuild is still possible.
       contains `CI/CD Training Build`.
 - [ ] <https://staging.rock-dev.connect.passion.team> loads, and its
       `/this-page-does-not-exist` has **no** banner — that contrast is step 6.
-- [ ] PR #4 still shows `rock-test:deployed`.
+- [ ] PR #4 still shows `rock:deployed`.
 - [ ] **Screenshot both sites and the PR page.** This is the real insurance.
 - [ ] Print 8 copies of the cheat sheet.
 - [ ] Deck open, full screen, arrow keys working. Rail nodes jump between sections.
