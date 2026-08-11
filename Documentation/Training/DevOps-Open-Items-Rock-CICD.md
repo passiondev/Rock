@@ -649,6 +649,51 @@ unknown, but because the migration step above has to happen deliberately and wit
 
 ---
 
+### 20. Test sites go cold after 20 minutes, and it reads as a broken deploy
+
+The highest-value item in P2, because it is the thing the team will hit every single day and
+consistently misdiagnose. Nothing in this repo ever sets `idleTimeout`, `startMode` or
+`preloadEnabled` on an app pool — confirmed by grepping all of `Deployment/` and
+`.github/workflows/` — so IIS defaults apply: the worker process shuts down after **20 minutes**
+with no requests, and `startMode` is `OnDemand`.
+
+Rock makes that default unusually expensive. Its first request after a start rebuilds caches and
+applies pending migrations before it renders anything, so the cost is not the ~1s a typical
+ASP.NET app pays.
+
+Measured 2026-08-11:
+
+| Situation | First request | Second |
+| --- | --- | --- |
+| `pr-4`, idle ~32 min, nothing deployed or restarted | **62.2s** | 0.10s |
+| `staging`, 33s after deploy `31453111607` finished | **0.10s** | 0.10s |
+| `pr-4` / `staging`, first request after a VM restart | 95s / 107s | <0.4s |
+
+The second row is the useful one: a site you just deployed to is *already warm*, because the
+deploy's health check makes a real request as its last step. So the slow load never correlates
+with deploying — it correlates with *not* using the site — which is exactly backwards from what
+someone debugging their own change will assume. Expect "my PR environment is broken" reports
+that are really just a cold start.
+
+Two ways to fix it, in increasing order of cost:
+
+1. Set `idleTimeout=0` and `startMode=AlwaysRunning` on the test app pools, plus
+   `preloadEnabled=true` on the sites. Keeps the worker process alive so the 20-minute cliff
+   disappears. Costs idle RAM per environment on a box that already hosts staging plus every
+   `pr-*` site — so measure before applying it to all of them rather than assuming it is free.
+2. Leave the defaults and warm on a schedule (a request every ~15 min). Cheaper in memory,
+   but it is a moving part that can fail silently, and a failure looks identical to the bug.
+
+Option 1 for `staging` alone is the obvious first move: it is the one host that is always
+supposed to be up, there is exactly one of it, and it is the one most likely to be opened by
+someone senior with no patience for a white screen.
+
+**Do not change this the day of the training** — it touches the app pools underneath the demo
+environment. Until it is fixed, the workaround is in the facilitator script and the handout:
+open the page a few minutes before you show it to anyone.
+
+---
+
 ## Fixed since the last revision — recorded so nobody re-diagnoses these
 
 Five of these each independently reported **green** while being broken, which is why the
@@ -707,9 +752,12 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 8. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
    in the same pass as item 7; both are about how an environment gets its database, and
    rotating the password before this change just re-exposes the new one
-9. Items 9–13 — cleanup, any time. Note item 9's warning: `develop` and `staging` are **not**
-   safe to prune yet
-10. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
+9. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
+   reporting a cold start as a broken environment. `staging` first; measure the memory before
+   doing it to every `pr-*` site
+10. Items 9–13 — cleanup, any time. Note item 9's warning: `develop` and `staging` are **not**
+    safe to prune yet
+11. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
