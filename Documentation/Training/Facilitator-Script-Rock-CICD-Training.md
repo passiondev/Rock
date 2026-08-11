@@ -315,7 +315,7 @@ can have it configured before the room stands up.
 ## Demo runbook
 
 **Pre-warmed:** PR #4 — <https://github.com/passiondev/Rock/pull/4>
-Branch `demo/ptp-cicd-training-walkthrough` · deployed SHA `c78d87c277`
+Branch `demo/ptp-cicd-training-walkthrough` · deployed SHA `aaceb67c8e`
 Live: <https://pr-4.rock-dev.connect.passion.team>
 Staging: <https://staging.rock-dev.connect.passion.team>
 
@@ -324,37 +324,73 @@ Staging: <https://staging.rock-dev.connect.passion.team>
 > the 0:35 segment, load it *now* and talk over the first slide of this section — do not open
 > it cold on the projector and wait.
 
-`c78d87c277` is a merge of the trunk into the demo branch, not one of the two demo commits
+`aaceb67c8e` is a merge of the trunk into the demo branch, not one of the three demo commits
 below. That is deliberate and worth a sentence if anyone asks: the branch was brought up to
 date with `passion-18.4.1` and redeployed, which is the same thing they will do to any branch
-that has fallen behind. **Files changed** still shows only the three demo files, because GitHub
+that has fallen behind. **Files changed** still shows only the four demo files, because GitHub
 diffs against the merge base rather than the branch tip.
 
-The two demo commits are chosen so the change is visible without logging in and also proves
-the overlay bug is fixed:
+The three demo commits each prove a different thing, and one of them deliberately proves it by
+being invisible. Read this before the demo — *where* each change surfaces is not obvious:
 
-1. `a16b5b2c3b` — labels the login page (a core Obsidian block, `login.obs`)
-2. `f605feb801` — a banner on every themed page (`Themes/Rock/Layouts/Site.Master`)
+1. `a16b5b2c3b` — relabels the core Obsidian login block (`login.obs`) to
+   "Log In — CI/CD Training Build". This one is the **build** proof, not a visual one.
+2. `f605feb801` — a green banner in `Themes/Rock/Layouts/Site.Master`, so every internal Rock
+   page carries it — but only once you have signed in.
+3. `b29c0a912d` — the same banner in `RockWeb/Http404Error.aspx`, the one page a *signed-out*
+   visitor can reach that this repository actually owns.
 
-Commit 2 is the one that matters technically: `Themes/` is the directory the old deploy used
-to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
+Commit 2 is the one that matters technically, and it is the one you cannot show on the
+projector: `Themes/` is the directory the old deploy used to overwrite, so a banner surviving
+in `Themes/Rock/Layouts/Site.Master` is what proves the `/MIR` bug is dead — and that file
+only renders after a sign-in. If you are signed in on the demo machine anyway, show it; if not,
+don't improvise a login in front of the room. The overlay leaves a quieter fingerprint you can
+point at instead: view source on the login page and you will find it loading
+`/Themes/CONNECT/Styles/theme.css` *and* `/Themes/Rock/Styles/theme.css`, with different `?v=`
+stamps — CONNECT's is the older file the overlay backfilled from the server, Rock's is the one
+this build produced. Two themes, two timestamps, one site directory: that is the overlay adding
+without overwriting. (Don't quote the numbers from this script; the artifact's stamp changes
+every build. The point is that they differ.)
+
+Commit 3 exists because of something worth saying out loud in the room: **Passion's Rock is
+not all in this repository.** The landing page at `/page/3` is drawn by
+`Themes/CONNECT/Layouts/Splash.aspx`, `/checkin` by `Themes/Checkin-Guest`, and the login box
+itself is `Plugins/org_passion/Security/Login.ascx`. None of those three are version
+controlled here. So nothing on this branch can change what a signed-out visitor sees on the
+front door, and commit 1's label never appears on screen at all, because this site does not
+use the core block that commit edits. `Http404Error.aspx` is different: it sits at the RockWeb
+root, so it rides in the build artifact and the shared-asset overlay never touches it. Asking
+for an address that does not exist is the fastest honest proof that the branch is what is
+running on that host.
 
 **Sequence:**
 
-1. **The PR page.** Files changed → three files. One is a one-line Vue change; the other two
-   are the theme `Site.Master` layouts. Point out the base branch reads `passion-18.4.1`.
+1. **The PR page.** Files changed → four files. One is a one-line Vue change, two are the theme
+   `Site.Master` layouts, one is `Http404Error.aspx`. Point out the base branch reads
+   `passion-18.4.1`.
 2. **The sidebar.** The label *you* added, and the state labels the robot set in response.
 3. **The bot comment.** Status table: `deployed`, the URL, the SHA, the artifact path. Note
-   it also lists the commands — the PR documents itself.
-
-   > **One stale line, on purpose.** The comment currently posted ends with "VPN/office network
-   > access is required." That is wrong and the text is already fixed in the repo, but a sticky
-   > comment only rewrites itself on the next deploy of that PR, and PR #4 is not being
-   > redeployed before this meeting. If anyone reads it aloud: the URL is public HTTPS, no VPN,
-   > and the next deploy will say so. Don't let it become a five-minute detour.
+   it also lists the commands — the PR documents itself. The "Access and data notes" section
+   is the one to read aloud: reachable from anywhere with no VPN, first request after a deploy
+   is slow because Rock migrates at startup, and the sandbox database is shared, so the
+   environment isolates code and runtime but **not** data.
 4. **The Checks tab.** Open the build job, scroll the step list. Don't read it; just let them
    see that every step is named and logged. This is where "it's a black box" dies.
-5. **The live site.** Open the pr-4 URL. Show the banner, then the login page label.
+5. **The live site.** Two tabs, in this order.
+
+   **a. The banner.** <https://pr-4.rock-dev.connect.passion.team/this-page-does-not-exist> —
+   a green bar across the top of Rock's "We Can't Find That Page". That bar exists in my branch
+   and nowhere else: not on staging, not in production. Say the quiet part rather than hoping
+   nobody notices it: *"I asked for a page that doesn't exist on purpose — it's the one page a
+   signed-out visitor can see that this repository actually owns."*
+
+   **b. The thing a MacBook cannot make.**
+   <https://pr-4.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js>, then ⌘F
+   for `CI/CD Training Build`. That file is *compiled output*. I edited one line of a Vue
+   single-file component; a Windows runner on GitHub turned it into that bundle. This is the
+   whole argument of the previous section made physical — nobody in this room could have
+   produced that file on their laptop. It is also why the label never shows up on screen:
+   Passion's login page is a plugin block, not this core one.
 
    > **Both hosts now hold real certificates — but still check the morning of.** Measured
    > 2026-08-11 02:40Z, after a deploy: `staging` presents Let's Encrypt YR2 (expires
@@ -379,11 +415,23 @@ to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
    > A **brand-new** PR environment is a different case and is still expected to warn: it gets
    > the self-signed placeholder until the weekly renewal issues a certificate for its host
    > name. Say that if someone spins one up and asks.
-6. **Staging.** Open the staging URL. Same trunk, no banner — that's the point: staging shows
-   what's merged, the PR site shows what's proposed.
-7. **Optional, if time and if it's warm:** push a trivial third commit and watch `deployed`
+6. **Staging.** <https://staging.rock-dev.connect.passion.team/this-page-does-not-exist> —
+   the same page, on the same server, with **no green bar**, because staging builds the trunk
+   and the banner only exists on the branch. Two tabs side by side is the entire argument for
+   PR environments in one screen: staging shows what is merged, the PR site shows what is
+   proposed. Then open the staging home page, so nobody leaves thinking staging is a 404.
+7. **Optional, if time and if it's warm:** push a trivial extra commit and watch `deployed`
    flip to `building` within seconds. Only do this if you're at 0:46 or earlier — you're
    showing the *transition*, not waiting for the build.
+
+   > **This only works because PR #4 carries `rock-test:auto`.** A push to a PR without that
+   > label is deliberately ignored: `pr-test-deploy.yml` handles the `synchronize` event, checks
+   > for `rock-test:auto`, and logs *"PR does not have rock-test:auto; skipping automatic
+   > redeploy"* if it is missing. Rebuilding a Windows artifact on every push to every branch is
+   > 26 minutes of runner time nobody asked for, so opting in is the default. PR #4 has the
+   > label; a PR someone opens in the room will not, and the answer to "why didn't mine deploy?"
+   > is either add `rock-test:auto` or apply `rock-test:start` once. Worth knowing before someone
+   > pushes and nothing happens on the projector.
 
 **Fallbacks, in order:**
 
@@ -408,9 +456,14 @@ to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
 
 Do this at least 90 minutes before, so a rebuild is still possible.
 
-- [ ] <https://pr-4.rock-dev.connect.passion.team> loads and the banner is visible.
-      No VPN needed — 443 is open to the world on the test VM.
-- [ ] <https://staging.rock-dev.connect.passion.team> loads.
+- [ ] <https://pr-4.rock-dev.connect.passion.team> loads, and the login box actually renders —
+      no "Error Loading Block". No VPN needed; 443 is open to the world on the test VM.
+- [ ] <https://pr-4.rock-dev.connect.passion.team/this-page-does-not-exist> shows the green
+      banner. This is the demo's money shot; check it, don't assume it.
+- [ ] <https://pr-4.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js>
+      contains `CI/CD Training Build`.
+- [ ] <https://staging.rock-dev.connect.passion.team> loads, and its
+      `/this-page-does-not-exist` has **no** banner — that contrast is step 6.
 - [ ] PR #4 still shows `rock-test:deployed`.
 - [ ] **Screenshot both sites and the PR page.** This is the real insurance.
 - [ ] Print 8 copies of the cheat sheet.
