@@ -27,6 +27,23 @@ out waiting for a server that isn't listening.
   can pick up the other's commands.
 - **Do this together, not unattended.** The bootstrap stops and starts the VM.
 - **Don't collide** with a queued deploy — check the queue is empty first.
+- **Run the bootstrap from the trunk, and re-run it after any change under
+  `Deployment/PrTestEnvironments/`.** This is the non-obvious part. A deploy workflow uploads
+  only a `command.json`; the agent then executes the copy of `Deploy-RockEnvironment.ps1`
+  **installed on the VM** (`Invoke-PrEnvironmentCommandQueue.ps1:189`), and it has no
+  self-update path. Whatever ref the last bootstrap ran from is the script that runs, however
+  old. The bootstrap workflow is the only way to change it.
+
+  That is a correctness requirement here, not just hygiene. Production is the one environment
+  that deploys with `write_connection_string: false` — deliberately, so CI never holds the
+  production database credentials — and the code that makes that path safe landed in
+  `8e4cfd576e`. Before it, a `DedicatedSite` deploy deleted the site directory without
+  carrying `web.ConnectionStrings.config` across, and `web.config` binds `connectionStrings`
+  through a `configSource`, so every request 500s, error page included. Bootstrap production
+  from a ref at or after `8e4cfd576e` and it also gains a loud `throw` at the cause instead of
+  a 300-second health-check timeout. (Production runs `InPlace`, whose robocopy `/XF`
+  exclusions were always correct — so this is the belt for the day someone reaches for
+  `DedicatedSite`, plus the diagnostic.)
 
 ### 2. The `production` GitHub Environment does not exist
 
@@ -102,9 +119,25 @@ What is left is a reporting gap, and it is the reason this looked broken for so 
   for the duration. Fine on the test VM; worth remembering before this pattern is copied to
   production.
 
-### 5. The deploy health check accepts any TLS certificate
+### 5. Two blind spots in the deploy health check
 
-`Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1:353` sets
+**5a. The PR deploy path has no health check at all.** `Deploy-RockEnvironment.ps1` (staging
+and production) polls the site and fails the deploy if it never answers.
+`Deploy-PrEnvironment.ps1` — the path every pull request takes — does not: its last act is
+`Write-Host "Deployed $SiteName at https://$HostName"` (line 327), and then it exits 0. There
+is no `Invoke-WebRequest` anywhere in the file.
+
+That is why the missing-`Google.Protobuf.dll` outage went unnoticed for three months. Every PR
+deploy reported success while the site returned a 500 on every request. "Green" on a PR
+environment currently means *the files copied*, nothing more.
+
+The fix is to call the same `Test-EnvironmentHealth` from that script. It was deliberately
+**not** done before the 2026-08-11 training demo: the demo runs through exactly this path, and
+adding a new failure mode to it the night before risks turning the demo red on a projector for
+a reason unrelated to the change being demonstrated. Do it immediately after.
+
+**5b. The health check accepts any TLS certificate.**
+`Deploy-RockEnvironment.ps1:535` sets
 `[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }` before polling
 the site.
 
@@ -347,6 +380,7 @@ example: a build cannot verify what it never attempted, and nothing in the job e
 | `build-develop.yml` was a second, worse production deploy path: it set a `windows-startup-script-ps1` on the production VM, then stopped and started the VM to run it. The script copied the package over `C:\inetpub\wwwroot\` — not the site path this pipeline uses — and mixed cmd.exe syntax (`%errorlevel%`, `2>nul`, `if (…) (…) else (…)`) into PowerShell. It was gated on `branches: [staging]`, dormant since 2026-02-24, and one push away from firing | Deleted from `passion-18.4.1`; `production-deploy.yml` supersedes it. The separate build-only copy on `develop` was left alone |
 | The `DedicatedSite` deploy path deleted the site directory wholesale and never consulted `$PreservedFiles` — only the `InPlace` path did. A deploy that supplied no connection string therefore destroyed `web.ConnectionStrings.config`, and since `web.config` binds it through a `configSource`, the site 500'd on every request including its own error page | Preserved files are stashed and restored across the replace, and `Write-RuntimeConfiguration` now throws when no connection string was supplied *and* none exists, instead of reporting that it is "leaving the existing" file in place |
 | A syntax error in a deployment script surfaced as a scheduled task dying quietly on the VM | The bootstrap workflow parses every `Deployment/PrTestEnvironments/*.ps1` before uploading any of them |
+| The one failure in the other direction: the staging deploy reported "did not become healthy within 300 seconds" three times over while the site was serving Rock normally minutes later. ASP.NET caches an `Application_Start` failure for the lifetime of the app domain, so once one probe lands on a faulted domain, every later probe re-reads that same cached exception — retrying alone can never recover. 300 seconds also fits only about four probes at `-TimeoutSec 60` plus a 10-second sleep, which is not enough to distinguish "still running migrations" from "broken" | The window is 900 seconds (still under the queue agent's 1800s command timeout and the deploy job's 60 minutes), the probe recycles the app pool after 4 minutes of failures so a poisoned domain costs one interval instead of the whole window, each attempt logs its own error, and `SecurityProtocol` is pinned to TLS 1.2 so a protocol mismatch cannot masquerade as a dead site |
 
 The `startup_failure` one is worth remembering specifically: a called workflow can only
 **narrow** the caller's `GITHUB_TOKEN`, never widen it. If a callee's `permissions:` requests

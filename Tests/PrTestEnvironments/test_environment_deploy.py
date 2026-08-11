@@ -108,6 +108,42 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         self.assertIn("$HealthCheckTimeoutSeconds", text)
         self.assertIn("did not become healthy", text)
 
+    def test_health_check_recycles_the_app_pool_instead_of_only_retrying(self):
+        """ASP.NET caches an Application_Start failure for the lifetime of the app
+        domain, so a site that faults its first start after a replace serves that
+        same cached exception to every later probe. Retrying alone therefore reads a
+        stale failure until the window closes -- which is how the 2026-08-10 staging
+        deploy reported unhealthy three times over while serving Rock normally
+        minutes later. The probe has to be able to discard the bad domain."""
+        text = DEPLOY_SCRIPT.read_text()
+        self.assertIn("$RecycleAfterSeconds", text)
+        self.assertIn("-AppPoolName $AppPoolName", text)
+        health = text.split("function Test-EnvironmentHealth", 1)[1]
+        health = health.split("\nfunction ", 1)[0]
+        self.assertIn("Stop-EnvironmentAppPool", health)
+        self.assertIn("Start-WebAppPool", health)
+
+    def test_health_check_window_outlasts_rock_running_its_migrations(self):
+        """First request after a deploy runs EF and plugin migrations; the demo
+        environment needed three 30-second timeouts before answering at all. The
+        window also has to stay under the queue agent's 1800s command timeout and
+        the deploy job's 60-minute limit, or the real ceiling moves to a layer that
+        reports 'timed out' with no diagnostics."""
+        text = DEPLOY_SCRIPT.read_text()
+        match = re.search(r"\$HealthCheckTimeoutSeconds = (\d+)", text)
+        self.assertIsNotNone(match, "health check timeout default not found")
+        seconds = int(match.group(1))
+        self.assertGreaterEqual(seconds, 600)
+        self.assertLess(seconds, 1800)
+
+    def test_health_check_forces_a_modern_tls_version(self):
+        """PowerShell 5.1 can default ServicePointManager to SSL3/TLS1.0, which a
+        hardened IIS refuses. It surfaces as 'the underlying connection was closed',
+        which reads like the site is down rather than like the probe is broken."""
+        text = DEPLOY_SCRIPT.read_text()
+        self.assertIn("SecurityProtocol", text)
+        self.assertIn("Tls12", text)
+
     def test_app_pool_is_stopped_and_drained_before_files_are_replaced(self):
         text = DEPLOY_SCRIPT.read_text()
         self.assertIn("Stop-EnvironmentAppPool", text)

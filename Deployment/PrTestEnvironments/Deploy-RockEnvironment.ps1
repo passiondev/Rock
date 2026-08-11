@@ -97,9 +97,17 @@ param(
     [string]
     $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES }),
 
+    # Fifteen minutes, not five. Rock runs EF and plugin migrations on the first
+    # request after a deploy, and the pr-4 environment needed three 30-second
+    # timeouts before it answered at all. Five minutes fits about four probes,
+    # which is not enough to tell "still migrating" from "broken". This has to stay
+    # under both callers' own limits or the ceiling moves somewhere less legible:
+    # the queue agent allows 1800s for deploy-environment
+    # (Invoke-PrEnvironmentCommandQueue.ps1) and env-deploy-command.yml allows 60
+    # minutes for the whole job.
     [Parameter(Mandatory = $false)]
     [int]
-    $HealthCheckTimeoutSeconds = 300
+    $HealthCheckTimeoutSeconds = 900
 )
 
 Set-StrictMode -Version Latest
@@ -496,21 +504,46 @@ function Write-RuntimeConfiguration {
 function Test-EnvironmentHealth {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
-        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+
+        # Optional so the function still works for a caller that has no app pool to
+        # recycle; when supplied it is what makes a poisoned app domain recoverable.
+        [Parameter(Mandatory = $false)][string]$AppPoolName = '',
+        [Parameter(Mandatory = $false)][int]$RecycleAfterSeconds = 240
     )
 
     # Rock runs EF and plugin migrations on first request, so the first hit after
     # a deploy can take minutes. Poll until it answers rather than declaring the
     # deploy broken because the site is still warming up.
+    #
+    # Retrying alone is not enough, and this cost a full evening to learn. ASP.NET
+    # caches an Application_Start failure for the lifetime of the app domain: once
+    # one request faults during startup, every later request is served the same
+    # cached exception until the domain is recycled. A replaced site can fault its
+    # first start for reasons that clear themselves -- stale compiled output under
+    # Temporary ASP.NET Files being the usual one -- and then the site is fine on a
+    # fresh domain while the health check sits there re-reading the cached failure
+    # until the window closes. That is what happened to staging on 2026-08-10: the
+    # deploy reported "did not become healthy within 300 seconds" three times over,
+    # and the site was serving Rock normally minutes after each supposed failure.
+    # So recycle periodically, which turns one bad domain into one lost interval.
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $lastError = 'no attempt made'
+    $lastRecycle = Get-Date
+    $attempt = 0
+
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    # PowerShell 5.1 on an older image can default to SSL3/TLS1.0, which a hardened
+    # IIS refuses -- and it surfaces as "The underlying connection was closed",
+    # which reads like the site is down rather than like the probe is misconfigured.
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
     while ((Get-Date) -lt $deadline) {
+        $attempt++
         try {
             $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 60
             if ([int]$response.StatusCode -lt 400) {
-                Write-Host "Health check passed: $Url returned $($response.StatusCode)."
+                Write-Host "Health check passed: $Url returned $($response.StatusCode) on attempt $attempt."
                 return $true
             }
             $lastError = "HTTP $($response.StatusCode)"
@@ -518,10 +551,24 @@ function Test-EnvironmentHealth {
         catch {
             $lastError = $_.Exception.Message
         }
+        Write-Host "Health check attempt ${attempt}: $lastError"
+
+        if (![string]::IsNullOrWhiteSpace($AppPoolName) -and
+            ((Get-Date) - $lastRecycle).TotalSeconds -ge $RecycleAfterSeconds -and
+            (Get-Date).AddSeconds(60) -lt $deadline) {
+            Write-Host "Still unhealthy after $([int]((Get-Date) - $lastRecycle).TotalSeconds)s; recycling app pool $AppPoolName to discard any cached startup failure."
+            try {
+                Stop-EnvironmentAppPool -Name $AppPoolName
+                Start-WebAppPool -Name $AppPoolName -ErrorAction Continue
+            }
+            catch { Write-Warning "Could not recycle ${AppPoolName}: $($_.Exception.Message)" }
+            $lastRecycle = Get-Date
+        }
+
         Start-Sleep -Seconds 10
     }
 
-    Write-Warning "Health check did not pass within $TimeoutSeconds seconds. Last error: $lastError"
+    Write-Warning "Health check did not pass within $TimeoutSeconds seconds over $attempt attempts. Last error: $lastError"
     return $false
 }
 
@@ -686,7 +733,7 @@ try {
 
     Write-Host "Deployed $EnvironmentName ($Sha) to https://$HostName"
 
-    if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds)) {
+    if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds -AppPoolName $AppPoolName)) {
         # Gather the evidence while it is still fresh, and never let a problem
         # gathering it replace the failure it was meant to explain.
         try { Save-UnhealthyDiagnostics -SiteRoot $SitePath -Url "https://$HostName/" }
