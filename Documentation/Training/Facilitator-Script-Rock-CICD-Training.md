@@ -78,7 +78,8 @@ five minutes" and every reference after it silently pointed one slide too far.
 | 19 | Questions you're about to ask | And the harder ones. |
 | 20 | Where we go from here | Four things, and then it's yours. |
 
----
+*Verified against the deck on 2026-08-11: 20 slides, every heading and number above matches,
+and every slide range in the segment notes below resolves to the right headings.*
 
 ---
 
