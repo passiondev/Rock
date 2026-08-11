@@ -556,39 +556,85 @@ events, the tail of `App_Data\Logs`, and the response body — to
 `gs://<bucket>/pr-environments/diagnostics/<environment>/`. Installing the agent would still
 be better for anything that isn't a deploy.
 
-### 14. Plugin blocks are outside version control, so no test environment has them
+### 14. Plugin blocks are outside version control, so no test environment had a login page
 
-**Priority: P1 despite the number** — this list is append-only so the numbers stay stable
-across revisions and the cross-references above keep working.
+**Priority: was P1 despite the number; the P1 part is fixed** — this list is append-only so the
+numbers stay stable across revisions and the cross-references above keep working. What remains
+is the open question at the end, which is a decision rather than a defect.
 
 `RockWeb/Plugins/.gitignore` is a single rule, `*/*`, so every plugin subfolder is ignored.
 That is upstream Rock's convention — plugins are installed packages, not source. The
-consequence for *us* is that Passion's own customizations are not in this repository:
-measured 2026-08-10, git tracks two files under `RockWeb/Plugins/` (`.gitignore`,
+consequence for *us* is that Passion's own customizations are not on the trunk:
+measured 2026-08-10, `passion-18.4.1` tracks two files under `RockWeb/Plugins/` (`.gitignore`,
 `readme.txt`) and **zero** paths matching `org_passion` or `team_passion`, against 448 tracked
 core blocks under `RockWeb/Blocks/`.
 
+They are not absent from the *repository*, though — only from the trunk. `develop` tracks all
+276 files under `RockWeb/Plugins/`, 78 of them `org_passion`/`team_passion`, because a file
+already tracked stays tracked when an ignore rule appears later. That is why neither `develop`
+nor `staging` can be pruned (item 9), and it is how the login block below could be read and
+diagnosed without touching a server.
+
 So:
 
-- No `pr-*` site or `staging` renders a plugin block. `DedicatedSite` replaces the site
-  directory with the artifact, and the artifact has no plugins; the shared-asset overlay
-  backfills only `Themes`, `Content`, `Assets`, `Styles`.
-- A plugin-block change cannot go through this pipeline at all — there is no tracked file to
-  commit. Today that work is manual and server-side.
+- A plugin-block change cannot go through this pipeline at all — there is no tracked file on
+  the trunk to commit. Today that work is manual and server-side.
 - Production is not at risk. `InPlace` copies with robocopy `/E` and no `/PURGE`, so plugin
   folders already on the box survive an artifact that lacks them. Worth stating explicitly,
   because the opposite would have been catastrophic and it is one line of script away.
 
-Two things worth deciding, and they are independent:
+**This was worse than "plugin pages don't render", and that is how it was found.** Passion's
+login page *is* a plugin block, `org_passion/Security/Login.ascx`. With no plugins on a test
+site, `staging` and every `pr-*` site served
 
-1. **Should test environments render plugin pages?** Cheap if yes — `Sync-SharedSiteAssets`
-   takes its directory list from `PR_TEST_SHARED_ASSET_DIRECTORIES`, so adding `Plugins`
-   backfills them from the default site with no script change. The copy is
-   only-if-absent, so it cannot clobber a branch.
-2. **Should Passion's plugins be version-controlled at all?** A larger question, and a real
-   trade-off against upstream's convention and against this repo being public. Not something
-   to decide in a training session, but the team should know it is currently *unanswered*
-   rather than *answered no*.
+```
+Error Loading Block: Login
+The file '/Plugins/org_passion/Security/Login.ascx' does not exist.
+```
+
+as their **landing page**. `/Login` and `/page/3` both rendered the error and the admin pages
+302 into it, so nobody could sign in to a test environment at all. A deploy reported green
+while the site was unusable, because a health check that accepts HTTP 200 or 302 cannot tell a
+rendered page from a rendered error. Two demo steps depended on logging in.
+
+**Fixed 2026-08-11** (`63cd0a7719`): `Plugins` added to the shared-asset overlay default in
+both deploy scripts, so it is the shipped behaviour rather than a variable someone has to know
+to set. The copy is only-if-absent (`/E /XC /XN /XO`) and the artifact ships nothing under
+`Plugins`, so for this directory the overlay can only add. The plugin build-artifact strip now
+runs *after* the overlay in both scripts; it used to run only on the extracted artifact, which
+was sufficient while the overlay could not carry `Plugins` at all.
+
+Production could not be affected by that change, and the reason is structural rather than
+careful: `Sync-SharedSiteAssets` is reachable only from the `DedicatedSite` branch, and
+production deploys `InPlace`. A test pins that now, by brace nesting — after the first version
+of the test turned out to be vacuous. It matched an unrelated `if ($Mode -eq 'DedicatedSite')`
+block near the top of the script, so it passed even with the overlay hoisted onto the
+production path, which was the one thing it existed to catch. The suite also runs in CI now
+(`deployment-pipeline-tests.yml`); it never had before, so every guard in it was effectively a
+comment until something executed it.
+
+**Changing a deploy script is not enough on its own, and this bit is easy to lose.** The VM
+runs its own installed copy of these scripts, so the fix reached `connect-srv-test` only after
+a bootstrap run (`31487969492`) — item 1's rule to re-bootstrap after any change under
+`Deployment/PrTestEnvironments/` applies here in full. Separately, the overlay runs at deploy
+time, so an environment that already exists keeps its broken site until it is redeployed.
+Fixing the script does not reach back into a site deployed before the fix.
+
+The residual risk is worth naming: `Login.ascx` uses `CodeFile="Login.ascx.cs"`, so the
+code-behind is compiled by ASP.NET at runtime against whatever Rock assemblies the artifact
+shipped. Its dependencies are all `Rock.*` and framework namespaces — no Passion assembly is
+needed in `bin` — but a plugin written against a different Rock line can still fail to compile
+against 18.4.1. That failure mode is a compile error on the page rather than a missing file,
+and it is why this was verified by rendering the page and not by reading the script.
+
+One thing still worth deciding:
+
+- **Should Passion's plugins be version-controlled on the trunk?** A larger question, and a
+  real trade-off against upstream's convention and against this repo being public — 78 files
+  currently sit on `develop` only. Not something to decide in a training session, but the team
+  should know it is currently *unanswered* rather than *answered no*. Until it is answered,
+  test sites get their plugins by overlay from the base site, which means they show the
+  *server's* copy of a plugin, never a branch's.
 
 ---
 

@@ -1,0 +1,64 @@
+name: Deployment Pipeline Tests
+
+# The Tests/PrTestEnvironments suite asserts on the *source text* of the deploy
+# scripts and the workflow YAML: that the shared-asset overlay passes /XC /XN /XO
+# and so cannot clobber a branch's own files, that the overlay is mode-guarded and
+# therefore off the production path, that the version guard's sed expression reads
+# AssemblyVersion and not one of the two other lines containing the word "version".
+#
+# Those are precisely the properties a well-meaning edit breaks silently, and until
+# this workflow existed the suite ran only on whichever laptop last remembered to
+# run it. A guard nobody executes is a comment.
+#
+# It is deliberately cheap -- no Windows runner, no build, no cloud credentials --
+# so it can gate every pull request without costing the 26 minutes a real artifact
+# build takes.
+
+"on":
+  push:
+    branches:
+      - passion-18.4.1
+    paths:
+      - 'Deployment/PrTestEnvironments/**'
+      - 'Tests/PrTestEnvironments/**'
+      - '.github/workflows/**'
+      # Read by test_environment_deploy.py, which pins the trunk's declared
+      # version so the production version guard is tested against reality rather
+      # than against a fixture that can drift from it.
+      - 'Rock.Version/AssemblySharedInfo.cs'
+  # The path list is repeated rather than shared through a YAML anchor: PyYAML
+  # resolves anchors happily, so the suite's own YAML tests would pass while
+  # GitHub Actions -- which does not support them -- rejected the file.
+  pull_request:
+    paths:
+      - 'Deployment/PrTestEnvironments/**'
+      - 'Tests/PrTestEnvironments/**'
+      - '.github/workflows/**'
+      - 'Rock.Version/AssemblySharedInfo.cs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-pipeline-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run deployment pipeline tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # PyYAML is the suite's only third-party import. Everything else is stdlib,
+      # and the single subprocess call shells out to sed, which the runner has.
+      - name: Install PyYAML
+        run: python -m pip install --disable-pip-version-check --quiet pyyaml
+
+      - name: Run tests
+        run: python -m unittest discover -v -s Tests/PrTestEnvironments -p "test_*.py"
