@@ -279,6 +279,49 @@ Deliberately not built on 2026-08-10: it changes the shared deploy path, and the
 being validated that night runs through it. Same reasoning as item 5a — don't add a new failure
 mode to the path a demo depends on, hours before the demo.
 
+### 19. Commands are never claimed, so two agent runs can execute the same one
+
+This is the finding underneath item 16's correction, and it is the more serious half.
+
+The agent's whole command-selection logic is two lines
+(`Invoke-PrEnvironmentCommandQueue.ps1:206-207`):
+
+```powershell
+$commands = Get-GcsObjectList -Prefix $PendingPrefix | Where-Object { $_ -like '*.json' }
+foreach ($commandObject in $commands) {
+```
+
+It lists `pending/` and executes what it finds. **There is no claim** — no move to
+`processing/`, no lease, no marker, no conditional write. The object is deleted at line 305,
+after the command finishes. `$ProcessingPrefix` is assigned at line 21 and never referenced
+again, which reads like the claim step was designed and then not implemented.
+
+So two overlapping agent runs both list the same object and both run it. Two things partly
+mask this, and neither is a fix:
+
+- **Windows `IgnoreNew`.** `schtasks /SC MINUTE /MO 1` will not start a second instance of the
+  *scheduled task* while one is running. But the boot path is a different process: the Windows
+  startup script runs the agent synchronously itself, and the scheduled task it just installed
+  fires a minute later regardless. Those two can and do overlap — on the 2026-08-11 restart the
+  task was installed at 00:47:43 and the inline run began a ~15-minute staging deploy at
+  00:47:44.
+- **The per-environment mutex** (`Deploy-RockEnvironment.ps1:594`, `Global\RockEnvironment-<name>`,
+  15-minute wait). This prevents corruption, which is the important part — it does not prevent
+  the duplicate. The second run blocks on the mutex and then deploys the same artifact to the
+  same site again, doubling the outage window for no benefit. If it waits out the full 15
+  minutes it throws "Timed out waiting for deployment lock" and writes a *failed* result for a
+  command that actually succeeded.
+
+**Status: established from the code, not yet caught in the act.** The scheduled task's output
+does not reach the serial console — only the startup script's does — so the live 00:47 restart
+can't confirm or rule out the second execution. Do not treat the absence of a second
+`Processing` line in serial as evidence either way. The code path is unambiguous on its own.
+
+The fix is the claim that was already designed: copy the object to `processing/` and delete it
+from `pending/` before running it, and make that move conditional (GCS supports
+`ifGenerationMatch`) so exactly one run wins the race. That also makes item 16's heartbeat
+cheaper, because `processing/` then means what its name says.
+
 ### 17. Every queued command carries the database password in cleartext
 
 `env-deploy-command.yml:94` assembles `CONNECTION_STRING` from `PR_TEST_DB_DATA_SOURCE`,
