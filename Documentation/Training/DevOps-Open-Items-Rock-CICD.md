@@ -228,6 +228,19 @@ different versions against one catalog is a genuine way to break both at once, a
 instance that fails during `Application_Start` serves the same generic ASP.NET error page on
 every path — including static files — which is a confusing thing to debug.
 
+**This stopped being hypothetical on 2026-08-11.** `pr-3` now serves an ASP.NET **"Runtime
+Error"** page — HTTP 500 — on every request, and keeps doing so across app pool recycles
+(measured 500 in 29.3s, then 500 in 71.1s after a recycle). `pr-4` and `staging` on newer
+commits answer 302 from the same box at the same moment, so IIS, the binding and the
+certificate are all fine; what differs is which build's expectations the one shared schema
+currently matches. Meanwhile GitHub still shows PR #3 labelled **`rock-test:deployed`**,
+because the PR deploy path never checks (item 5a) — the two defects compound exactly as
+written, and the result is a broken environment that the pipeline reports as good.
+
+Do not "fix" `pr-3` by redeploying it and move on. Redeploying makes `pr-3` match the schema
+again and is very likely to break whichever environment currently matches instead. That is
+the whole point: there is one schema and N sites that each believe they own it.
+
 The fix is a catalog per environment. It needs a decision from Justin first, because it means
 a new repo variable (`STAGING_DB_NAME`, say) and a real database to point it at:
 
