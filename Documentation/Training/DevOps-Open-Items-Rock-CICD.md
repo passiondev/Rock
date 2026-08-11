@@ -200,6 +200,34 @@ a new repo variable (`STAGING_DB_NAME`, say) and a real database to point it at:
 **Fixed 2026-08-10 — deleted from `passion-18.4.1`.** Details in the Fixed table below. The
 build-only copy on `develop` is a different file and was left alone.
 
+### 16. A queue with no agent looks like a 60-minute hang
+
+*(Numbered 16 rather than 9 so the existing references in this document stay valid. It belongs
+here, in P1.)*
+
+This is the shape the **first production deploy will take** if the agent isn't installed yet,
+so it is worth knowing before it happens rather than during.
+
+`env-deploy-command.yml` queues a `command.json` and then polls for a result. Nothing checks
+that anything is listening on the other end. With no agent on `commands-prod`, the run holds at
+the poll until `timeout-minutes: 60` kills it, and the failure it reports is a timeout — which
+reads like a slow or broken deploy rather than an absent agent. `apply: false` does not avoid
+this: a dry run still queues a real command and still waits for a real result. The dry-run
+logic that makes it safe lives on the VM (`Deploy-RockEnvironment.ps1:597` — `InPlace` without
+`-Apply` prints its plan and returns before it downloads anything), so a dry run needs the
+agent every bit as much as a real deploy does.
+
+**The liveness signal is already there and costs one GCS list.** The scheduled task fires every
+minute and the agent has no single-instance guard, so each run claims whatever is in `pending/`
+and moves it to `processing/`, even while an earlier deploy still holds the mutex. A command
+that is *still in `pending/` after two or three minutes* therefore means nothing is consuming
+that queue — not that the queue is busy. Check for that after queueing and fail with "no agent
+is responding on queue `commands-prod`" instead of waiting out the hour.
+
+Deliberately not built on 2026-08-10: it changes the shared deploy path, and the staging deploy
+being validated that night runs through it. Same reasoning as item 5a — don't add a new failure
+mode to the path a demo depends on, hours before the demo.
+
 ---
 
 ## P2 — hygiene

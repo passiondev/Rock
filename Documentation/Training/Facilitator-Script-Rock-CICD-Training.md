@@ -336,8 +336,16 @@ Do this at least 90 minutes before, so a rebuild is still possible.
 
 ## Don't do these live
 
-- **Don't run Deploy Production**, not even the dry run. The approval gate isn't configured
-  yet, and a half-explained production run in front of an audience is how trust gets lost.
+- **Don't run Deploy Production**, not even the dry run. The gate itself is real now — it will
+  build, then hold and wait for your approval, which is the good part. But if you approve it,
+  the run queues a command to the production VM, and *no agent is installed there yet*, so it
+  sits and polls until it dies at the 60-minute timeout. A dry run does not skip that: the
+  "changes nothing" logic lives on the VM, so it needs the agent too. On a projector that reads
+  as "the production pipeline is broken," which is the opposite of true.
+
+  If you want to show the gate, show it **without approving**: dispatch nothing, and instead
+  open Settings → Environments → `production` and let them see the required reviewer and that
+  admins can't bypass it. Same point, no hostage.
 - **Don't merge PR #4** during the meeting. Merging destroys the environment you're
   demonstrating, and it would kick off a staging deploy you can't finish watching.
 - **Don't promise dates** for the production agent install — that's a joint decision with
