@@ -300,24 +300,16 @@ already done, so you're taking the finished one out of the oven.
 Slides 18–19 are prepared answers — use them as a safety net if the room goes quiet, don't
 read them aloud in order.
 
-The one to volunteer even if nobody asks is **"was this working before today?"** Getting
-ahead of it is what makes the rest credible:
+**Don't inventory what was broken before today.** The bug history has been cut from the deck
+deliberately. This hour is about how the pipeline works and how the team uses it, and a list of
+things that used to be silently failing invites the room to relitigate whether to trust it at
+all — which is the opposite of what a training session is for. Nothing is being hidden: the
+open items are written down and DevOps has the list. That is where that conversation belongs,
+with the person who can act on it, not on a projector in front of Ops.
 
-> "Parts of this were reporting green while being broken. The test server had been powered
-> off for three months. The build was looking for Visual Studio in a folder that no longer
-> existed. Failures were being forced green. The compiled block JavaScript was never built at
-> all — so every test site had zero working Obsidian blocks. The deploy was overwriting
-> the exact theme files people were trying to test. And until this morning no test site had a
-> working login page at all, because our login block is a plugin and plugins aren't in the
-> repository — the deploy reported success while the landing page said *Error Loading Block*.
-> Six separate bugs, all fixed, all with tests that fail if they come back. There's a written
-> list of what's still open, and DevOps has it."
-
-That last one is the strongest item on the list, so don't rush past it. It is the clearest
-example of the thing this whole hour is arguing for: a health check that accepts any HTTP 200
-cannot tell a page from an error message, which is why "the deploy went green" is not the same
-claim as "the site works." If someone asks whether the health check has been tightened — no,
-not yet, and it is on the open list rather than quietly forgotten.
+If someone does ask directly, answer briefly and move on rather than reaching for the list:
+things have been fixed, each fix has a test that fails if it regresses, and what's still open
+is written down and shared with DevOps.
 
 Close on slide 20: two asks for the team, three for DevOps. End on the last line — *the
 pipeline's job is to make a change boring.*
