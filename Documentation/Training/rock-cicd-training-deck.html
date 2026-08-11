@@ -970,7 +970,7 @@
             </tr>
             <tr>
               <td><strong>Production</strong><br><span class="mono card-note">the real site</span></td>
-              <td>run <strong>Deploy Production</strong> by hand, then a second person approves</td>
+              <td>run <strong>Deploy Production</strong> by hand, then a named reviewer approves</td>
               <td>DevOps / Global Eng</td>
               <td>production</td>
             </tr>
@@ -1000,7 +1000,7 @@
           <h3>Production &mdash; two locks</h3>
           <ol style="gap:.35rem">
             <li>Someone opens Actions and runs <strong>Deploy Production</strong> deliberately. The default run is a <strong>dry run</strong> that reports its plan and changes nothing.</li>
-            <li>It builds, then <strong>stops and waits for a second person to approve</strong> &mdash; after the build, so nobody is asked to approve a commit that doesn't compile.</li>
+            <li>It builds, then <strong>stops and waits for a named reviewer to approve</strong> &mdash; after the build, so nobody is asked to approve a commit that doesn't compile. Not even a repo admin can skip that gate.</li>
           </ol>
         </div>
       </div>
@@ -1052,7 +1052,7 @@
         </div>
         <div class="qa-item">
           <div class="qa-q">I merged and my change isn't on the live site.</div>
-          <div class="qa-a">Correct and expected. Merging deploys <em>staging</em>. Production is a separate, deliberate run that someone has to start and someone else has to approve.</div>
+          <div class="qa-a">Correct and expected. Merging deploys <em>staging</em>. Production is a separate, deliberate run that someone has to start and a named reviewer has to approve.</div>
         </div>
         <div class="qa-item">
           <div class="qa-q">Can I break production by doing this wrong?</div>

@@ -322,7 +322,7 @@ point: staging is the shared "does it work on a real server" copy, and it always
 what is on the trunk branch.
 
 Getting from staging to **production** is a separate, deliberate act that a person has to
-perform and a second person has to approve. Merging never triggers it. See
+perform and a named reviewer has to approve. Merging never triggers it. See
 [Part 5](#part-5--deploying-to-staging-and-production).
 
 ### Step 11 — Cleanup, and the part you have to do yourself
@@ -536,7 +536,7 @@ change the base branch dropdown.
 > ### ⚠️ The one thing to remember
 >
 > **Merging to `passion-18.4.1` deploys to staging automatically. Nothing deploys to
-> production without a person choosing it and a second person approving it.**
+> production without a person choosing it and a named reviewer approving it.**
 >
 > There is no way to reach production by merging, by pushing, or by adding a label. The
 > only door is a manual run of the **Deploy Production** workflow, and that run stops and
