@@ -246,9 +246,15 @@ pipeline's job is to make a change boring.*
 ## Demo runbook
 
 **Pre-warmed:** PR #4 — <https://github.com/passiondev/Rock/pull/4>
-Branch `demo/ptp-cicd-training-walkthrough` · deployed SHA `f605feb801`
+Branch `demo/ptp-cicd-training-walkthrough` · deployed SHA `c78d87c277`
 Live: <https://pr-4.rock-dev.connect.passion.team>
 Staging: <https://staging.rock-dev.connect.passion.team>
+
+`c78d87c277` is a merge of the trunk into the demo branch, not one of the two demo commits
+below. That is deliberate and worth a sentence if anyone asks: the branch was brought up to
+date with `passion-18.4.1` and redeployed, which is the same thing they will do to any branch
+that has fallen behind. **Files changed** still shows only the three demo files, because GitHub
+diffs against the merge base rather than the branch tip.
 
 The two demo commits are chosen so the change is visible without logging in and also proves
 the overlay bug is fixed:
@@ -266,6 +272,12 @@ to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
 2. **The sidebar.** The label *you* added, and the state labels the robot set in response.
 3. **The bot comment.** Status table: `deployed`, the URL, the SHA, the artifact path. Note
    it also lists the commands — the PR documents itself.
+
+   > **One stale line, on purpose.** The comment currently posted ends with "VPN/office network
+   > access is required." That is wrong and the text is already fixed in the repo, but a sticky
+   > comment only rewrites itself on the next deploy of that PR, and PR #4 is not being
+   > redeployed before this meeting. If anyone reads it aloud: the URL is public HTTPS, no VPN,
+   > and the next deploy will say so. Don't let it become a five-minute detour.
 4. **The Checks tab.** Open the build job, scroll the step list. Don't read it; just let them
    see that every step is named and logged. This is where "it's a black box" dies.
 5. **The live site.** Open the pr-4 URL. It is ordinary public HTTPS with a valid Let's
