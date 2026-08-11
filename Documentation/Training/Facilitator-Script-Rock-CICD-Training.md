@@ -259,6 +259,18 @@ person in the room most likely to notice the difference.
 > queue agent on the production VM, and I'm doing that with [DevOps] rather than alone on a
 > Sunday. So today, production is proven up to the last inch, and deliberately not fired."
 
+This is now literally true rather than aspirational, and you can cite the evidence if DevOps
+presses. Staging and production share the same deploy workflow (`env-deploy-command.yml`), and
+until 2026-08-11 it had **never once succeeded** — eight runs, eight failures, because the
+health check ran on the VM and asked for the site's public URL, which the box cannot resolve
+back to itself. Production would have failed identically on its first run. Run
+**`31449260144`** is the first green one: deploy job 01:48:20 → 01:57:38, zero non-success
+steps, and the site verified reachable from the runner afterwards.
+
+If someone asks what actually changed: the health check now requests `https://127.0.0.1/` with
+an explicit `Host:` header instead of the public name. Worth having ready, because "we fixed
+the health check" invites the question and the real answer is short and specific.
+
 ### 0:42 — Demo (slide 17, 10 min)
 
 See the runbook below. Narrate the baking-show framing as you go: the half-hour build is
