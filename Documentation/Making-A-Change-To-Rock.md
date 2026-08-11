@@ -3,8 +3,8 @@
 **Who this is for:** anyone who needs a change made to Rock and wants to know how it gets
 from an idea to the live site.
 
-**What you need:** a GitHub account with access to `passiondev/Rock`, and a web browser.
-You do not need to install anything. You do not need to use a command line.
+**What you need:** VS Code, and a GitHub account with access to `passiondev/Rock`. You will
+not type a single command, and you do not need a Windows machine.
 
 **Time:** about ten minutes of your attention, and about forty minutes of waiting. Most of
 the waiting is a computer working, not you.
@@ -35,9 +35,10 @@ This document is for changes to **files**: themes, stylesheets, images, and bloc
 
 Everything else in this document is detail. This is the part that matters:
 
-> **Your change must go into the branch named `passion-18.4.1`.**
+> **Your work starts from the branch named `passion-18.4.1`, and it goes back to
+> `passion-18.4.1`. Never into anything else, and never directly into it.**
 
-If it goes anywhere else, nothing happens. You get no error message, no warning, and no test
+Get either half wrong and nothing happens. You get no error message, no warning, and no test
 site. It looks exactly like the system is broken. It is working; it simply ignored you.
 
 **That name will change.** It is named after the version of Rock we run, so when we upgrade
@@ -55,59 +56,113 @@ You do not need to understand these deeply. This is enough.
 | Word | What it means |
 | --- | --- |
 | **Repository** (or "repo") | The folder holding every Rock file, plus a record of every change ever made to any of them. Ours is `passiondev/Rock`. |
+| **Clone** | Downloading your own complete copy of the repository onto your Mac. You do this once, ever. |
 | **Branch** | Your own private copy of everything. You can edit it freely. Nobody else sees it, and nothing you do in it can affect the live site. |
-| **Commit** | One save point, with a short note about what you changed. |
+| **Commit** | One save point, with a short note about what you changed. Saving a file in VS Code is not a commit. |
+| **Pull** | Fetching everyone else's recent work down onto your Mac, so your copy is current. |
+| **Publish** (or "push") | Sending your branch up to GitHub, where everyone else and all the automation can see it. Until you publish, your work exists only on your laptop. |
 | **Pull request** (or "PR") | A bad name for a simple thing. It means: *please pull my change into the shared branch.* It is a web page where your change is reviewed, tested, and approved. |
 | **Staging** | A full copy of Rock the whole team can look at, running the same code as production but on a practice database. Nothing there is real. |
 | **Production** | The live site. What real people use. |
 
 ---
 
-## Part 1 — Make your change
+## First time only: get set up
 
-All of this happens in a web browser.
+You do this once and never think about it again.
 
-1. Go to <https://github.com/passiondev/Rock>.
+1. Install **VS Code** from <https://code.visualstudio.com>.
 
-2. Check the branch name in the button near the top left of the file list. It should say
-   **`passion-18.4.1`**. If it says anything else, click it and pick that one.
+2. Open VS Code. On the welcome screen, click **Clone Git Repository...**
 
-3. Click your way to the file you want to change.
+3. Paste `https://github.com/passiondev/Rock` and press Enter.
 
-4. Click the **pencil icon** at the top right of the file. That is "edit".
+4. It asks where to put it. Pick somewhere you will find again, like your Documents folder.
 
-5. Make your change.
+5. VS Code will ask you to sign in to GitHub. Say yes. It opens a browser, you click
+   **Authorize**, and it hands you back. That is all the authentication you will ever do.
 
-6. Click the green **Commit changes...** button.
+6. Wait. **This is a 2.5 GB download** because it brings the entire history of Rock with it.
+   Ten to twenty minutes on good wifi. Start it before a meeting, not during one.
 
-7. A box appears. This is the important part:
-   - In the message field, write what you changed, in plain English. "Fix typo on giving page"
-     is a perfect message.
-   - Below that, choose **"Create a new branch for this commit and start a pull request."**
-     *(Do not choose the option that commits directly.)*
-   - It suggests a branch name. Accept it, or type something short like `fix-giving-typo`.
+7. When it finishes, click **Open**.
 
-8. Click **Propose changes**.
+You are now on the `passion-18.4.1` branch, because that is the repository's default. You can
+see the branch name in the **bottom left corner** of the VS Code window. Get used to looking
+there. It is the single most useful thing on the screen.
 
-That is it. You have made a branch, saved your change into it, and started a pull request, all
-in one step. You never touched a command line.
+---
+
+## Part 1 — Make your change in VS Code
+
+Steps 1 to 3 are the ones people skip, and they are the reason changes go wrong.
+
+1. **Look at the bottom left corner.** Click the branch name. A list drops down. Choose
+   **`passion-18.4.1`**.
+
+2. **Pull.** Next to the branch name there is a small circular-arrows icon. Click it. This
+   pulls down everything the team has done since you last looked. If you skip this, you are
+   building on a stale copy of Rock, and your pull request will collide with someone else's
+   work later.
+
+3. **Make your own branch.** Click the branch name in the bottom left again, and choose
+   **Create new branch...** at the top of the list. Type a short name with dashes instead of
+   spaces, like `fix-giving-typo`, and press Enter.
+
+   The bottom left corner now shows *your* branch name. This is what should be there for the
+   rest of your work.
+
+4. **Open the file.** Press **Cmd+P**, start typing the file name, and press Enter when you
+   see it. (The folder tree on the left works too, but Cmd+P is much faster.)
+
+5. **Make your change**, and save it with **Cmd+S**. Saving is not yet a commit. Nothing has
+   left your laptop.
+
+6. **Commit it.** Click the **Source Control** icon in the far-left strip, the one that looks
+   like a branching line. Or press **Cmd+Shift+G**.
+
+   - Your changed files are listed under **Changes**. Hover over each one you meant to change
+     and click the **`+`**. That is "include this in the commit."
+   - In the message box at the top, write what you changed in plain English. "Fix typo on
+     giving page" is a perfect message.
+   - Click the blue **Commit** button.
+
+7. **Publish it.** The blue button now reads **Publish Branch**. Click it.
+
+   Your branch is now on GitHub. Nothing else in this document can happen until you do this.
+
+> **Before every commit, look at the bottom left corner.** If it still says
+> `passion-18.4.1`, stop. Committing and publishing there skips review entirely and deploys
+> straight to staging. Nothing protects you from this yet, so the check is yours to make.
+>
+> If you have already done it, tell Global Engineering. It is fixable, and it is much easier
+> to fix in the first ten minutes.
+
+*For a one-word typo, editing the file straight on the GitHub website with the pencil icon
+still works and skips all of the above. Everything from Part 2 onward is the same either way.*
 
 ---
 
 ## Part 2 — Open the pull request
 
-GitHub now shows you a new-pull-request page.
+This part happens on the GitHub website.
 
-1. **Look at the top of the page.** It shows two branch names with an arrow, like
+1. Go to <https://github.com/passiondev/Rock>. There is a yellow banner at the top offering
+   your branch, with a **Compare & pull request** button. Click it.
+
+   No banner? Click the branch dropdown, pick your branch, then **Contribute → Open pull
+   request**.
+
+2. **Look at the top of the page.** It shows two branch names with an arrow, like
    `base: passion-18.4.1 ← compare: fix-giving-typo`.
 
    The **left** one is where your change is going. It must say **`passion-18.4.1`**. If it
    says `develop`, `develop-17.6.1`, `staging`, or anything else, click it and change it now.
    This is the single most common mistake and it is the one that fails silently.
 
-2. Fill in the description. A template is already there. Answer what it asks; it is short.
+3. Fill in the description. A template is already there. Answer what it asks; it is short.
 
-3. Click **Create pull request**.
+4. Click **Create pull request**.
 
 You now have a pull request page. This page is where everything else happens. Bookmark it.
 
@@ -165,7 +220,12 @@ is up to; leave them alone.
 
 3. Ask someone to review it. Add them under **Reviewers** in the sidebar.
 
-4. When they approve, click **Merge pull request**.
+4. When they approve, click **Merge pull request**, then **Delete branch** when GitHub offers.
+
+5. **Back in VS Code**, click the branch name in the bottom left, choose `passion-18.4.1`, and
+   click the circular-arrows icon to pull. Your change is now in there along with everyone
+   else's, and your machine is back in step with the team. Do this before you start your next
+   change, not when you remember.
 
 **Merging automatically puts your change on staging.** About forty minutes later it is live at
 staging for the whole team to see. You do not do anything to make that happen and there is no
@@ -247,7 +307,8 @@ bottom of this page.
 
 | Step | Roughly |
 | --- | --- |
-| Making the change in the browser | 2 minutes |
+| Cloning the repository, once ever | 10–20 minutes, 2.5 GB |
+| Branching, editing, committing, publishing | 5 minutes |
 | Build after you apply `rock:start` | 25 minutes |
 | Installing it onto your test site | 5–10 minutes |
 | First page load of a fresh site | 1–2 minutes, once. Reload. |
@@ -262,6 +323,20 @@ bottom of this page.
 Almost certainly the branch. Open your pull request and look at the two names at the top: the
 left-hand one must be `passion-18.4.1`. If it is wrong, you can change it on an existing pull
 request: click it, pick the right one, then re-apply `rock:start`.
+
+**GitHub does not offer me a pull request, and my branch is not in the list.**
+You committed but did not publish. Go back to VS Code, open Source Control, and look for a
+**Publish Branch** or **Sync Changes** button. Until you click it, your work is only on your
+laptop.
+
+**VS Code says my commit failed, or asks me who I am.**
+It needs a name and email on this machine once. Tell Global Engineering rather than following
+a Stack Overflow answer; it is a thirty-second fix and getting it wrong puts a stranger's
+name on your work.
+
+**My pull request says it has conflicts.**
+Two people changed the same lines. This is normal and it is not yours to untangle alone. Ask
+Global Engineering. It is usually five minutes with the two of you looking at it.
 
 **My change is not showing up, but the build was green.**
 Three usual causes. Check your change is actually in the **Files changed** tab. If it is a
@@ -289,6 +364,10 @@ Everything else in this process is safe to get wrong. These two are not.
 > Never commit a password, a connection string, an API key, or any export containing member
 > names, emails, phone numbers, or giving data.
 >
+> This one is easier to do by accident in VS Code than on the website, because a stray file
+> sitting in your Rock folder will show up in the **Changes** list waiting to be included.
+> Only ever click the `+` on files you actually meant to change.
+>
 > If it happens, tell DevOps immediately so the credential can be replaced. Deleting it is not
 > enough.
 
@@ -303,14 +382,15 @@ Everything else in this process is safe to get wrong. These two are not.
 
 ## Why it works this way
 
-Rock is built on older Microsoft technology that can only be compiled on Windows. Everyone on
-this team has a MacBook. This is not the "harder on a Mac" kind of problem. It genuinely
-cannot be done.
+Editing Rock on your Mac is fine. That is what Part 1 is. What a Mac cannot do is **compile**
+Rock, because Rock is built on older Microsoft technology that only Windows can build. This is
+not the "harder on a Mac" kind of problem. It genuinely cannot be done, and everyone on this
+team has a MacBook.
 
 So instead of anyone building Rock on their own machine, GitHub rents us a clean Windows
 computer for the length of each build, compiles Rock there, and installs the result onto our
-server in Google Cloud. That is the half hour. It is why all of your work happens in a browser
-and why nobody needs Windows.
+server in Google Cloud. That is the half hour. It is why you can do all of your own work in
+VS Code and still never need Windows.
 
 It also means the passwords for our servers live in one place that only the build can read,
 rather than on several laptops, and that "it worked on my machine" stops being a thing anyone
@@ -324,6 +404,8 @@ can say.
 | --- | --- |
 | Is this a file change or a database change? | Ask before you start. Cheapest question here. |
 | Something committed that should not have been | DevOps, immediately |
+| A commit that went onto `passion-18.4.1` directly | Global Engineering, immediately |
+| A pull request with conflicts | Global Engineering |
 | A database change in a pull request | DevOps, before you apply the label |
 | A production deploy | DevOps and Global Engineering, together |
 | Anything in this process that feels risky | Global Engineering. If it feels like a risk, that is a bug worth reporting. |
@@ -342,5 +424,6 @@ This page is deliberately the short one. In the repository:
 ---
 
 *Facts on this page that will go stale: the branch name `passion-18.4.1` changes at every Rock
-upgrade (read the repository's default branch instead), and the production-agent status note in
-Part 5. Last checked 11 August 2026.*
+upgrade (read the repository's default branch instead), the warning that nothing yet stops a
+commit going onto that branch directly, and the production-agent status note in Part 5. Last
+checked 11 August 2026.*
