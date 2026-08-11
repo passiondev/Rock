@@ -1033,7 +1033,8 @@
             <li><strong>The PR's own copy</strong><br><span class="mono">pr-4.rock-dev.connect.passion.team</span></li>
             <li style="margin-top:.5rem"><strong>Staging, built from the trunk</strong><br><span class="mono">staging.rock-dev.connect.passion.team</span></li>
           </ul>
-          <p class="card-note" style="margin-top:.75rem">Both are public HTTPS with real certificates &mdash; open them from your phone if you want. Same trunk on staging, so the PR site is the only one with the change in it.</p>
+          <p class="card-note" style="margin-top:.75rem">Both are public, reachable from anywhere &mdash; same trunk on staging, so the PR site is the only one with the change in it.</p>
+          <p class="card-note" style="margin-top:.5rem"><strong>Heads-up:</strong> these two test hosts still serve a <em>self-signed</em> certificate, so your browser will warn before it lets you in. That's expected, and it's on the open-items list &mdash; automated certificate renewal is the one piece of this pipeline I haven't finished wiring. Production is unaffected.</p>
         </div>
       </div>
       <p class="card-note">Then I'll add a second commit live, so you can see <span class="tag tag-state">deployed</span> flip back to <span class="tag tag-state">building</span> the moment a push lands.</p>
