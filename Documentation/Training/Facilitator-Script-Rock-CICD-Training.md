@@ -339,6 +339,21 @@ Branch `demo/ptp-cicd-training-walkthrough` · deployed SHA `aaceb67c8e`
 Live: <https://pr-4.rock-dev.connect.passion.team>
 Staging: <https://staging.rock-dev.connect.passion.team>
 
+**Nothing in this section builds anything.** Every artifact below was built and deployed before
+the room sat down. You are not starting a build in front of anyone, and you should say so
+early — *"a build takes twenty-five minutes, so I ran it this morning"* — because it converts
+the one thing that could read as a limitation into the exact point you are making. A pipeline
+you wait on is a pipeline that is doing real work.
+
+**If you show only one thing, show the PR.** <https://github.com/passiondev/Rock/pull/4> is the
+whole hour in one page, and it needs no live site and no network beyond GitHub: four changed
+files against `passion-18.4.1`, the label you applied, the labels the robot applied back, a bot
+comment carrying the live URL and the deployed SHA, and a Checks tab where every build step is
+named. Steps 1–4 below are that page. Steps 5 and 6 open live sites, which is stronger but
+depends on a warm app pool; step 7 is the only one that starts anything, and it is optional.
+If the room is running long or the projector is fighting you, land steps 1–4 and describe the
+rest — the argument survives intact.
+
 > "Pre-warmed" means the environment is **built and deployed**, not that it will still be warm
 > when you get here. The app pool idles out after 20 minutes. If you did not load pr-4 during
 > the 0:35 segment, load it *now* and talk over the first slide of this section — do not open
@@ -440,9 +455,17 @@ running on that host.
    and the banner only exists on the branch. Two tabs side by side is the entire argument for
    PR environments in one screen: staging shows what is merged, the PR site shows what is
    proposed. Then open the staging home page, so nobody leaves thinking staging is a 404.
-7. **Optional, if time and if it's warm:** push a trivial extra commit and watch `deployed`
-   flip to `building` within seconds. Only do this if you're at 0:46 or earlier — you're
-   showing the *transition*, not waiting for the build.
+7. **Skip this by default.** Pushing a trivial extra commit and watching `deployed` flip to
+   `building` within seconds is a genuinely good moment, but it is the one step that starts a
+   twenty-five-minute build you then cannot show the end of, and it puts the projector on a
+   robot's reaction time. Do it only if you are at 0:46 or earlier and pr-4 is already warm,
+   and if you do, narrate that you are showing the *transition* and nothing further.
+
+   The cheaper substitute, which needs no push: on the Checks tab of the run already open in
+   step 4, the step timings are right there. Point at the build job's duration and say the
+   number out loud — *"that is why this happens on GitHub and not on your laptop, and why I
+   ran it before you got here."* Same lesson, no live wait, and it reinforces rather than
+   apologises for the build time.
 
    > **This only works because PR #4 carries `rock-test:auto`.** A push to a PR without that
    > label is deliberately ignored: `pr-test-deploy.yml` handles the `synchronize` event, checks
@@ -568,6 +591,10 @@ warming — only an idle one does.
   admins can't bypass it. Same point, no hostage.
 - **Don't merge PR #4** during the meeting. Merging destroys the environment you're
   demonstrating, and it would kick off a staging deploy you can't finish watching.
+- **Don't start a build you can't finish.** Twenty-five minutes is longer than the segment,
+  so any build begun on the projector ends as an unfinished progress spinner — the single worst
+  image for a session arguing the pipeline is trustworthy. Everything you need is already built.
+  Say the build time out loud as a fact about compiling .NET on Windows, not as an apology.
 - **Don't promise dates** for the production agent install — that's a joint decision with
   DevOps, in the room.
 - **Don't demo the operator hot-deploy path.** Describe it if asked. Doing it live teaches
