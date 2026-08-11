@@ -1,7 +1,7 @@
 # Rock CI/CD — open items for DevOps
 
 **Audience:** DevOps engineer + Global Engineering. Not part of the training handout.
-**As of:** 2026-08-10 · **Repo:** `passiondev/Rock` (public) · **Trunk:** `passion-18.4.1`
+**As of:** 2026-08-11 · **Repo:** `passiondev/Rock` (public) · **Trunk:** `passion-18.4.1`
 
 The pull-request path is working and proven end to end. This is the list of what is *not*
 done, ordered by what it blocks. Most of these were found by auditing the pipeline this week;
@@ -697,7 +697,10 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    18.3.1 → 18.4.1 migration with a verified backup. This gates the first real production deploy
 4. Item 7 — decide the staging database question (a decision, then a restore)
 5. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window)
-6. Item 4 — re-run renewal once staging is healthy, then leave the schedule to it
+6. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
+   and both hosts were re-measured on real certificates *after* a subsequent deploy and a VM
+   restart. Nothing left but to let the weekly schedule run. Read item 4 anyway before touching
+   either deploy script — the bug existed in two places and only one of them was obvious
 7. Item 14 — decide whether test sites should render plugin pages (a config line, then a
    decision about version control that is bigger than this pipeline), and reconcile it with
    item 15 — they are the same reconciliation seen from two ends
