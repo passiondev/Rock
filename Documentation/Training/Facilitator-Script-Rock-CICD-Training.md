@@ -393,6 +393,13 @@ Budget more than that if the VM has been restarted rather than merely gone idle.
 white screen is well past what a room will sit through politely, so if anything rebooted that
 morning, warm the sites early and warm them twice.
 
+**A certificate renewal also causes a cold start**, and it is the sneakiest version of this
+because nothing looks like it changed. Renewal rebinds the certificate in IIS, which restarts
+the site. Measured immediately after the 2026-08-11 02:00 UTC renewal: **pr-4 took 85.3
+seconds** on the next request, then 0.17s. That is longer than the idle-timeout cold start.
+The weekly renewal cron is Monday 08:00 UTC — so if you ever present on a Monday morning, or
+you run the renewal by hand that day, warm the sites *after* it finishes, not before.
+
 ```bash
 # Run this immediately before presenting. Both should come back fast the second time.
 for h in pr-4 staging; do
