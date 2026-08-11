@@ -336,22 +336,29 @@ to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
    see that every step is named and logged. This is where "it's a black box" dies.
 5. **The live site.** Open the pr-4 URL. Show the banner, then the login page label.
 
-   > **Check this the morning of, and don't assume a padlock.** As of 2026-08-11 00:40Z *both*
-   > `pr-4` and `staging` serve the same **self-signed** wildcard for
-   > `*.rock-dev.connect.passion.team`, so both throw a browser warning. An earlier version of
-   > this script claimed pr-4 held a valid Let's Encrypt certificate; that was never measured
-   > and it was wrong. Verify with
-   > `echo | openssl s_client -connect pr-4.rock-dev.connect.passion.team:443 -servername pr-4.rock-dev.connect.passion.team 2>/dev/null | openssl x509 -noout -issuer`
-   > — if the issuer names Let's Encrypt you have a real certificate; if issuer and subject
-   > match, it is self-signed and you will get the warning.
+   > **Both hosts now hold real certificates — but still check the morning of.** Measured
+   > 2026-08-11 02:40Z, after a deploy: `staging` presents Let's Encrypt YR2 (expires
+   > 2026-11-09) and `pr-4` presents Let's Encrypt YR1 (expires 2026-11-08), each chaining to
+   > ISRG Root X1, and both answer HTTP 302 under strict TLS validation. No warning, on a
+   > laptop or a phone.
    >
-   > If the warning is there, own it in one sentence and move: *"These test hosts are on an
-   > internal certificate — the real site isn't, and getting a public certificate onto them is
-   > on the open list."* Click through once, deliberately, and say you're doing it. Do **not**
-   > teach the room that clicking through warnings is routine.
+   > This is worth re-checking rather than assuming, because an earlier version of this script
+   > got it wrong in both directions — first claiming a valid certificate that had never been
+   > measured, then recording a self-signed one that had since been fixed. One command:
+   > `echo | openssl s_client -connect pr-4.rock-dev.connect.passion.team:443 -servername pr-4.rock-dev.connect.passion.team 2>/dev/null | openssl x509 -noout -issuer -subject`
+   > — if the issuer names Let's Encrypt you are fine; if issuer and subject are identical it
+   > has reverted to self-signed. Compare the two fields; do not grep for `CN=`, because the
+   > printed format varies between OpenSSL builds (`/CN=*.x`, `CN=*.x` and `CN = *.x` have all
+   > been observed on this same certificate).
    >
-   > Better: pre-accept the certificate in the demo browser profile before the meeting so the
-   > warning never appears on the projector.
+   > If it has somehow reverted, own it in one sentence and move on: *"These test hosts are on
+   > an internal certificate today — the real site isn't."* Click through once, deliberately,
+   > and say you're doing it. Do **not** teach the room that clicking through warnings is
+   > routine.
+   >
+   > A **brand-new** PR environment is a different case and is still expected to warn: it gets
+   > the self-signed placeholder until the weekly renewal issues a certificate for its host
+   > name. Say that if someone spins one up and asks.
 6. **Staging.** Open the staging URL. Same trunk, no banner — that's the point: staging shows
    what's merged, the PR site shows what's proposed.
 7. **Optional, if time and if it's warm:** push a trivial third commit and watch `deployed`
