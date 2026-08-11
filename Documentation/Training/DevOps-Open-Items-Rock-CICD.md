@@ -94,35 +94,69 @@ merged branches accumulate forever. Turning it on prevents the next round of ite
 
 ## P1 — real risk, not blocking
 
-### 4. Certificate renewal works now, but it reports success when it does nothing
+### 4. Every deploy rebound the self-signed placeholder over the real certificate
 
-**This one is fixed.** Run `31416304281` succeeded on 2026-08-10 at 17:53 UTC and
-`pr-4.rock-dev.connect.passion.team` now serves a genuine Let's Encrypt certificate —
-issuer `CN=YR1`, issued 2026-08-10, valid to 2026-11-08. Verified against the live host, not
-inferred from the run's exit code. The three earlier failures (`31370584850`, `30800092986`,
-`30252661509`) were the terminated VM and the MSBuild path, both since fixed.
+**Root cause found 2026-08-11 and fixed in code; the fix is not on the VM yet.** An earlier
+revision of this document claimed this item was fixed because `pr-4` was measured serving a
+real Let's Encrypt certificate at 16:57 UTC on 2026-08-10. That measurement was correct. The
+conclusion was not — by 2026-08-11 00:30 UTC `pr-4` was serving a **self-signed** wildcard
+again, and so was `staging`. Both hosts presented the same certificate: subject and issuer
+both `CN=*.rock-dev.connect.passion.team`, expiring 2028-05-06.
 
-What is left is a reporting gap, and it is the reason this looked broken for so long:
+Two independent defects, and the first one is the interesting one:
 
-- **`succeeded` does not mean a certificate was issued.** `Invoke-PrEnvironmentCertificateRenewal.ps1`
-  returns early with a clean exit when it finds no manifests, and only throws when
-  `$boundCount -eq 0` *after* it had work to do. A run over an empty VM is indistinguishable
-  from a run that renewed everything. **Still unmitigated in practice.** Run `31416304281`
-  (2026-08-10 17:53) reported `succeeded`, and its result JSON carried nothing but
-  `commandId`, `prNumber`, `command`, `status`, `completedAtUtc` — no host names, no
-  per-host outcome. It finished in 90 seconds, which is far too fast for win-acme to have
-  self-hosted a challenge against even one host. So the run log does *not* currently name the
-  hosts it touched, and a clean green run remains compatible with "issued nothing." Worth
-  fixing by returning the touched-host list in the command result.
-- **The scope is name-agnostic, which is worth knowing.** `Get-DeployedPrEnvironmentManifests`
-  walks *every* `env.json` under `C:\RockTestEnvs` with `status = 'deployed'` — it does not
-  filter on `pr-*`. `staging` is a `DedicatedSite` under that same root, so it is in scope
-  automatically — *provided it has a manifest*. Measured 2026-08-10: `pr-4` serves a valid
-  Let's Encrypt certificate (issued 16:57 UTC, expires 2026-11-08, verifies cleanly), so the
-  renewal path itself works. `staging` was still untrusted, having never been picked up while
-  its deploys were failing. **Re-run renewal once staging is healthy**, then verify by
-  measuring rather than by reading the run's conclusion:
-  `curl -v https://staging.rock-dev.connect.passion.team/ 2>&1 | grep -E "issuer|expire"`.
+- **The placeholder outranked every real certificate, permanently.**
+  `Deploy-RockEnvironment.ps1` rebinds an SSL certificate on *every* deploy. Its selector
+  (`Get-EnvironmentCertificateThumbprint`) took all certificates matching the host or the
+  wildcard and picked `Sort-Object NotAfter -Descending | Select-Object -First 1`. The
+  self-signed placeholder is minted with `-NotAfter (Get-Date).AddYears(2)`; a Let's Encrypt
+  certificate lasts 90 days. **2028 always beats 90 days from now**, so the placeholder won
+  every comparison and every deploy silently reverted the site to an untrusted certificate.
+  Renewal was never broken — it was being undone. The timeline proves it exactly: renewal
+  bound a real certificate to `pr-4` at 16:57, `pr-4` was redeployed at 19:44 (run
+  `31425587536`), and it was self-signed afterwards.
+  **Fixed:** the selector now ranks CA-issued certificates ahead of self-signed ones
+  (a self-signed certificate is its own issuer) and only uses `NotAfter` as the tie-breaker.
+  It also skips already-expired certificates. The placeholder is still deliberately
+  long-lived — the *ranking*, not a short expiry, is what lets the real certificate win, so a
+  run of failed renewals still cannot break HTTPS outright.
+- **Renewal could not see `staging` at all.** `Get-DeployedPrEnvironmentManifests` walked only
+  `C:\RockTestEnvs`, and in-place environments deliberately keep their manifest elsewhere —
+  `Deploy-RockEnvironment.ps1:152` puts it at `C:\RockBackups\<name>\env.json`, with a comment
+  explaining that this keeps renewal from stopping and starting the site. That reasoning does
+  not hold: renewal stops `W3SVC` **service-wide** for the HTTP-01 challenge (line 189), so
+  staging was already taking the full downtime and simply never got a certificate for it.
+  **Fixed:** renewal takes `-AdditionalManifestRoots` (default `C:\RockBackups`) and scans
+  direct children of those roots only — never `-Recurse`, because the siblings of that
+  manifest are timestamped site backups and recursing would bind certificates from stale
+  manifests. Hosts are de-duplicated by name.
+
+**Still open — the reporting gap that hid all of this for months.** `succeeded` does not mean
+a certificate was issued. The script returns early with a clean exit when it finds no
+manifests, and only throws when `$boundCount -eq 0` *after* it had work to do, so a run over
+an empty VM is indistinguishable from a run that renewed everything. Run `31416304281`
+(2026-08-10 17:53) reported `succeeded` in ~2 minutes — far too fast for win-acme against even
+one host — and its result JSON carried nothing but `commandId`, `prNumber`, `command`,
+`status`, `completedAtUtc`: no host names, no per-host outcome, and **no log uploaded to
+`commands/logs/` at all**. It ran before any environment had been deployed that evening, so it
+genuinely had nothing to do. Partially mitigated: the script now emits a loud
+`RENEWAL ISSUED NOTHING` warning naming every root it searched, and a `Renewal scope:` line
+naming each host it will touch. The real fix is still to return the touched-host list in the
+command result, and to upload the renewal log the way deploys do.
+
+> **Both fixes are VM-side scripts, so they take effect only after
+> `pr-test-bootstrap-command-queue.yml` runs** — that workflow stops and starts the VM. Until
+> then the live VM still has the old selector, and any deploy will keep clobbering the
+> certificate. Verify by **measuring**, never by reading a run's conclusion:
+> ```bash
+> for h in pr-4 staging; do
+>   echo "== $h"; echo | openssl s_client -connect $h.rock-dev.connect.passion.team:443 \
+>     -servername $h.rock-dev.connect.passion.team 2>/dev/null \
+>     | openssl x509 -noout -issuer -subject -dates
+> done
+> ```
+> A real certificate shows `O=Let's Encrypt` in the issuer. If issuer and subject match, it is
+> the self-signed placeholder.
 
 - **Workflow:** `.github/workflows/pr-test-renew-certificates.yml` (`schedule: 0 8 * * 1`)
 - Note it temporarily opens an ACME HTTP-01 firewall path (tag `pr-test-acme-http`) — confirm
