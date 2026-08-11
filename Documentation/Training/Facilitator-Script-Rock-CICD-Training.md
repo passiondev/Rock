@@ -306,9 +306,24 @@ to overwrite. If the banner is on the page, the `/MIR` bug is genuinely dead.
    > and the next deploy will say so. Don't let it become a five-minute detour.
 4. **The Checks tab.** Open the build job, scroll the step list. Don't read it; just let them
    see that every step is named and logged. This is where "it's a black box" dies.
-5. **The live site.** Open the pr-4 URL. It is ordinary public HTTPS with a valid Let's
-   Encrypt certificate, so it just loads — no warning to explain away. Show the banner. Then
-   the login page label.
+5. **The live site.** Open the pr-4 URL. Show the banner, then the login page label.
+
+   > **Check this the morning of, and don't assume a padlock.** As of 2026-08-11 00:40Z *both*
+   > `pr-4` and `staging` serve the same **self-signed** wildcard for
+   > `*.rock-dev.connect.passion.team`, so both throw a browser warning. An earlier version of
+   > this script claimed pr-4 held a valid Let's Encrypt certificate; that was never measured
+   > and it was wrong. Verify with
+   > `echo | openssl s_client -connect pr-4.rock-dev.connect.passion.team:443 -servername pr-4.rock-dev.connect.passion.team 2>/dev/null | openssl x509 -noout -issuer`
+   > — if the issuer names Let's Encrypt you have a real certificate; if issuer and subject
+   > match, it is self-signed and you will get the warning.
+   >
+   > If the warning is there, own it in one sentence and move: *"These test hosts are on an
+   > internal certificate — the real site isn't, and getting a public certificate onto them is
+   > on the open list."* Click through once, deliberately, and say you're doing it. Do **not**
+   > teach the room that clicking through warnings is routine.
+   >
+   > Better: pre-accept the certificate in the demo browser profile before the meeting so the
+   > warning never appears on the projector.
 6. **Staging.** Open the staging URL. Same trunk, no banner — that's the point: staging shows
    what's merged, the PR site shows what's proposed.
 7. **Optional, if time and if it's warm:** push a trivial third commit and watch `deployed`
