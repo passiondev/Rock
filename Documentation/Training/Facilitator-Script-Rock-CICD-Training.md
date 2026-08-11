@@ -118,11 +118,26 @@ wants to discuss trunk-based vs. GitFlow, park it: *"Worth a conversation, not t
 
 ### 0:12 — The fork (slides 6–7, 6 min)
 
-Slide 6's diagram is the answer to "where does our code come from." Numbers to say out loud:
-**68 files on the trunk that don't exist upstream, and 63 of them are this pipeline** — the
-workflows, the deploy scripts, the docs, the tests. Five are product code. The point of saying
-it that way: the trunk is almost entirely *plumbing* so far, and the plumbing is what this
-meeting is about.
+Slide 6's diagram is the answer to "where does our code come from." Numbers to say out loud —
+these are measured against Spark's **`18.4.1` tag**, and they split cleanly:
+
+> "Our trunk differs from Rock's own 18.4.1 in 68 files. Sixty-one of those are files that
+> don't exist in Rock at all — the workflows, the deploy scripts, the runbooks, the tests. This
+> pipeline. Only **seven** files that Rock ships have been edited by us, and five of those are
+> one feature: the header image upload in Form Builder. Nothing has been deleted."
+
+The point of saying it that way: we have barely touched Rock, and almost everything we've added
+is plumbing. It also pre-answers the upgrade fear — a fork that mostly *adds* files is a fork
+that merges cleanly.
+
+If someone asks which five: `FormBuilderDetail.cs`, `FormGeneralViewModel.cs`,
+`generalSettings.partial.obs`, `types.partial.ts`, `entryFormPersonEntry.partial.obs`. The
+other two edited files are `.gitignore` and the PR template — both ours, not Rock's behaviour.
+
+> Recount before you present if the trunk has moved:
+> `git fetch upstream --tags && git diff --diff-filter=A --name-only 18.4.1..HEAD | wc -l`
+> for the added count, `--diff-filter=M` for the edited one. The earlier version of this script
+> called all 68 "files that don't exist upstream," which was wrong for the seven edited ones.
 
 Slide 7 is the most important non-demo slide in the deck. Two directions, then the warning.
 
