@@ -592,18 +592,18 @@
     <div class="eyebrow"><span class="eyebrow-num">00</span><span class="eyebrow-text">Why any of this exists</span></div>
     <div class="body">
       <h2>Everyone here has a MacBook. Rock only builds on Windows.</h2>
-      <p class="lede">That single sentence is the reason this pipeline exists. Everything else follows from it.</p>
+      <p class="lede">I know that reads like a technicality. It's the reason this whole repo looks the way it does.</p>
       <div class="cols cols-2">
         <div class="card was">
           <h3>The wall</h3>
-          <p>Rock is ASP.NET&nbsp;4.5 WebForms on the .NET&nbsp;<em>Framework</em> &mdash; not .NET Core. It compiles with MSBuild and Visual Studio build tools, which exist only on Windows. There is no macOS build. There is no Linux build. Not "it's harder" &mdash; it does not run.</p>
+          <p>Rock is ASP.NET&nbsp;4.5 WebForms on the .NET&nbsp;<em>Framework</em>, not .NET Core. It compiles with MSBuild and Visual Studio build tools, which exist only on Windows. There is no macOS build and no Linux build. This is not the "harder on a Mac" kind of problem. It does not run at all.</p>
         </div>
         <div class="card now">
           <h3>The way around it</h3>
           <p>GitHub rents us a clean Windows machine for the length of a build. It compiles Rock, packages the site, and installs it on a server in Google Cloud. You do all of your work in a browser and never install Windows.</p>
         </div>
       </div>
-      <p class="card-note">So the pipeline is not process for its own sake. It is the only way this team can ship Rock at all.</p>
+      <p class="card-note">So when the process later feels like a lot of ceremony for a one-word fix, that's what it costs to ship Rock from a Mac at all.</p>
     </div>
   </section>
 
@@ -619,7 +619,7 @@
         </div>
         <div class="card">
           <h3>Branch</h3>
-          <p>Your own copy of all of it. Edit freely &mdash; nobody else sees your branch and nothing you do there can affect the live site.</p>
+          <p>Your own copy of all of it. Edit freely: nobody else sees your branch, and nothing you do there can affect the live site.</p>
         </div>
         <div class="card">
           <h3>Commit</h3>
@@ -627,7 +627,7 @@
         </div>
       </div>
       <div class="card card-note">
-        <p>Two things make git feel strange at first, and both are actually the point: <strong>nothing is ever overwritten</strong> &mdash; old versions stay reachable forever &mdash; and <strong>you work on a copy, then ask for it to be merged</strong>. There is no "save to the server."</p>
+        <p>Two things make git feel strange at first, and both are deliberate. <strong>Nothing is ever overwritten</strong> (old versions stay reachable forever), and <strong>you work on a copy, then ask for it to be merged</strong>. There is no "save to the server."</p>
       </div>
     </div>
   </section>
@@ -652,10 +652,10 @@
         <div class="card">
           <h3>The tabs you'll use</h3>
           <ul class="bare">
-            <li><strong>Conversation</strong> &mdash; description, comments, the robot's status</li>
-            <li><strong>Files changed</strong> &mdash; the actual diff. Red removed, green added. <em>Always look here before asking for review.</em></li>
-            <li><strong>Checks</strong> &mdash; the build, live, with logs</li>
-            <li><strong>Labels</strong> (sidebar) &mdash; your buttons</li>
+            <li><strong>Conversation</strong>: description, comments, the robot's status</li>
+            <li><strong>Files changed</strong>: the diff itself. Red removed, green added. <em>Always look here before asking for review.</em></li>
+            <li><strong>Checks</strong>: the build, live, with logs</li>
+            <li><strong>Labels</strong> (sidebar): your buttons</li>
           </ul>
         </div>
       </div>
@@ -680,7 +680,7 @@
         </div>
         <div class="card">
           <h3>Why one trunk</h3>
-          <p>There is exactly one branch that represents "what we run." Everything merges there and staging always shows it. No guessing which branch is real.</p>
+          <p>There is exactly one branch that represents "what we run." Everything merges there, and staging always shows it. If you want to know what's live, you read one name.</p>
         </div>
       </div>
     </div>
@@ -710,12 +710,12 @@
           <span class="mono">built from our fork only</span>
         </div>
       </div>
-      <p class="lede">A fork is a full copy of someone else's repository that you own, with the family tree intact &mdash; so you can still pull their updates down and still send fixes back up.</p>
+      <p class="lede">A fork is a full copy of someone else's repository that you own, with the family tree intact, so you can still pull their updates down and still send fixes back up.</p>
       <div class="cols cols-2">
         <div class="card">
           <h3>What's ours</h3>
-          <p>Our trunk differs from Rock's <code>18.4.1</code> in <strong>68 files</strong>. <strong>61 don't exist in Rock at all</strong> &mdash; the workflows, the deploy scripts, the runbooks, the tests. Only <strong>7</strong> of Rock's own files have been edited, and 5 of those are one Form Builder feature. Nothing deleted.</p>
-          <p style="margin-top:.5rem">Our long-standing custom blocks &mdash; check-in, scheduling, RSVP, finance, CMS &mdash; are <strong>78 files under <code>RockWeb/Plugins/org_passion</code></strong> and <code>team_passion</code>. They are on the older <code>develop</code> branch, <strong>not on the trunk.</strong> Reconciling those two is the next piece of work and the top item on the open-items list.</p>
+          <p>Our trunk differs from Rock's <code>18.4.1</code> in <strong>68 files</strong>. <strong>61 don't exist in Rock at all</strong>: the workflows, the deploy scripts, the runbooks, the tests. Only <strong>7</strong> of Rock's own files have been edited, and 5 of those are one Form Builder feature. Nothing deleted.</p>
+          <p style="margin-top:.5rem">Our long-standing custom blocks (check-in, scheduling, RSVP, finance, CMS) are <strong>78 files under <code>RockWeb/Plugins/org_passion</code></strong> and <code>team_passion</code>. They are on the older <code>develop</code> branch, <strong>not on the trunk.</strong> Reconciling those two is the next piece of work and the top item on the open-items list.</p>
         </div>
         <div class="card">
           <h3>Why fork instead of starting clean</h3>
@@ -733,18 +733,18 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>Down: their work into ours</h3>
-          <p>The clean reference point is not a branch of ours at all &mdash; it is <strong>Spark's tag <code>18.4.1</code></strong>, fetched from the <code>upstream</code> remote. That tag is what we diff against to see exactly what is ours and what is theirs.</p>
+          <p>Our clean reference point sits outside our branches entirely: <strong>Spark's tag <code>18.4.1</code></strong>, fetched from the <code>upstream</code> remote. That tag is what we diff against to see exactly what is ours and what is theirs.</p>
           <p style="margin-top:.6rem">Our <code>develop</code> branch is <strong>not</strong> a clean mirror, despite the name. It carries 276 files under <code>RockWeb/Plugins/</code>, 78 of them ours, where upstream's tag carries 2. It is history we still need, not a reference copy.</p>
           <p class="card-note" style="margin-top:.6rem">Never open a PR against <code>develop</code>.</p>
         </div>
         <div class="card">
           <h3>Up: our work into theirs</h3>
-          <p>If we fix a genuine bug in core Rock, we can contribute it back. The repo has a separate PR template for that &mdash; open the PR with <code class="mono">?template=upstream-contribution.md</code> and it asks for what Spark's maintainers need.</p>
+          <p>If we fix a genuine bug in core Rock, we can contribute it back. The repo has a separate PR template for that. Open the PR with <code class="mono">?template=upstream-contribution.md</code> and it asks for what Spark's maintainers need.</p>
         </div>
       </div>
       <div class="card was">
         <h3>The public consequence</h3>
-        <p>Because Rock is open source, <strong>our fork is public.</strong> Anything committed is visible to the entire internet, permanently, including after you "delete" it in a later commit. No passwords, no connection strings, no exports with member names, emails, phone numbers, or giving data. If it happens, tell DevOps immediately so the credential gets rotated &mdash; deleting it is not enough.</p>
+        <p>Because Rock is open source, <strong>our fork is public.</strong> Anything committed is visible to the entire internet, permanently, including after you "delete" it in a later commit. No passwords, no connection strings, no exports with member names, emails, phone numbers, or giving data. If it happens, tell DevOps immediately so the credential gets rotated. Deleting it is not enough.</p>
       </div>
     </div>
   </section>
@@ -757,19 +757,19 @@
       <div class="graph" role="img" aria-label="Diagram: the passion-18.4.1 trunk continues from Spark's 18.4.1 tag, while our older develop branch diverged from a shared commit in January 2026">
         <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9670;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">Spark's tag 18.4.1 (&#9670;, July) + this pipeline</span></div>
         <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;</span></div>
-        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">diverged Jan 2026 &mdash; holds our 78 plugin files</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">diverged Jan 2026 &middot; holds our 78 plugin files</span></div>
       </div>
       <p class="lede">Read the fork from the left: we share history with Spark up to January, they carried on to the <strong>18.4.1</strong> tag in July, and our trunk continues from that tag. <code>develop</code> is the older line that kept going in parallel.</p>
       <div class="cols cols-2">
         <div class="card">
           <h3>Why the version is in the name</h3>
-          <p>A Rock upgrade is not a normal change &mdash; it moves thousands of files at once. Naming the trunk after the version makes the answer to "what is production running?" a thing you can read, not a thing you ask about.</p>
-          <p style="margin-top:.5rem">The cost of <em>not</em> doing that is already in this repo: <code>develop</code> is really Rock <strong>19.0.3</strong> and <code>staging</code> is really Rock <strong>17.6.1</strong>. Neither name says so &mdash; you have to open a source file to find out.</p>
+          <p>A Rock upgrade moves thousands of files at once, so it never behaves like a normal change. Naming the trunk after the version turns "what is production running?" into something you can read instead of something you have to ask.</p>
+          <p style="margin-top:.5rem">The cost of <em>not</em> doing that is already in this repo: <code>develop</code> is really Rock <strong>19.0.3</strong> and <code>staging</code> is really Rock <strong>17.6.1</strong>. Neither name says so. You have to open a source file to find out.</p>
         </div>
         <div class="card card-server">
           <h3>What the pipeline builds today</h3>
           <p><span class="mono">passion-18.4.1</span> is the repository's default branch, so it's what you land on when you open the repo, and it's what staging builds from.</p>
-          <p style="margin-top:.5rem">Production runs Rock 18.4 at its core and was last touched <strong>by hand, in July.</strong> Pointing this pipeline at it is the next step, and it happens with DevOps in the room &mdash; not from a laptop.</p>
+          <p style="margin-top:.5rem">Production runs Rock 18.4 at its core and was last touched <strong>by hand, in July.</strong> Pointing this pipeline at it is the next step, and it happens with DevOps in the room rather than from a laptop.</p>
         </div>
       </div>
     </div>
@@ -785,7 +785,7 @@
         <li>Fetch from <code>upstream</code> so we have Spark's tags for the new release.</li>
         <li>Cut <code>passion-18.5</code> from the upstream tag for that release.</li>
         <li>Replay our own work onto it and fix what conflicts.</li>
-        <li>Point <code>.github/pr-test-environments.json</code> at the new branch &mdash; <strong>one file decides which base branch gets test environments.</strong></li>
+        <li>Point <code>.github/pr-test-environments.json</code> at the new branch. <strong>One file decides which base branch gets test environments.</strong></li>
         <li>Make it the repo default. Deploy it to staging. Live on staging until it's boring.</li>
         <li>Deploy to production. Retire the old trunk.</li>
       </ol>
@@ -809,7 +809,7 @@
         <div class="card was">
           <h3>Wrong</h3>
           <p>Any other base branch.</p>
-          <p class="card-note" style="margin-top:.6rem">The robot <strong>quietly does nothing.</strong> No error, no comment, no test site. It looks like the pipeline is broken. It isn't &mdash; it's ignoring you.</p>
+          <p class="card-note" style="margin-top:.6rem">The robot <strong>quietly does nothing.</strong> You get no error, no comment and no test site, which looks exactly like a broken pipeline. It's working. It just doesn't consider your PR its business.</p>
         </div>
       </div>
       <div class="card">
@@ -850,7 +850,7 @@
           </div>
         </div>
         <div class="card">
-          <h3>The robot sets these &mdash; don't touch them</h3>
+          <h3>The robot sets these. Don't touch them.</h3>
           <p style="display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.6rem">
             <span class="tag tag-state">queued</span>
             <span class="tag tag-state">building</span>
@@ -862,7 +862,7 @@
           <p class="card-note">They're a status light. <span class="tag tag-state">deployed</span> means your site is up and the URL is in the PR comment.</p>
         </div>
       </div>
-      <p class="card-note"><strong>Cleanup:</strong> merging the PR destroys its environment &middot; closing it without merging only <em>stops</em> it and keeps the files. Nothing else reaps anything on a timer &mdash; if you're done with an environment, add <span class="tag tag-do">rock:destroy</span> yourself.</p>
+      <p class="card-note"><strong>Cleanup:</strong> merging the PR destroys its environment &middot; closing it without merging only <em>stops</em> it and keeps the files. Nothing else reaps anything on a timer, so if you're done with an environment, add <span class="tag tag-do">rock:destroy</span> yourself.</p>
     </div>
   </section>
 
@@ -890,7 +890,7 @@
         </div>
       </div>
       <div class="card card-note">
-        <p><strong>One real exception.</strong> A lot of what looks like "editing the website" in Rock is not a file at all &mdash; HTML Content block text, page names and routes, Lava in block settings, workflows, reports. Those live in the database and you change them in the Rock admin UI on the live site. This pipeline only moves <em>files</em>. If you're unsure which side of that line you're on, ask before you start.</p>
+        <p><strong>One real exception.</strong> A lot of what looks like "editing the website" in Rock was never a file: HTML Content block text, page names and routes, Lava in block settings, workflows, reports. Those live in the database and you change them in the Rock admin UI on the live site. This pipeline only moves <em>files</em>. If you're unsure which side of that line you're on, ask before you start.</p>
       </div>
     </div>
   </section>
@@ -900,7 +900,7 @@
     <div class="eyebrow"><span class="eyebrow-num">05</span><span class="eyebrow-text">Why GitHub builds it</span></div>
     <div class="body">
       <h2>What "build" actually means for Rock.</h2>
-      <p class="lede">Not a website that gets uploaded. An application that gets compiled &mdash; roughly half an hour of work on a machine none of us owns.</p>
+      <p class="lede">When you hear "deploy the site," you probably picture files being copied somewhere. Rock is an application that gets compiled, and that's roughly half an hour of work on a machine none of us owns.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Step</th><th>What runs</th><th>Needs</th></tr></thead>
@@ -915,7 +915,7 @@
         </table>
       </div>
       <div class="card card-note">
-        <p>The compiled Obsidian block JavaScript is <strong>not stored in the repo</strong> &mdash; it only exists after a build. That is exactly why "just copy the files up" doesn't work: half the site isn't in the files.</p>
+        <p>The compiled Obsidian block JavaScript is <strong>not stored in the repo</strong>. It only exists after a build. That is exactly why "just copy the files up" doesn't work: half the site isn't in the files.</p>
       </div>
     </div>
   </section>
@@ -979,7 +979,7 @@
       </div>
       <div class="card was">
         <h3>Things a test environment is not</h3>
-        <p>The database is <strong>shared and gets reset</strong> &mdash; don't build a demo on data you need. No email, no texts, no payments, no scheduled jobs. A migration in your PR changes that shared database <em>for everyone</em>. The URLs themselves are public HTTPS, so no VPN is needed to open one.</p>
+        <p>The database is <strong>shared and gets reset</strong>, so don't build a demo on data you need. No email, no texts, no payments, no scheduled jobs. A migration in your PR changes that shared database <em>for everyone</em>. The URLs themselves are public HTTPS, so no VPN is needed to open one.</p>
       </div>
     </div>
   </section>
@@ -992,21 +992,21 @@
       <p class="lede">There is no branch you can push, and no label you can add, that reaches the live site.</p>
       <div class="cols cols-2">
         <div class="card">
-          <h3>Staging &mdash; automatic, and safe</h3>
+          <h3>Staging: automatic, and safe</h3>
           <p>Merge your PR and ~40 minutes later it's live on staging for the whole team. It's a separate site on the test server, on the sandbox database. It cannot see production data and cannot take production down.</p>
-          <p class="card-note" style="margin-top:.6rem">Documentation-only commits are skipped &mdash; a 30-minute Windows build per typo fix isn't a good trade.</p>
+          <p class="card-note" style="margin-top:.6rem">Documentation-only commits are skipped, because a 30-minute Windows build per typo fix isn't a good trade.</p>
         </div>
         <div class="card card-server">
-          <h3>Production &mdash; two locks</h3>
+          <h3>Production: two locks</h3>
           <ol style="gap:.35rem">
             <li>Someone opens Actions and runs <strong>Deploy Production</strong> deliberately. The default run is a <strong>dry run</strong> that reports its plan and changes nothing.</li>
-            <li>It builds, then <strong>stops and waits for a named reviewer to approve</strong> &mdash; after the build, so nobody is asked to approve a commit that doesn't compile. Not even a repo admin can skip that gate.</li>
+            <li>It builds, then <strong>stops and waits for a named reviewer to approve</strong>. That gate sits after the build, so nobody is ever asked to approve a commit that doesn't compile. Not even a repo admin can skip that gate.</li>
           </ol>
         </div>
       </div>
       <div class="card">
         <h3>What it does on the server, and what it refuses to do</h3>
-        <p>Backs up the current site &rarr; stops the app pool &rarr; copies the new files &rarr; starts it &rarr; polls until the site answers. It <strong>never mirrors</strong>: uploaded content, logs, and the cache are server-owned and cannot be deleted by a deploy. And <strong>CI never writes production's connection string</strong> &mdash; so the production database password doesn't have to exist as a secret here, and a deploy can't point production at the wrong server.</p>
+        <p>Backs up the current site &rarr; stops the app pool &rarr; copies the new files &rarr; starts it &rarr; polls until the site answers. It <strong>never mirrors</strong>: uploaded content, logs, and the cache are server-owned and cannot be deleted by a deploy. And <strong>CI never writes production's connection string</strong>, so the production database password doesn't have to exist as a secret here, and a deploy can't point production at the wrong server.</p>
       </div>
     </div>
   </section>
@@ -1016,16 +1016,16 @@
     <div class="eyebrow"><span class="eyebrow-num">07</span><span class="eyebrow-text">Demo</span></div>
     <div class="body">
       <h2>Let's go look at a real one.</h2>
-      <p class="lede">A PR was opened before this meeting so the half-hour build is already done &mdash; like taking the finished cake out of the oven.</p>
+      <p class="lede">I opened a PR before this meeting, so the half-hour build is already done. Think of it as taking the cake out of the oven rather than watching it bake.</p>
       <div class="cols cols-2">
         <div class="card">
           <h3>On the PR page</h3>
           <p class="card-note" style="margin:-.25rem 0 .6rem"><span class="mono">github.com/passiondev/Rock/pull/4</span></p>
           <ul>
-            <li>The diff &mdash; four files, and where each one actually shows up</li>
+            <li>The diff: four files, and where each one shows up</li>
             <li>The label I added, and the state labels the robot set in response</li>
             <li>The robot's status comment, with the URL</li>
-            <li>The Checks tab &mdash; every build step, with logs and timings</li>
+            <li>The Checks tab: every build step, with logs and timings</li>
           </ul>
         </div>
         <div class="card card-server">
@@ -1034,10 +1034,10 @@
             <li><strong>The PR's own copy</strong><br><span class="mono">pr-4.rock-dev.connect.passion.team</span></li>
             <li style="margin-top:.5rem"><strong>Staging, built from the trunk</strong><br><span class="mono">staging.rock-dev.connect.passion.team</span></li>
           </ul>
-          <p class="card-note" style="margin-top:.75rem">Both are public HTTPS with real Let's Encrypt certificates &mdash; open them from your phone if you want, no warning and no VPN. Same trunk on staging, so the PR site is the only one with the change in it.</p>
+          <p class="card-note" style="margin-top:.75rem">Both are public HTTPS with real Let's Encrypt certificates, so open them on your phone if you want. No warning, no VPN. Same trunk on staging, so the PR site is the only one with the change in it.</p>
         </div>
       </div>
-      <p class="card-note">What I am <em>not</em> going to do is start a build in front of you. It takes about twenty-five minutes, which is longer than this meeting has left &mdash; and that is the point rather than the disclaimer. The build log on the Checks tab has the real number in it.</p>
+      <p class="card-note">What I am <em>not</em> going to do is start a build in front of you. It takes about twenty-five minutes, which is longer than this meeting has left. I'd rather you remember that number than watch me fill the silence. The Checks tab has the real one in it.</p>
     </div>
   </section>
 
@@ -1065,7 +1065,7 @@
         </div>
         <div class="qa-item">
           <div class="qa-q">Why did nothing happen when I added the label?</div>
-          <div class="qa-a">Almost always the base branch. Test environments are only built for PRs targeting the branch named in <code>.github/pr-test-environments.json</code>. Anything else is silently ignored &mdash; no error, by design of GitHub, not by choice.</div>
+          <div class="qa-a">Almost always the base branch. Test environments are only built for PRs targeting the branch named in <code>.github/pr-test-environments.json</code>. Anything else is silently ignored, with no error at all. That silence is GitHub's design, not our choice.</div>
         </div>
       </div>
     </div>
@@ -1079,19 +1079,19 @@
       <div class="qa">
         <div class="qa-item">
           <div class="qa-q">Someone needs a fix live in twenty minutes. What actually happens?</div>
-          <div class="qa-a">Because Rock compiles our custom blocks at runtime, an operator can copy two files onto the server &mdash; with a drift check, a hash-verified backup, and automatic rollback on mismatch. It's operator-only, it's the mechanism recent urgent fixes actually used, and it exists so you can ask for it rather than attempt it.</div>
+          <div class="qa-a">Because Rock compiles our custom blocks at runtime, an operator can copy two files onto the server, behind a drift check, a hash-verified backup and automatic rollback on mismatch. This is how the recent urgent fixes went out. It's operator-only, and I'm telling you it exists so you ask for it instead of attempting it.</div>
         </div>
         <div class="qa-item">
           <div class="qa-q">How do we roll back?</div>
-          <div class="qa-a">Run <strong>Deploy Production</strong> again with the previous good commit &mdash; rolling back is the same operation as rolling forward, which is the point. If you need it faster than a build, the previous site is still on the VM under <code>C:\RockBackups\production\</code>.</div>
+          <div class="qa-a">Run <strong>Deploy Production</strong> again with the previous good commit. Rolling back and rolling forward are the same operation, which is on purpose: there's no separate emergency path to get wrong under pressure. If you need it faster than a build, the previous site is still on the VM under <code>C:\RockBackups\production\</code>.</div>
         </div>
         <div class="qa-item">
           <div class="qa-q">What if GitHub is down?</div>
-          <div class="qa-a">We can't build. Production keeps serving &mdash; nothing about a running site depends on GitHub. The operator hot-deploy path also doesn't need it.</div>
+          <div class="qa-a">We can't build. Production keeps serving, because nothing about a running site depends on GitHub. The operator hot-deploy path doesn't need it either.</div>
         </div>
         <div class="qa-item">
           <div class="qa-q">Why is my change not showing even though the build was green?</div>
-          <div class="qa-a">Check that the file is actually in your PR's diff and on the right path. If it's LESS, Rock's theme compiler has to recompile it (Admin &rarr; CMS &rarr; Themes). If it's an HTML Content block or a page setting, it was never a file &mdash; it's a database record you change in the admin UI.</div>
+          <div class="qa-a">Check that the file is in your PR's diff and on the right path. If it's LESS, Rock's theme compiler has to recompile it (Admin &rarr; CMS &rarr; Themes). If it's an HTML Content block or a page setting, it was never a file. It's a database record you change in the admin UI.</div>
         </div>
       </div>
     </div>
@@ -1107,22 +1107,22 @@
           <h3>Everyone</h3>
           <ol>
             <li>Confirm you can sign in to <code>passiondev/Rock</code>, that 2FA is on, and that you can add a label to a PR.</li>
-            <li>Read Parts 0&ndash;2 of the training doc, then ship one real change end to end &mdash; a typo is a perfect first PR.</li>
+            <li>Read Parts 0&ndash;2 of the training doc, then ship one real change all the way through. A typo is a perfect first PR.</li>
           </ol>
         </div>
         <div class="card">
           <h3>DevOps</h3>
           <ol>
             <li>Install the command-queue agent on the production VM, together, so the last step of the production path is proven. It needs a stop/start window, so we schedule it rather than squeeze it in.</li>
-            <li><strong>Be the second approver on production.</strong> The gate is live and admins can't bypass it &mdash; but I'm the only name on it, so today production is one person, not two. Adding you is about five minutes and it's the single biggest control we're missing.</li>
+            <li><strong>Be the second approver on production.</strong> The gate is live and admins can't bypass it, but I'm the only name on it, so today production is one person pretending to be two. Adding you takes about five minutes, and it's the biggest gap left on this list.</li>
             <li>Decide the staging database question with me: staging and every PR site share one catalog today, which is why two sites can break each other.</li>
           </ol>
         </div>
       </div>
       <div class="card card-note">
-        <p><strong>Take with you:</strong> the one-page cheat sheet, and <code>Documentation/Local-Engineering-Training-Edit-Test-and-Deploy.md</code> in the repo &mdash; the long version, including nine specific traps and what to do about each. The separate open-issues list is for DevOps.</p>
+        <p><strong>Take with you:</strong> the one-page cheat sheet, and <code>Documentation/Local-Engineering-Training-Edit-Test-and-Deploy.md</code> in the repo. That is the long version, including nine specific traps and what to do about each. The separate open-issues list is for DevOps.</p>
       </div>
-      <p class="lede">The pipeline's job is to make a change boring. If any part of it still feels like a risk, that's a bug &mdash; tell me.</p>
+      <p class="lede">The pipeline's job is to make a change boring. If any part of it still feels like a risk, that's a bug. Tell me.</p>
     </div>
   </section>
 

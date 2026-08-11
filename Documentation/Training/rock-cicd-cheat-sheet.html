@@ -260,7 +260,7 @@
 <div class="sheet">
 
   <header class="masthead">
-    <h1>Rock CI/CD &mdash; one page</h1>
+    <h1>Rock CI/CD on one page</h1>
     <div class="masthead-note">
       <span class="mono">github.com/passiondev/Rock</span><br>
       Full guide: <code>Documentation/Local-Engineering-Training-Edit-Test-and-Deploy.md</code>
@@ -269,7 +269,7 @@
 
   <div class="rule">
     <span class="rule-label">The one rule</span>
-    <span class="rule-text">Branch from <code>passion-18.4.1</code> and open your PR <strong>into</strong> <code>passion-18.4.1</code>. Any other base branch and the robot silently ignores you &mdash; no error, no test site.</span>
+    <span class="rule-text">Branch from <code>passion-18.4.1</code> and open your PR <strong>into</strong> <code>passion-18.4.1</code>. Any other base branch and the robot silently ignores you: no error, no test site.</span>
   </div>
 
   <div class="cols">
@@ -282,7 +282,7 @@
         <b>3.</b> Open PR, base <code>passion-18.4.1</code> <span class="arrow">&rarr;</span>
         <b>4.</b> Add <span class="tag tag-do">rock:start</span> <span class="arrow">&rarr;</span>
         <b>5.</b> Wait ~30 min <span class="arrow">&rarr;</span>
-        <b>6.</b> Open the URL in the bot's comment <span class="arrow">&rarr;</span>
+        <b>6.</b> Open the URL in the robot's comment <span class="arrow">&rarr;</span>
         <b>7.</b> Get a review, merge <span class="arrow">&rarr;</span>
         <b>8.</b> Add <span class="tag tag-do">rock:destroy</span> when done
       </p>
@@ -301,7 +301,7 @@
     </section>
 
     <section>
-      <h2>Labels the robot sets &mdash; don't touch</h2>
+      <h2>Labels the robot sets (don't touch)</h2>
       <p>
         <span class="tag tag-state">queued</span>
         <span class="tag tag-state">building</span>
@@ -322,11 +322,11 @@
           <tr><td class="k"><strong>Production</strong></td><td>manual <em>Deploy Production</em> run + a named reviewer's approval. Nothing merges here.</td></tr>
         </tbody>
       </table>
-      <p>No VPN &mdash; these open from anywhere, on a phone too. <code>staging</code> and <code>pr-4</code> have
+      <p>No VPN needed. These open from anywhere, on a phone too. <code>staging</code> and <code>pr-4</code> have
       real Let's Encrypt certificates, so no warning. A <strong>brand-new</strong> PR environment starts on a
-      self-signed placeholder until the weekly renewal issues one for its host name &mdash; that warning is
+      self-signed placeholder until the weekly renewal issues one for its host name. That warning is
       expected and safe to click through for <code>*.rock-dev.connect.passion.team</code> only.</p>
-      <p>Expect a <strong>slow first load</strong> &mdash; one to two minutes &mdash; while Rock runs its
+      <p>Expect a <strong>slow first load</strong>, one to two minutes, while Rock runs its
       migrations and warms its caches. Every load after that is well under a second. Reload once, and wait
       it out, before reporting anything.</p>
       <p>It goes cold again after <strong>20 minutes</strong> of nobody touching it, so a site that was
@@ -335,7 +335,7 @@
     </section>
 
     <section>
-      <h2>Cleanup &mdash; partly on you</h2>
+      <h2>Cleanup: partly on you</h2>
       <ul class="bare">
         <li><strong>Merged PR</strong> &rarr; environment destroyed</li>
         <li><strong>Closed, not merged</strong> &rarr; stopped, files kept</li>
@@ -344,12 +344,12 @@
     </section>
 
     <section>
-      <h2>Timing &mdash; so it doesn't feel broken</h2>
+      <h2>Timing, so it doesn't feel broken</h2>
       <table>
         <tbody>
           <tr><td class="k">~25 min</td><td>Compile Rock + build both Vue workspaces on a fresh Windows runner</td></tr>
           <tr><td class="k">~5&ndash;10 min</td><td>Package, upload, install, then wait for the site to answer</td></tr>
-          <tr><td class="k">First load</td><td>Slow &mdash; Rock applies migrations on first request, and it can take a few minutes. Reload once.</td></tr>
+          <tr><td class="k">First load</td><td>Slow. Rock applies migrations on first request, and it can take a few minutes. Reload once.</td></tr>
         </tbody>
       </table>
     </section>
@@ -359,7 +359,7 @@
       <ol>
         <li>Is the PR's base branch <code>passion-18.4.1</code>?</li>
         <li>Every page 500ing? Open staging. If it's broken too, it isn't your change.</li>
-        <li>Is the file actually in your PR's <strong>Files changed</strong> tab?</li>
+        <li>Is the file in your PR's <strong>Files changed</strong> tab?</li>
         <li>Changed LESS? Recompile: <em>Admin &rarr; CMS &rarr; Themes</em>. Then hard-refresh.</li>
         <li>Still stale? Hard-refresh (<code>Cmd-Shift-R</code>).</li>
       </ol>
@@ -367,7 +367,7 @@
 
     <section>
       <h2>Not everything is a file</h2>
-      <p>HTML Content block text, page names and routes, Lava in block settings, workflows and reports live in the <strong>database</strong>. You change those in the Rock admin UI on the live site &mdash; this pipeline only moves files. Unsure? Ask before you start.</p>
+      <p>HTML Content block text, page names and routes, Lava in block settings, workflows and reports live in the <strong>database</strong>. You change those in the Rock admin UI on the live site. This pipeline only moves files. Unsure? Ask before you start.</p>
     </section>
 
     <section>
@@ -376,19 +376,19 @@
     </section>
 
     <section>
-      <h2 style="border-color: var(--was)">Two things that actually matter</h2>
+      <h2 style="border-color: var(--was)">Two ways to cause real damage</h2>
       <div class="warn">
-        <p><strong>The repo is public.</strong> Rock is open source and our fork is too. Never commit a password, connection string, API key, or any export with member names, emails, phones or giving data. Deleting it later does not remove it from history &mdash; tell DevOps so the credential gets rotated.</p>
-        <p style="margin-top:.35rem"><strong>A migration in your PR touches the shared database.</strong> Tell DevOps <em>before</em> you apply <code>rock:start</code> &mdash; it runs against the sandbox everyone else is using, and it is not something you can take back.</p>
+        <p><strong>The repo is public.</strong> Rock is open source and our fork is too. Never commit a password, connection string, API key, or any export with member names, emails, phones or giving data. Deleting it later does not remove it from history. Tell DevOps so the credential gets rotated.</p>
+        <p style="margin-top:.35rem"><strong>A migration in your PR touches the shared database.</strong> Tell DevOps <em>before</em> you apply <code>rock:start</code>. It runs against the sandbox everyone else is using, and you can't take it back.</p>
       </div>
     </section>
 
   </div>
 
   <div class="foot">
-    <span>Trunk branch: <code>passion-18.4.1</code> &mdash; the repo default, and what staging builds from</span>
+    <span>Trunk branch: <code>passion-18.4.1</code>, the repo default and what staging builds from</span>
     <span>Base branch is set by <code>.github/pr-test-environments.json</code></span>
-    <span>Never open a PR against <code>develop</code> &mdash; it is our older line, not a mirror of upstream</span>
+    <span>Never open a PR against <code>develop</code>. It is our older line, not a mirror of upstream</span>
     <span>Verified 2026-08-10</span>
   </div>
 
