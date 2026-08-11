@@ -18,6 +18,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEPLOY_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Deploy-RockEnvironment.ps1"
 QUEUE_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
 TASK_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Install-PrEnvironmentCommandQueueTask.ps1"
+RENEWAL_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCertificateRenewal.ps1"
 BOOTSTRAP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-bootstrap-command-queue.yml"
 ARTIFACT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-artifact.yml"
 COMMAND_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "env-deploy-command.yml"
@@ -150,6 +151,67 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         self.assertIn("Get-WebAppPoolState", text)
         self.assertNotIn("Restart-Computer", text)
         self.assertNotIn("iisreset", text.lower())
+
+
+class CertificateSelectionTests(unittest.TestCase):
+    """The deploy script rebinds an SSL certificate on every run, so its choice of
+    certificate silently decides whether renewal is durable or pointless."""
+
+    def test_deploy_prefers_a_ca_issued_certificate_over_the_self_signed_placeholder(self):
+        """This was a real, long-lived outage of trust. The placeholder is minted for
+        two years and a Let's Encrypt certificate lasts ninety days, so ranking
+        candidates by NotAfter alone made the placeholder win forever: renewal would
+        bind a real certificate and the very next deploy would quietly rebind the
+        self-signed one. Measured 2026-08-10 -- pr-4 served a real certificate at
+        16:57 UTC and was self-signed again after its 19:44 redeploy. A self-signed
+        certificate is its own issuer, which is what the ranking keys on."""
+        text = DEPLOY_SCRIPT.read_text()
+        selector = text.split("function Get-EnvironmentCertificateThumbprint", 1)[1]
+        selector = selector.split("\nfunction ", 1)[0]
+
+        self.assertIn("$_.Issuer -eq $_.Subject", selector)
+
+        issuer_rank = selector.index("$_.Issuer -eq $_.Subject")
+        not_after_rank = selector.index("$_.NotAfter }; Descending")
+        self.assertLess(
+            issuer_rank,
+            not_after_rank,
+            "issuer trust must be the primary sort key, expiry only the tie-breaker",
+        )
+
+    def test_deploy_never_binds_an_already_expired_certificate(self):
+        text = DEPLOY_SCRIPT.read_text()
+        selector = text.split("function Get-EnvironmentCertificateThumbprint", 1)[1]
+        selector = selector.split("\nfunction ", 1)[0]
+        self.assertIn("$_.NotAfter -gt (Get-Date)", selector)
+
+    def test_renewal_also_covers_in_place_environments_like_staging(self):
+        """In-place environments keep their manifest outside $EnvironmentRoot on
+        purpose, so a renewal that walked only that one tree could never see staging
+        -- and never did. Renewal already stops W3SVC service-wide for the HTTP-01
+        challenge, so those sites were taking the downtime without getting a
+        certificate for it."""
+        text = RENEWAL_SCRIPT.read_text()
+        self.assertIn("$AdditionalManifestRoots", text)
+        self.assertIn(r"C:\RockBackups", text)
+
+        discovery = text.split("function Get-DeployedPrEnvironmentManifests", 1)[1]
+        discovery = discovery.split("\nfunction ", 1)[0]
+        self.assertIn("$AdditionalManifestRoots", discovery)
+        # Backup siblings of that manifest are timestamped copies of the site.
+        # Recursing into them would bind certificates from stale manifests.
+        additional = discovery.split("foreach ($additionalRoot", 1)[1]
+        self.assertNotIn("-Recurse", additional)
+
+    def test_renewal_that_finds_nothing_says_so_instead_of_passing_quietly(self):
+        """A clean exit over an empty VM is indistinguishable from a successful
+        renewal in the command result. That ambiguity is why staging went months
+        untrusted while every run reported success."""
+        text = RENEWAL_SCRIPT.read_text()
+        self.assertIn("RENEWAL ISSUED NOTHING", text)
+        self.assertIn("Write-Warning", text)
+        # The scope line names the hosts, so a log proves what was actually touched.
+        self.assertIn("Renewal scope:", text)
 
 
 class CommandQueueTests(unittest.TestCase):

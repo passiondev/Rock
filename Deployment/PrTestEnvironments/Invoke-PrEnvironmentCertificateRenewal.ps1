@@ -15,6 +15,15 @@ param(
     [string]
     $EnvironmentRoot = "C:\RockTestEnvs",
 
+    # In-place environments such as staging keep their manifest outside
+    # $EnvironmentRoot on purpose, so walking that one tree missed them entirely
+    # and staging was never issued a certificate. Renewal already stops W3SVC
+    # service-wide for the HTTP-01 challenge, so including these sites costs no
+    # downtime that the PR environments were not already causing them.
+    [Parameter(Mandatory = $false)]
+    [string[]]
+    $AdditionalManifestRoots = @("C:\RockBackups"),
+
     [Parameter(Mandatory = $false)]
     [string]
     $DeployRoot = "C:\RockDeploy",
@@ -61,13 +70,31 @@ function Ensure-WinAcme {
 }
 
 function Get-DeployedPrEnvironmentManifests {
-    if (!(Test-Path $EnvironmentRoot)) { return @() }
+    $manifestPaths = @()
 
-    return @(Get-ChildItem -Path $EnvironmentRoot -Filter env.json -Recurse -ErrorAction SilentlyContinue |
+    if (Test-Path $EnvironmentRoot) {
+        $manifestPaths += @(Get-ChildItem -Path $EnvironmentRoot -Filter env.json -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName)
+    }
+
+    # Only direct children here, never -Recurse: an in-place environment keeps its
+    # manifest at <root>\<name>\env.json while its siblings are timestamped site
+    # backups. Recursing would pull stale manifests out of those backups and bind
+    # certificates from them.
+    foreach ($additionalRoot in $AdditionalManifestRoots) {
+        if ([string]::IsNullOrWhiteSpace($additionalRoot) -or !(Test-Path $additionalRoot)) { continue }
+        $manifestPaths += @(Get-ChildItem -Path $additionalRoot -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'env.json' } |
+            Where-Object { Test-Path $_ })
+    }
+
+    return @($manifestPaths |
         ForEach-Object {
-            try { Get-Content -Raw -Path $_.FullName | ConvertFrom-Json } catch { $null }
+            try { Get-Content -Raw -Path $_ | ConvertFrom-Json } catch { $null }
         } |
-        Where-Object { $null -ne $_ -and $_.status -eq 'deployed' -and ![string]::IsNullOrWhiteSpace($_.hostName) })
+        Where-Object { $null -ne $_ -and $_.status -eq 'deployed' -and ![string]::IsNullOrWhiteSpace($_.hostName) } |
+        Group-Object -Property hostName |
+        ForEach-Object { $_.Group | Select-Object -First 1 })
 }
 
 function Get-UsableLetsEncryptCertificate {
@@ -168,9 +195,14 @@ function Bind-CertificateToSite {
 Ensure-WinAcme
 $manifests = @(Get-DeployedPrEnvironmentManifests)
 if (@($manifests).Length -eq 0) {
-    Write-Host "No deployed PR environments found under $EnvironmentRoot."
+    # Say this loudly and name every root that was searched. A silent early
+    # return here is indistinguishable from a successful renewal in the command
+    # result, which is exactly how staging went months without a certificate.
+    Write-Warning "RENEWAL ISSUED NOTHING: no manifest with status 'deployed' was found under any of: $($EnvironmentRoot), $($AdditionalManifestRoots -join ', '). No certificate was requested or bound."
     return
 }
+
+Write-Host "Renewal scope: $(@($manifests).Length) host(s) -- $(($manifests | ForEach-Object { $_.hostName }) -join ', ')"
 
 $hostsNeedingCertificate = @()
 foreach ($manifest in $manifests) {

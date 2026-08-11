@@ -360,14 +360,33 @@ function Get-EnvironmentCertificateThumbprint {
     if (![string]::IsNullOrWhiteSpace($Thumbprint)) { return $Thumbprint }
 
     $domain = ($HostHeader -replace '^[^.]+\.', '*.')
-    $cert = Get-ChildItem Cert:\LocalMachine\My |
+    $candidates = @(Get-ChildItem Cert:\LocalMachine\My |
         Where-Object { ($_.DnsNameList -contains $HostHeader) -or ($_.DnsNameList -contains $domain) -or ($_.Subject -eq "CN=$domain") } |
-        Sort-Object NotAfter -Descending |
+        Where-Object { $_.NotAfter -gt (Get-Date) })
+
+    # Rank CA-issued certificates ahead of the self-signed placeholder, and only
+    # then prefer the later expiry. Sorting on NotAfter alone was a trap: the
+    # placeholder below is minted for two years while a Let's Encrypt certificate
+    # lasts ninety days, so the placeholder outranked every real certificate
+    # forever and each deploy silently rebound the site back to it. That is why
+    # certificate renewal kept reporting success and the hosts kept serving an
+    # untrusted certificate. Measured 2026-08-10: pr-4 served a real Let's Encrypt
+    # certificate at 16:57 UTC, was redeployed at 19:44, and was back on the
+    # self-signed wildcard (expiring 2028) afterwards.
+    # A self-signed certificate is its own issuer; a CA-issued one is not.
+    $cert = $candidates |
+        Sort-Object -Property @(
+            @{ Expression = { $_.Issuer -eq $_.Subject }; Ascending = $true },
+            @{ Expression = { $_.NotAfter }; Descending = $true }
+        ) |
         Select-Object -First 1
 
     if ($null -eq $cert) {
         # A self-signed placeholder keeps the HTTPS binding valid until the
-        # scheduled Let's Encrypt renewal replaces it.
+        # scheduled Let's Encrypt renewal replaces it. Kept deliberately
+        # long-lived so a run of failed renewals cannot break HTTPS outright --
+        # the ranking above, not a short expiry, is what lets the real
+        # certificate win.
         $cert = New-SelfSignedCertificate -DnsName @($domain, $HostHeader) -CertStoreLocation 'Cert:\LocalMachine\My' -FriendlyName 'Rock environments wildcard' -NotAfter (Get-Date).AddYears(2)
     }
 
