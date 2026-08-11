@@ -407,10 +407,13 @@ pending migrations before it renders anything. Cold, that measured **55 seconds*
 browser on 2026-08-11. Warm, it is instant. Fifty-five seconds of white screen while a room
 watches is the demo failing even though nothing is broken.
 
-Budget more than that if the VM has been restarted rather than merely gone idle. Measured on
-2026-08-11 on the first request after a reboot: **pr-4 53s, staging 129s.** Two minutes of
-white screen is well past what a room will sit through politely, so if anything rebooted that
-morning, warm the sites early and warm them twice.
+Budget more than that if the VM has been restarted rather than merely gone idle. Measured
+twice on 2026-08-11, on the first request after a reboot: **pr-4 53s / staging 129s**, and
+after a second reboot **pr-4 95s / staging 107s**. So call it one to two minutes per host,
+varying run to run — don't plan around the low number. Two minutes of white screen is well
+past what a room will sit through politely, so if anything rebooted that morning, warm the
+sites early and warm them twice. Both went back to well under half a second on the second
+request in every measurement.
 
 **A certificate renewal also causes a cold start**, and it is the sneakiest version of this
 because nothing looks like it changed. Renewal rebinds the certificate in IIS, which restarts
