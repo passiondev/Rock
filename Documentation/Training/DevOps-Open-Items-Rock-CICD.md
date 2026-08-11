@@ -187,12 +187,19 @@ a reason unrelated to the change being demonstrated. Do it immediately after.
 `[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }` before polling
 the site.
 
-This is deliberate and correct today — it stops item 4 from failing every deploy — but the
-consequence is that **CI can never tell us a certificate is broken.** A deploy is green
-whether the cert is valid, expired, or self-signed.
+This is deliberate and correct today — it stops item 4 from failing every deploy — and it is
+now *required*, because the probe targets `https://127.0.0.1/` and no certificate for the
+public host name will ever match that. The consequence is unchanged: **the on-VM probe can
+never tell us a certificate is broken.**
 
-Once renewal is green, split this into a separate non-blocking check that reports days to
-expiry in the run summary.
+**Partly addressed.** `env-deploy-command.yml` now reads the certificate issuer from the
+GitHub runner after every staging and production deploy, prints it in the run summary, and
+raises a `::warning::` when the site is presenting a self-signed certificate. It is
+deliberately not an error — a certificate due for renewal is not an outage, and folding trust
+into reachability means the pipeline cries wolf.
+
+Still to do: report **days to expiry** rather than just the issuer, so renewal is driven by a
+number instead of by someone noticing the warning.
 
 ### 6. Nothing reaps abandoned environments
 
@@ -607,6 +614,7 @@ example: a build cannot verify what it never attempted, and nothing in the job e
 | The `DedicatedSite` deploy path deleted the site directory wholesale and never consulted `$PreservedFiles` — only the `InPlace` path did. A deploy that supplied no connection string therefore destroyed `web.ConnectionStrings.config`, and since `web.config` binds it through a `configSource`, the site 500'd on every request including its own error page | Preserved files are stashed and restored across the replace, and `Write-RuntimeConfiguration` now throws when no connection string was supplied *and* none exists, instead of reporting that it is "leaving the existing" file in place |
 | A syntax error in a deployment script surfaced as a scheduled task dying quietly on the VM | The bootstrap workflow parses every `Deployment/PrTestEnvironments/*.ps1` before uploading any of them |
 | The one failure in the other direction: the staging deploy reported "did not become healthy within 300 seconds" three times over while the site was serving Rock normally minutes later. ASP.NET caches an `Application_Start` failure for the lifetime of the app domain, so once one probe lands on a faulted domain, every later probe re-reads that same cached exception — retrying alone can never recover. 300 seconds also fits only about four probes at `-TimeoutSec 60` plus a 10-second sleep, which is not enough to distinguish "still running migrations" from "broken" | The window is 900 seconds (still under the queue agent's 1800s command timeout and the deploy job's 60 minutes), the probe recycles the app pool after 4 minutes of failures so a poisoned domain costs one interval instead of the whole window, each attempt logs its own error, and `SecurityProtocol` is pinned to TLS 1.2 so a protocol mismatch cannot masquerade as a dead site |
+| …and the widened window still could not pass, because the probe was aimed somewhere the VM cannot reach. `Test-EnvironmentHealth` requested the environment's **public** host name from **on the VM**, and this VM cannot reliably reach its own external address. `staging-deploy.yml` had therefore never once succeeded — 0 green in 8 runs — on deploys that were serving fine. The deploy's own diagnostics caught both sides at the same instant: on-box, `https://staging.rock-dev.connect.passion.team/` → *"The underlying connection was closed: An unexpected error occurred on a send"*; off-box, the same URL → **HTTP 302 in 0.115s**. Production CD would have hit this identically on its first real run, since both go through `env-deploy-command.yml` | The probe targets `https://127.0.0.1/` with the public name in the `Host` header — same IIS site, same app pool, same app domain, so it still answers the only question a deploy can be blamed for, without DNS or the route back in. That needs `HttpWebRequest` (`Invoke-WebRequest` refuses to set the restricted `Host` header) and `AllowAutoRedirect = $false` (Rock's 302 carries an absolute `Location`, and following it would leave the loopback for the very name being avoided). Reachability from the internet is now checked from the **GitHub runner**, which can see it. Diagnostics record both vantage points, labelled — loopback failing means the application is broken; loopback passing while the public name fails means the application is fine and the problem sits in front of it |
 
 The `startup_failure` one is worth remembering specifically: a called workflow can only
 **narrow** the caller's `GITHUB_TOKEN`, never widen it. If a callee's `permissions:` requests
