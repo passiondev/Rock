@@ -237,9 +237,34 @@ currently matches. Meanwhile GitHub still shows PR #3 labelled **`rock-test:depl
 because the PR deploy path never checks (item 5a) — the two defects compound exactly as
 written, and the result is a broken environment that the pipeline reports as good.
 
+**The version split is now measured, not inferred.** `Rock.Version/AssemblySharedInfo.cs` —
+the same file `production-deploy.yml`'s version guard reads — declares:
+
+| Ref | Rock version |
+| --- | --- |
+| `passion-18.4.1` (trunk, staging) | **18.4.1** |
+| `demo/ptp-cicd-training-walkthrough` (PR #4) | **18.4.1** |
+| `pilot/pr-test-env-doc-smoke-v1761` (PR #3) | **17.6.1** |
+| `develop` | 19.0.3 |
+
+So `pr-3`'s 500 is not a vague "collision" — it is Rock **17.6.1** running against a catalog
+that Rock **18.4.1** has already migrated forward. PR #3's base branch is `develop-17.6.1`;
+PR #4's is the trunk. One shared catalog, two minor lines, and the newer one won.
+
+The corollary matters for the demo: `staging` and `pr-4` are **both 18.4.1**, so a staging
+deploy runs the identical migration set `pr-4` has already run. Staging deploys are safe for
+`pr-4` specifically because their versions match — not because the environments are isolated.
+They are not isolated. That safety lasts exactly as long as every live `pr-*` sits on the same
+minor line as the trunk.
+
 Do not "fix" `pr-3` by redeploying it and move on. Redeploying makes `pr-3` match the schema
 again and is very likely to break whichever environment currently matches instead. That is
 the whole point: there is one schema and N sites that each believe they own it.
+
+A cheap guard that needs no new database: have the PR deploy path refuse a head whose
+`AssemblySharedInfo.cs` minor differs from the default branch's — the same comparison
+`production-deploy.yml` already makes, pointed at PR environments. That converts this from a
+silent mutual corruption into a refused deploy with a clear reason.
 
 The fix is a catalog per environment. It needs a decision from Justin first, because it means
 a new repo variable (`STAGING_DB_NAME`, say) and a real database to point it at:
