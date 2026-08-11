@@ -500,25 +500,38 @@ event log on the VM, which is a DevOps task.
 Practically: **check staging, then report it** with your PR number. If both are down, say so
 — that one sentence saves an hour.
 
-### Trap 7: Plugin blocks are not in this repository at all
+### Trap 7: Plugin blocks and our themes are not on this branch at all
 
 `RockWeb/Plugins/.gitignore` consists of exactly one rule — `*/*` — so every plugin subfolder
 is ignored. That is an upstream Rock convention: plugins are treated as installed packages,
-not as source. Verified 2026-08-10: git tracks precisely two files under that directory
-(`.gitignore` and `readme.txt`), and **zero** files matching `org_passion` or `team_passion`
-anywhere in the repository. The 448 core blocks under `RockWeb/Blocks/` are tracked normally,
-so this applies only to plugins.
+not as source. Verified 2026-08-10: on `passion-18.4.1` git tracks precisely two files under
+that directory (`.gitignore` and `readme.txt`) and **zero** paths matching `org_passion` or
+`team_passion`. (They do exist on the old `develop` branch — 78 of them — which is why that
+branch cannot be deleted yet. They are just not on the branch you work from.) The 448 core
+blocks under `RockWeb/Blocks/` are tracked normally.
+
+**The same is true of our themes, which is the part that catches people out.** Verified
+2026-08-11: `RockWeb/Themes/` tracks 13 themes and every one is a stock Rock theme. `CONNECT`
+and `Checkin-Guest` — the themes that actually draw Passion's pages — are not there. So the
+sign-in page at `/page/3` and the kiosk at `/checkin` are rendered by files this branch does
+not contain, and neither does your branch. **Every page a signed-out visitor can reach on a
+test site comes from a file outside version control**, with one exception: `Http404Error.aspx`,
+Rock's "page not found". If you want a two-second check that a test URL is really running your
+branch, put a nonsense path on the end of it and look at *that* page.
 
 Two consequences, and both will surprise you:
 
 - **You cannot ship a plugin-block change through this pipeline.** There is nothing to
   commit, because the file is not tracked. Changing one is a separate, manual, server-side
   job. Ask DevOps before you start.
-- **A test site shows the _server's_ copy of a plugin, never your branch's.** Since
-  2026-08-11 the shared-asset overlay backfills `Plugins` alongside `Themes`, `Content`,
-  `Assets`, and `Styles`, so plugin pages do render on `pr-*` and `staging`. What renders is
-  whatever is installed on the test server, though. Your branch cannot change it, and two
-  open PRs cannot show two different versions of it.
+- **A test site shows the _server's_ copy of a plugin or a Passion theme, never your
+  branch's.** Since 2026-08-11 the shared-asset overlay backfills `Plugins` alongside
+  `Themes`, `Content`, `Assets`, and `Styles`, so plugin pages do render on `pr-*` and
+  `staging`. What renders is whatever is installed on the test server, though. Your branch
+  cannot change it, and two open PRs cannot show two different versions of it. The practical
+  version: **if you changed something and the test site looks identical, that is not evidence
+  your change failed to deploy** — check whether the page you are looking at is even one this
+  repository owns before you go hunting.
 
 That backfill was not a nicety. Passion's login page *is* a plugin block, so until it existed
 every test site opened on
@@ -658,7 +671,7 @@ calling the site unhealthy.
 
 For a fix to a plugin block, a full pipeline run and reboot is overkill. Because plugin
 `.ascx`/`.ascx.cs` files compile at runtime (see
-[Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)), copying the
+[Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)), copying the
 two files onto the server is a complete deploy — no MSBuild, no `iisreset`.
 
 This is **operator-only** (it requires RDP/SSH access to the production VM) and it is the
@@ -722,7 +735,8 @@ instructions do.
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
 | Certificate warning | Expected only on a **brand-new** environment, which starts self-signed until the weekly renewal covers its host name. `staging` and existing `pr-*` hosts hold real Let's Encrypt certificates (measured 2026-08-11, after a deploy) | Click through for `*.rock-dev.connect.passion.team` only. Report it if you see it on an established host, or on any *other* domain |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
-| A plugin page looks wrong on a test site, or shows `Error Loading Block` | Plugin blocks are not in the repo; test sites borrow the server's copy through the overlay ([Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)) | Not a bug in your PR, and your branch cannot fix it. Verify that page in production instead, and talk to DevOps |
+| The page looks exactly the same as before my change | Very likely the page is drawn by a file this branch does not contain — the sign-in page, `/checkin`, and anything on the `CONNECT` theme all are ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Add a nonsense path to the test URL and look at the 404 page. It is the one page a signed-out visitor sees that comes from this branch, so it tells you whether your build actually deployed |
+| A plugin page looks wrong on a test site, or shows `Error Loading Block` | Plugin blocks are not in the repo; test sites borrow the server's copy through the overlay ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Not a bug in your PR, and your branch cannot fix it. Verify that page in production instead, and talk to DevOps |
 | Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
 | Test data vanished | Nightly sandbox refresh ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Recreate it; don't build multi-day scenarios |
 | Data I didn't create | Shared sandbox DB ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Expected. Ask in team chat if it's blocking |

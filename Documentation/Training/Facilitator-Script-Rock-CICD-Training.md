@@ -200,6 +200,13 @@ Slide 13's table answers "why does it take so long" before it's asked. The line 
 > exists after a build. That's why 'just copy the files up' doesn't work. Half the site isn't
 > in the files."
 
+**Promise them the receipt here, then pay it off in the demo.** Say that at 0:42 you will show
+them the compiled file that a MacBook cannot produce, and leave it at that — don't open the tab
+yet. It is step 5b of the demo runbook: one line changed in a `.obs` Vue component, and the
+string comes back out of
+`pr-4.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`. Setting it up here
+and closing it there is what turns this slide from an assertion into a demonstration.
+
 Slide 14, reason 3 is for the Technology Director: credentials live in GitHub secrets and are
 only ever read by a build. They never land on anyone's laptop.
 
@@ -229,6 +236,11 @@ version of this line said 30 minutes and no recent run has come in under 40.
 > now. Loading it here means it is warm when you switch to it at 0:42 instead of showing the
 > room a 60-second white screen. It loads while you talk through this segment. See the
 > morning-of checklist for the measurement behind this.
+>
+> Warm the two tabs the demo actually uses, not just the home page — the same app pool serves
+> all of them, so one request warms the site, but having them already open saves fumbling:
+> `pr-4.rock-dev.connect.passion.team/this-page-does-not-exist` and
+> `staging.rock-dev.connect.passion.team/this-page-does-not-exist`.
 
 Slide 15's table is the mental model for the whole hour. Walk the rows in order — PR,
 staging, production — and note that the first two share a sandbox database.
@@ -294,10 +306,18 @@ ahead of it is what makes the rest credible:
 > "Parts of this were reporting green while being broken. The test server had been powered
 > off for three months. The build was looking for Visual Studio in a folder that no longer
 > existed. Failures were being forced green. The compiled block JavaScript was never built at
-> all — so every test site had zero working Obsidian blocks. And the deploy was overwriting
-> the exact theme files people were trying to test. Five separate bugs, all fixed, all with
-> tests that fail if they come back. There's a written list of what's still open, and DevOps
-> has it."
+> all — so every test site had zero working Obsidian blocks. The deploy was overwriting
+> the exact theme files people were trying to test. And until this morning no test site had a
+> working login page at all, because our login block is a plugin and plugins aren't in the
+> repository — the deploy reported success while the landing page said *Error Loading Block*.
+> Six separate bugs, all fixed, all with tests that fail if they come back. There's a written
+> list of what's still open, and DevOps has it."
+
+That last one is the strongest item on the list, so don't rush past it. It is the clearest
+example of the thing this whole hour is arguing for: a health check that accepts any HTTP 200
+cannot tell a page from an error message, which is why "the deploy went green" is not the same
+claim as "the site works." If someone asks whether the health check has been tightened — no,
+not yet, and it is on the open list rather than quietly forgotten.
 
 Close on slide 20: two asks for the team, three for DevOps. End on the last line — *the
 pipeline's job is to make a change boring.*
@@ -580,6 +600,20 @@ Say "I don't know, I'll find out" rather than improvising. These are the plausib
 
   *(Earlier drafts of this script said the reviewer list "doesn't exist yet." That was true when
   written and is not true now; don't say it.)*
+
+- **"I made a change, it deployed, and the page looks exactly the same. What did I do wrong?"**
+  Probably nothing, and this is the single most useful thing the local team can take away from
+  the hour, so volunteer it rather than waiting to be asked. Passion's Rock is not all in this
+  repository: the sign-in page is drawn by `Themes/CONNECT/Layouts/Splash.aspx`, `/checkin` by
+  `Themes/Checkin-Guest`, and the login box itself is a plugin block under
+  `Plugins/org_passion/`. None of those are version controlled here, so no branch can change
+  them and a test site always shows the *server's* copy. The consequence to state out loud:
+  **on a test site, "it looks the same" is not evidence that your change did not deploy.** The
+  check that does work is a nonsense path — `.../this-page-does-not-exist` — because Rock's 404
+  page is the one page a signed-out visitor sees that this repository actually owns. That is
+  precisely why the demo's banner is on a 404 rather than the home page, and it is the honest
+  answer to "so which parts *can* I change?": core blocks, the upstream themes, the Obsidian
+  components, the C# — everything except the pages people actually look at first.
 
 - **"Why is the test site so slow? / It was fast earlier and now it isn't."** Very likely, and
   it may happen live during the demo. Nothing is broken. The server shuts a site down after
