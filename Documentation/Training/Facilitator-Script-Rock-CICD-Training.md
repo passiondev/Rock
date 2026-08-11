@@ -65,7 +65,7 @@ five minutes" and every reference after it silently pointed one slide too far.
 | 6 | The fork | We didn't write Rock. We forked it. |
 | 7 | The fork | A fork is a two-way street. Both directions have rules. |
 | 8 | Version branches | The trunk is named after the Rock version it runs. |
-| 9 | Version branches | How the next upgrade happens. |
+| 9 | Version branches | How the move to Rock 19 happens. |
 | 10 | Making changes | One decision matters more than all the rest: the base branch. |
 | 11 | Making changes | Labels are buttons. That's the whole control panel. |
 | 12 | Making changes | Why a pull request, even for a one-word typo. |
@@ -165,7 +165,18 @@ and on the servers — never in the code.
 Short segment. The one thing they must take away: **don't memorize `passion-18.4.1`.** Read
 the default branch, or read `.github/pr-test-environments.json`. It changes at every upgrade.
 
-Slide 9 is cuttable. It exists so next year's branch names aren't a surprise.
+Slide 9 is cuttable. It exists so the branch names aren't a surprise when the trunk moves to
+Rock 19.
+
+**Do not let slide 9 imply the Rock 19 upgrade is a decided plan running through this
+pipeline.** It isn't, and the slide says so. If it comes up, the honest answer is: Rock 19 is
+the next upgrade, Spark's newest 19 tag today is `19.3.4`, and whether we take it through
+this repo or by hand the way 18.4 was done is still open. Point that question at DevOps and
+the Technology Director rather than answering it in the room.
+
+The related thing worth saying out loud, because someone will spot it: `develop` is *already*
+a 19 line (19.0.3) and it holds our 78 plugin files. So the Rock 19 move and the `develop`
+reconciliation are not independent. Don't design that on the fly here.
 
 ### 0:22 — Making changes (slides 10–12, 8 min)
 

@@ -779,18 +779,20 @@
   <section class="slide" id="s9">
     <div class="eyebrow"><span class="eyebrow-num">03</span><span class="eyebrow-text">Version branches</span></div>
     <div class="body">
-      <h2>How the next upgrade happens.</h2>
-      <p class="lede">You will not do this. It's here so the branch names you'll see next year make sense.</p>
+      <h2>How the move to Rock 19 happens.</h2>
+      <p class="lede">Our next upgrade is Rock 19. You will not run this yourself. It's here so the branch names make sense when they change under you.</p>
       <ol>
-        <li>Fetch from <code>upstream</code> so we have Spark's tags for the new release.</li>
-        <li>Cut <code>passion-18.5</code> from the upstream tag for that release.</li>
+        <li>Fetch from <code>upstream</code> so we have Spark's tags for the 19 release we're taking.</li>
+        <li>Cut the new trunk from that tag and name it after it. Spark's newest 19 tag today is <code>19.3.4</code>, so it would be <code>passion-19.3.4</code>.</li>
         <li>Replay our own work onto it and fix what conflicts.</li>
         <li>Point <code>.github/pr-test-environments.json</code> at the new branch. <strong>One file decides which base branch gets test environments.</strong></li>
         <li>Make it the repo default. Deploy it to staging. Live on staging until it's boring.</li>
         <li>Deploy to production. Retire the old trunk.</li>
       </ol>
       <div class="card card-note">
-        <p>The practical consequence for you: <strong>the branch you target changes on every upgrade.</strong> Don't memorize <code>passion-18.4.1</code>. Read the default branch, or read that one config file.</p>
+        <p><strong>Whether Rock 19 actually goes through this pipeline is still open.</strong> The steps above are what it looks like if it does. It could equally be done by hand, the way Rock 18.4 was, and that's a call to make with DevOps rather than assume here.</p>
+        <p style="margin-top:.5rem">Worth knowing before someone asks: <code>develop</code> is already a 19 line (19.0.3), and it's where our 78 plugin files live. So the Rock 19 move and the <code>develop</code> reconciliation from the fork slide overlap. Whether that's one job or two is a real decision, not a detail.</p>
+        <p style="margin-top:.5rem">Either way the consequence for you is the same: <strong>the branch you target changes on every upgrade.</strong> Don't memorize <code>passion-18.4.1</code>. Read the default branch, or read that one config file.</p>
       </div>
     </div>
   </section>
