@@ -37,15 +37,15 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const commandLabel = 'rock-test:start';
-            const autoLabel = 'rock-test:auto';
+            const commandLabel = 'rock:start';
+            const autoLabel = 'rock:auto';
             const stateLabels = [
-              'rock-test:queued',
-              'rock-test:building',
-              'rock-test:deploying',
-              'rock-test:deployed',
-              'rock-test:stopped',
-              'rock-test:failed'
+              'rock:queued',
+              'rock:building',
+              'rock:deploying',
+              'rock:deployed',
+              'rock:stopped',
+              'rock:failed'
             ];
 
             let pull;
@@ -65,7 +65,7 @@ jobs:
               if (context.payload.action === 'synchronize') {
                 const hasAutoRedeploy = pull.labels.some(label => label.name === autoLabel);
                 if (!hasAutoRedeploy) {
-                  core.info(`PR does not have rock-test:auto; skipping automatic redeploy for ${pull.number}.`);
+                  core.info(`PR does not have rock:auto; skipping automatic redeploy for ${pull.number}.`);
                   core.setOutput('should_deploy', 'false');
                   return;
                 }
@@ -109,7 +109,7 @@ jobs:
               }
             }
 
-            await github.rest.issues.addLabels({ owner, repo, issue_number: pull.number, labels: ['rock-test:queued'] });
+            await github.rest.issues.addLabels({ owner, repo, issue_number: pull.number, labels: ['rock:queued'] });
 
             const hostName = `pr-${pull.number}.${environmentDomain}`;
             core.setOutput('should_deploy', 'true');
@@ -130,11 +130,11 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = Number('${{ needs.prepare.outputs.pr_number }}');
-            for (const label of ['rock-test:queued', 'rock-test:deployed', 'rock-test:failed']) {
+            for (const label of ['rock:queued', 'rock:deployed', 'rock:failed']) {
               try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
               catch (error) { if (error.status !== 404) throw error; }
             }
-            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock-test:building'] });
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock:building'] });
 
   build:
     name: Build deployable artifact
@@ -160,11 +160,11 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = Number('${{ needs.prepare.outputs.pr_number }}');
-            for (const label of ['rock-test:queued', 'rock-test:building', 'rock-test:deployed', 'rock-test:failed']) {
+            for (const label of ['rock:queued', 'rock:building', 'rock:deployed', 'rock:failed']) {
               try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
               catch (error) { if (error.status !== 404) throw error; }
             }
-            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock-test:deploying'] });
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock:deploying'] });
 
   deploy:
     name: Queue deployment command

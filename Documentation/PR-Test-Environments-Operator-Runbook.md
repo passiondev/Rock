@@ -48,8 +48,8 @@ The script writes maintenance state to `C:\RockTestEnvs\maintenance.json` and lo
 
 ## Manual recovery
 
-- Stuck deploying: cancel stale GitHub Actions runs, then rerun with `rock-test:start`.
-- IIS state mismatch: run `Destroy-PrEnvironment.ps1 -PrNumber <n>`, then re-add `rock-test:start`.
+- Stuck deploying: cancel stale GitHub Actions runs, then rerun with `rock:start`.
+- IIS state mismatch: run `Destroy-PrEnvironment.ps1 -PrNumber <n>`, then re-add `rock:start`.
 - Cleanup dry run: `Invoke-PrEnvironmentCleanup.ps1 -WhatIf`.
 - Certificate/DNS issues: verify Cloudflare wildcard record, IIS certificate binding on `*:443:<host>`, and the weekly renewal workflow. No VPN allowlist is involved -- 443 is public via `https-from-world`.
 
@@ -57,7 +57,7 @@ The script writes maintenance state to `C:\RockTestEnvs\maintenance.json` and lo
 
 - Failed builds: inspect `.github/workflows/pr-test-artifact.yml` logs.
 - Failed deploys: inspect `.github/workflows/pr-test-deploy.yml`, command queue results, GCS artifact path, and `C:\RockDeploy` scripts.
-- Stopped environments: developers can re-add `rock-test:start`.
+- Stopped environments: developers can re-add `rock:start`.
 - Certificate warnings: expected until the certificate-selection fix reaches the VM -- every
   deploy used to rebind the self-signed placeholder over the real certificate (see open item 4).
   Measure the issuer with `openssl s_client`; a real certificate shows `O=Let's Encrypt`. If the

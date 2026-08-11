@@ -15,7 +15,7 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
 
         self.assertIn("pull_request_target", workflow["on"])
         self.assertIn("labeled", workflow["on"]["pull_request_target"]["types"])
-        self.assertIn("rock-test:start", text)
+        self.assertIn("rock:start", text)
         self.assertIn("head.repo.full_name !== context.payload.repository.full_name", text)
         self.assertIn("Skipping forked PR", text)
 
@@ -37,11 +37,11 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
         text = WORKFLOW_PATH.read_text()
 
         for label in [
-            "rock-test:queued",
-            "rock-test:building",
-            "rock-test:deploying",
-            "rock-test:deployed",
-            "rock-test:failed",
+            "rock:queued",
+            "rock:building",
+            "rock:deploying",
+            "rock:deployed",
+            "rock:failed",
         ]:
             self.assertIn(label, text)
 

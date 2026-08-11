@@ -256,7 +256,7 @@ Error"** page — HTTP 500 — on every request, and keeps doing so across app p
 (measured 500 in 29.3s, then 500 in 71.1s after a recycle). `pr-4` and `staging` on newer
 commits answer 302 from the same box at the same moment, so IIS, the binding and the
 certificate are all fine; what differs is which build's expectations the one shared schema
-currently matches. Meanwhile GitHub still shows PR #3 labelled **`rock-test:deployed`**,
+currently matches. Meanwhile GitHub still shows PR #3 labelled **`rock:deployed`**,
 because the PR deploy path never checks (item 5a) — the two defects compound exactly as
 written, and the result is a broken environment that the pipeline reports as good.
 

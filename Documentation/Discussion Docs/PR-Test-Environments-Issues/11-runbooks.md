@@ -10,10 +10,10 @@ Document how developers use PR test environments and how operators maintain the 
 
 ## Acceptance criteria
 
-- [x] Developer docs explain when to use `rock-test:start`, `rock-test:stop`, `rock-test:destroy`, and `rock-test:auto`.
+- [x] Developer docs explain when to use `rock:start`, `rock:stop`, `rock:destroy`, and `rock:auto`.
 - [x] Developer docs explain that PR sites require VPN access.
 - [x] Developer docs explain that the sandbox DB and file storage are shared and refreshed daily.
-- [x] Developer docs explain that re-adding `rock-test:start` restarts/redeploys stale environments.
+- [x] Developer docs explain that re-adding `rock:start` restarts/redeploys stale environments.
 - [x] Operator docs cover DNS, TLS certificate, firewall/VPN allowlist, SSH deploy user, GCS bucket, and GitHub secrets.
 - [x] Operator docs cover environment paths, manifests, IIS naming, logs, cleanup policy, and manual recovery.
 - [x] Operator docs cover sandbox DB refresh coordination.

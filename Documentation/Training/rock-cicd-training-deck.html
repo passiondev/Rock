@@ -821,7 +821,7 @@
           <span class="flow-arrow" aria-hidden="true">&rarr;</span>
           <div class="flow-step"><strong>Open the PR</strong><span class="mono">base: passion-18.4.1</span></div>
           <span class="flow-arrow" aria-hidden="true">&rarr;</span>
-          <div class="flow-step"><strong>Add a label</strong><span class="mono">rock-test:start</span></div>
+          <div class="flow-step"><strong>Add a label</strong><span class="mono">rock:start</span></div>
           <span class="flow-arrow" aria-hidden="true">&rarr;</span>
           <div class="flow-step"><strong>Test your own site</strong><span class="mono">~30 min later</span></div>
         </div>
@@ -841,10 +841,10 @@
           <div class="table-wrap">
             <table>
               <tbody>
-                <tr><td><span class="tag tag-do">rock-test:start</span></td><td>Build my branch and give me a site</td></tr>
-                <tr><td><span class="tag tag-do">rock-test:auto</span></td><td>Rebuild it every time I push</td></tr>
-                <tr><td><span class="tag tag-do">rock-test:stop</span></td><td>Shut it down, keep the files</td></tr>
-                <tr><td><span class="tag tag-do">rock-test:destroy</span></td><td>Delete it entirely</td></tr>
+                <tr><td><span class="tag tag-do">rock:start</span></td><td>Build my branch and give me a site</td></tr>
+                <tr><td><span class="tag tag-do">rock:auto</span></td><td>Rebuild it every time I push</td></tr>
+                <tr><td><span class="tag tag-do">rock:stop</span></td><td>Shut it down, keep the files</td></tr>
+                <tr><td><span class="tag tag-do">rock:destroy</span></td><td>Delete it entirely</td></tr>
               </tbody>
             </table>
           </div>
@@ -862,7 +862,7 @@
           <p class="card-note">They're a status light. <span class="tag tag-state">deployed</span> means your site is up and the URL is in the PR comment.</p>
         </div>
       </div>
-      <p class="card-note"><strong>Cleanup:</strong> merging the PR destroys its environment &middot; closing it without merging only <em>stops</em> it and keeps the files. Nothing else reaps anything on a timer &mdash; if you're done with an environment, add <span class="tag tag-do">rock-test:destroy</span> yourself.</p>
+      <p class="card-note"><strong>Cleanup:</strong> merging the PR destroys its environment &middot; closing it without merging only <em>stops</em> it and keeps the files. Nothing else reaps anything on a timer &mdash; if you're done with an environment, add <span class="tag tag-do">rock:destroy</span> yourself.</p>
     </div>
   </section>
 
@@ -958,7 +958,7 @@
           <tbody>
             <tr>
               <td><strong>Your PR environment</strong><br><span class="mono card-note">pr-&lt;n&gt;.rock-dev.connect.passion.team</span></td>
-              <td>add <span class="tag tag-do">rock-test:start</span></td>
+              <td>add <span class="tag tag-do">rock:start</span></td>
               <td>anyone</td>
               <td>shared sandbox</td>
             </tr>
@@ -1020,11 +1020,12 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>On the PR page</h3>
+          <p class="card-note" style="margin:-.25rem 0 .6rem"><span class="mono">github.com/passiondev/Rock/pull/4</span></p>
           <ul>
-            <li>The diff &mdash; one visible text change</li>
+            <li>The diff &mdash; four files, and where each one actually shows up</li>
             <li>The label I added, and the state labels the robot set in response</li>
             <li>The robot's status comment, with the URL</li>
-            <li>The Checks tab &mdash; every build step, with logs</li>
+            <li>The Checks tab &mdash; every build step, with logs and timings</li>
           </ul>
         </div>
         <div class="card card-server">
@@ -1036,7 +1037,7 @@
           <p class="card-note" style="margin-top:.75rem">Both are public HTTPS with real Let's Encrypt certificates &mdash; open them from your phone if you want, no warning and no VPN. Same trunk on staging, so the PR site is the only one with the change in it.</p>
         </div>
       </div>
-      <p class="card-note">Then I'll add a second commit live, so you can see <span class="tag tag-state">deployed</span> flip back to <span class="tag tag-state">building</span> the moment a push lands.</p>
+      <p class="card-note">What I am <em>not</em> going to do is start a build in front of you. It takes about twenty-five minutes, which is longer than this meeting has left &mdash; and that is the point rather than the disclaimer. The build log on the Checks tab has the real number in it.</p>
     </div>
   </section>
 

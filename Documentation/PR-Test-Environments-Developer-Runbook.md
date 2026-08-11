@@ -21,12 +21,12 @@ No VPN or office network is required: HTTPS/443 on the test VM is open to the in
 
 ## Labels
 
-- `rock-test:start` — build and deploy the latest PR head. Use this for initial deploys, redeploys, or to restart stale environments. If an environment is stopped, re-add `rock-test:start` to rebuild/redeploy and start it again.
-- `rock-test:stop` — stop the IIS site/app pool but preserve files, config, and environment state.
-- `rock-test:destroy` — remove the IIS site, app pool, files, and manifest.
-- `rock-test:auto` — opt into automatic redeploy on every new commit pushed to the PR.
+- `rock:start` — build and deploy the latest PR head. Use this for initial deploys, redeploys, or to restart stale environments. If an environment is stopped, re-add `rock:start` to rebuild/redeploy and start it again.
+- `rock:stop` — stop the IIS site/app pool but preserve files, config, and environment state.
+- `rock:destroy` — remove the IIS site, app pool, files, and manifest.
+- `rock:auto` — opt into automatic redeploy on every new commit pushed to the PR.
 
-The bot maintains state labels such as `rock-test:queued`, `rock-test:building`, `rock-test:deploying`, `rock-test:deployed`, `rock-test:stopped`, and `rock-test:failed`.
+The bot maintains state labels such as `rock:queued`, `rock:building`, `rock:deploying`, `rock:deployed`, `rock:stopped`, and `rock:failed`.
 
 ## Data model
 
@@ -40,7 +40,7 @@ A sticky PR comment shows the current status, URL, deployed SHA, logs, and comma
 
 - Failed build: open the linked GitHub Actions run from the sticky comment.
 - Failed deploy: check the deploy job logs and ask an operator to inspect `C:\RockDeploy\logs` and IIS.
-- Stopped environment: add `rock-test:start` again.
+- Stopped environment: add `rock:start` again.
 - Certificate warning: currently expected. These hosts serve a self-signed certificate
   (measured 2026-08-11); the fix is written but not yet on the VM. There is no VPN involved
   in reaching them -- port 443 is open to the internet.

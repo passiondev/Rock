@@ -11,15 +11,15 @@ class RunbookTests(unittest.TestCase):
     def test_developer_runbook_covers_commands_access_and_shared_data(self):
         text = DEV_RUNBOOK.read_text()
         for expected in [
-            'rock-test:start',
-            'rock-test:stop',
-            'rock-test:destroy',
-            'rock-test:auto',
+            'rock:start',
+            'rock:stop',
+            'rock:destroy',
+            'rock:auto',
             'VPN',
             '159.63.145.194',
             'shared sanitized sandbox database',
             'shared sandbox file storage',
-            're-add `rock-test:start`',
+            're-add `rock:start`',
         ]:
             self.assertIn(expected, text)
 
