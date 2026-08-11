@@ -279,10 +279,15 @@ Go do something else; the comment updates itself.
 https://pr-<your PR number>.rock-dev.connect.passion.team
 ```
 
-This works from anywhere — no VPN, no office network. It is ordinary public HTTPS with a real
-Let's Encrypt certificate, so you should see a normal padlock and no browser warning.
+This works from anywhere — no VPN, no office network.
 
-One thing to expect on first visit:
+Two things to expect on first visit:
+
+- **A browser certificate warning, for now.** Measured 2026-08-11: the test hosts serve a
+  self-signed certificate rather than a public one, so your browser will object. This is a
+  known open item with a fix already written, not a sign that anything is wrong with your
+  environment. Click through it once for these `*.rock-dev.connect.passion.team` hosts —
+  and nowhere else. If you see a padlock instead, the fix has landed and this note is stale.
 
 - **A very slow first page load.** Rock compiles and warms up on the first request; a
   minute or more is normal. Subsequent pages are fast. If it times out, reload once
@@ -691,7 +696,7 @@ instructions do.
 | Build succeeded but my change isn't there | A project failed to compile ([Trap 5](#trap-5-a-green-build-does-not-prove-your-code-shipped)) or, before 2026-08-10, the file was under an overlaid directory ([Trap 1](#trap-1-themes-content-assets-and-styles-used-to-get-overwritten--fixed-2026-08-10)) | Search the build log for `Warning: Failed to build`. Build failures now fail the run, so a green build really did compile |
 | URL doesn't load at all | Environment never deployed, or DNS | It is *not* VPN — these hosts are public. Confirm the status comment says `deployed`, then ask DevOps to check DNS |
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
-| Certificate warning | Unexpected — `pr-*` hosts carry real Let's Encrypt certificates | Report it. Do not click through as a matter of course; on these hosts a warning is new information |
+| Certificate warning | Currently expected — these hosts serve a self-signed certificate (measured 2026-08-11); fix written, not yet on the VM | Click through for `*.rock-dev.connect.passion.team` only. Report it if you see it on any *other* host |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
 | A plugin page is missing or broken on a test site | Plugin blocks are not in the repo, so no test environment has them ([Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)) | Not a bug in your PR. Verify that page in production instead, and talk to DevOps |
 | Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
@@ -794,17 +799,20 @@ re-diagnosing them. All verified 2026-08-10.
 
 ### Still open
 
-1. **Certificate renewal works for `pr-*` but has not yet issued one for `staging`.**
-   Measured 2026-08-10: `pr-4` serves a valid Let's Encrypt certificate issued that day
-   (expires 2026-11-08) and verifies cleanly, so the renewal path is functional — the earlier
-   revision of this document, which said renewal was failing and told readers to click
-   through warnings on every host, was wrong. `staging` is a newer host and still serves an
-   untrusted certificate. Renewal only covers environments that have an `env.json` manifest
-   marked `deployed` under `C:\RockTestEnvs`, and staging's deploys have been failing, so it
-   has not been picked up yet. Re-dispatch renewal once a staging deploy actually succeeds,
-   and confirm from the run log that it names `staging` — the run on 2026-08-10 at 17:53
-   reported `succeeded` after 90 seconds with no per-host output, which is what "found nothing
-   to do" looks like. Workflow: `.github/workflows/pr-test-renew-certificates.yml`.
+1. **Every deploy rebound the self-signed certificate over the real one.** Renewal was never
+   broken; it was being undone. Deploys rebind a certificate on every run and picked whichever
+   matching certificate expired latest — and the self-signed placeholder is minted for two
+   years while a Let's Encrypt certificate lasts ninety days, so the placeholder won every
+   time. The timeline shows it exactly: renewal put a real certificate on `pr-4` at 16:57 UTC
+   on 2026-08-10, `pr-4` was redeployed at 19:44, and it was self-signed again afterwards.
+   Renewal also could not see `staging` at all, because in-place environments keep their
+   manifest outside the tree renewal walked.
+   Both are fixed in code — the selector now ranks CA-issued certificates above self-signed
+   ones, and renewal scans the additional manifest root — but the fixes are VM-side scripts
+   and take effect only after the bootstrap workflow runs. Until then, expect the warning.
+   Verify by measuring the issuer, never by reading a run's conclusion; a run that finds
+   nothing to do now says `RENEWAL ISSUED NOTHING` instead of passing quietly.
+   Workflow: `.github/workflows/pr-test-renew-certificates.yml`.
 
 2. **The production command-queue agent is not installed yet.** Everything upstream of it —
    build, approval gate, backup, copy, health check — is proven against staging. Until the
