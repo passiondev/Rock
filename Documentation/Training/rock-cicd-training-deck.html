@@ -1116,8 +1116,9 @@
         <div class="card">
           <h3>DevOps</h3>
           <ol>
-            <li>Install the command-queue agent on the production VM, together, so the last step of the production path is proven.</li>
-            <li>Create the <code>production</code> environment with required reviewers, and get the certificate renewal green.</li>
+            <li>Install the command-queue agent on the production VM, together, so the last step of the production path is proven. It needs a stop/start window, so we schedule it rather than squeeze it in.</li>
+            <li><strong>Be the second approver on production.</strong> The gate is live and admins can't bypass it &mdash; but I'm the only name on it, so today production is one person, not two. Adding you is about five minutes and it's the single biggest control we're missing.</li>
+            <li>Decide the staging database question with me: staging and every PR site share one catalog today, which is why two sites can break each other.</li>
           </ol>
         </div>
       </div>
