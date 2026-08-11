@@ -93,13 +93,28 @@ param(
     [string]
     $SharedAssetSourcePath = $env:PR_TEST_SHARED_ASSET_SOURCE_PATH,
 
+    # Plugins is in this list because RockWeb/Plugins/.gitignore is `*/*`: not one
+    # plugin subfolder is tracked in git, so none of them ride in the build
+    # artifact. Passion's login page is a plugin block at
+    # Plugins/org_passion/Security/Login.ascx, so without this backfill staging
+    # serves "Error Loading Block: Login" as its landing page and nobody can sign
+    # in at all. Only the DedicatedSite branch below reaches the overlay, so this
+    # list has no effect on an InPlace production deploy.
     [Parameter(Mandatory = $false)]
     [string]
-    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES }),
+    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles,Plugins' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES }),
 
+    # Fifteen minutes, not five. Rock runs EF and plugin migrations on the first
+    # request after a deploy, and the pr-4 environment needed three 30-second
+    # timeouts before it answered at all. Five minutes fits about four probes,
+    # which is not enough to tell "still migrating" from "broken". This has to stay
+    # under both callers' own limits or the ceiling moves somewhere less legible:
+    # the queue agent allows 1800s for deploy-environment
+    # (Invoke-PrEnvironmentCommandQueue.ps1) and env-deploy-command.yml allows 60
+    # minutes for the whole job.
     [Parameter(Mandatory = $false)]
     [int]
-    $HealthCheckTimeoutSeconds = 300
+    $HealthCheckTimeoutSeconds = 900
 )
 
 Set-StrictMode -Version Latest
@@ -277,6 +292,23 @@ function Save-UnhealthyDiagnostics {
     catch { $lines.Add("Could not read the application logs: $($_.Exception.Message)") }
     $lines.Add("")
 
+    # Both vantage points, always, and labelled. The difference between them is the
+    # whole diagnosis: loopback failing means the application is broken, loopback
+    # passing while the public name fails means the application is fine and the
+    # problem is DNS, the certificate binding or the route in. Recording only the
+    # public one is what made an already-serving site look dead for 900 seconds.
+    $lines.Add("=== Health probes ===")
+    foreach ($probeCase in @(
+        @{ Label = "loopback  https://127.0.0.1/ (Host: $HostName)"; Url = 'https://127.0.0.1/'; HostHeader = $HostName },
+        @{ Label = "public    $Url";                                 Url = $Url;                HostHeader = '' }
+    )) {
+        $probe = Invoke-SiteProbe -Url $probeCase.Url -HostHeader $probeCase.HostHeader -TimeoutSeconds 30
+        if ($probe.Ok) { $lines.Add("$($probeCase.Label) -> HTTP $($probe.StatusCode)") }
+        elseif ($probe.StatusCode -gt 0) { $lines.Add("$($probeCase.Label) -> HTTP $($probe.StatusCode)  $($probe.Error)") }
+        else { $lines.Add("$($probeCase.Label) -> FAILED  $($probe.Error)") }
+    }
+    $lines.Add("")
+
     $lines.Add("=== Response body from the health check URL ===")
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 60 -ErrorAction SilentlyContinue
@@ -352,14 +384,33 @@ function Get-EnvironmentCertificateThumbprint {
     if (![string]::IsNullOrWhiteSpace($Thumbprint)) { return $Thumbprint }
 
     $domain = ($HostHeader -replace '^[^.]+\.', '*.')
-    $cert = Get-ChildItem Cert:\LocalMachine\My |
+    $candidates = @(Get-ChildItem Cert:\LocalMachine\My |
         Where-Object { ($_.DnsNameList -contains $HostHeader) -or ($_.DnsNameList -contains $domain) -or ($_.Subject -eq "CN=$domain") } |
-        Sort-Object NotAfter -Descending |
+        Where-Object { $_.NotAfter -gt (Get-Date) })
+
+    # Rank CA-issued certificates ahead of the self-signed placeholder, and only
+    # then prefer the later expiry. Sorting on NotAfter alone was a trap: the
+    # placeholder below is minted for two years while a Let's Encrypt certificate
+    # lasts ninety days, so the placeholder outranked every real certificate
+    # forever and each deploy silently rebound the site back to it. That is why
+    # certificate renewal kept reporting success and the hosts kept serving an
+    # untrusted certificate. Measured 2026-08-10: pr-4 served a real Let's Encrypt
+    # certificate at 16:57 UTC, was redeployed at 19:44, and was back on the
+    # self-signed wildcard (expiring 2028) afterwards.
+    # A self-signed certificate is its own issuer; a CA-issued one is not.
+    $cert = $candidates |
+        Sort-Object -Property @(
+            @{ Expression = { $_.Issuer -eq $_.Subject }; Ascending = $true },
+            @{ Expression = { $_.NotAfter }; Descending = $true }
+        ) |
         Select-Object -First 1
 
     if ($null -eq $cert) {
         # A self-signed placeholder keeps the HTTPS binding valid until the
-        # scheduled Let's Encrypt renewal replaces it.
+        # scheduled Let's Encrypt renewal replaces it. Kept deliberately
+        # long-lived so a run of failed renewals cannot break HTTPS outright --
+        # the ranking above, not a short expiry, is what lets the real
+        # certificate win.
         $cert = New-SelfSignedCertificate -DnsName @($domain, $HostHeader) -CertStoreLocation 'Cert:\LocalMachine\My' -FriendlyName 'Rock environments wildcard' -NotAfter (Get-Date).AddYears(2)
     }
 
@@ -493,35 +544,161 @@ function Write-RuntimeConfiguration {
     }
 }
 
+function Invoke-SiteProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $false)][string]$HostHeader = '',
+        [Parameter(Mandatory = $false)][int]$TimeoutSeconds = 60
+    )
+
+    # HttpWebRequest rather than Invoke-WebRequest for one reason: it can set the
+    # Host header. .NET treats Host as restricted and Invoke-WebRequest refuses it
+    # ("The 'Host' header must be modified using the appropriate property"), and
+    # without it a request to 127.0.0.1 cannot match a host-named IIS binding.
+    #
+    # AllowAutoRedirect is off deliberately. Rock answers / with a 302 to the login
+    # page and that Location is absolute -- following it would leave the loopback
+    # and go straight back out to the public name this probe exists to avoid. A 302
+    # already proves what is being asked: the app domain started and is routing.
+    $outcome = @{ Ok = $false; StatusCode = 0; Error = '' }
+
+    # Set here rather than only in the caller: the loopback probe is answered with
+    # a certificate for the public host name, so it never matches 127.0.0.1 and
+    # would fail validation on every single attempt. The diagnostics path calls
+    # this too, and it has no reason to know that.
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+    try {
+        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request.Method = 'GET'
+        $request.Timeout = $TimeoutSeconds * 1000
+        $request.ReadWriteTimeout = $TimeoutSeconds * 1000
+        $request.AllowAutoRedirect = $false
+        $request.UserAgent = 'RockDeployHealthCheck'
+        if (![string]::IsNullOrWhiteSpace($HostHeader)) { $request.Host = $HostHeader }
+
+        $response = $request.GetResponse()
+        try {
+            $outcome.StatusCode = [int]$response.StatusCode
+            $outcome.Ok = $outcome.StatusCode -lt 400
+        }
+        finally { $response.Close() }
+    }
+    catch [System.Net.WebException] {
+        # A 4xx or 5xx arrives here as an exception carrying the response, and the
+        # status on it is far more useful than the generic "remote server returned
+        # an error" message wrapped around it.
+        $failedResponse = $_.Exception.Response
+        if ($null -ne $failedResponse) {
+            try {
+                $outcome.StatusCode = [int]$failedResponse.StatusCode
+                $outcome.Ok = $outcome.StatusCode -lt 400
+            }
+            catch { }
+            try { $failedResponse.Close() } catch { }
+        }
+        $outcome.Error = $_.Exception.Message
+    }
+    catch {
+        $outcome.Error = $_.Exception.Message
+    }
+
+    return $outcome
+}
+
 function Test-EnvironmentHealth {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
-        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+
+        # The public host name, sent as the Host header on the loopback probe so it
+        # matches this environment's IIS binding.
+        [Parameter(Mandatory = $false)][string]$HostHeader = '',
+
+        # Optional so the function still works for a caller that has no app pool to
+        # recycle; when supplied it is what makes a poisoned app domain recoverable.
+        [Parameter(Mandatory = $false)][string]$AppPoolName = '',
+        [Parameter(Mandatory = $false)][int]$RecycleAfterSeconds = 240
     )
 
     # Rock runs EF and plugin migrations on first request, so the first hit after
     # a deploy can take minutes. Poll until it answers rather than declaring the
     # deploy broken because the site is still warming up.
+    #
+    # Retrying alone is not enough, and this cost a full evening to learn. ASP.NET
+    # caches an Application_Start failure for the lifetime of the app domain: once
+    # one request faults during startup, every later request is served the same
+    # cached exception until the domain is recycled. A replaced site can fault its
+    # first start for reasons that clear themselves -- stale compiled output under
+    # Temporary ASP.NET Files being the usual one -- and then the site is fine on a
+    # fresh domain while the health check sits there re-reading the cached failure
+    # until the window closes. That is what happened to staging on 2026-08-10: the
+    # deploy reported "did not become healthy within 300 seconds" three times over,
+    # and the site was serving Rock normally minutes after each supposed failure.
+    # So recycle periodically, which turns one bad domain into one lost interval.
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $lastError = 'no attempt made'
+    $lastRecycle = Get-Date
+    $attempt = 0
+
     [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    # PowerShell 5.1 on an older image can default to SSL3/TLS1.0, which a hardened
+    # IIS refuses -- and it surfaces as "The underlying connection was closed",
+    # which reads like the site is down rather than like the probe is misconfigured.
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+    # Probe the loopback, not the public name. Both are the same IIS site, the same
+    # app pool and the same app domain, so the loopback answers the only question a
+    # deploy can actually be blamed for -- did this build start up. What it does not
+    # drag in is DNS, the external address and everything between: this VM cannot
+    # reliably reach its own public IP, and on 2026-08-11 that cost 900 seconds and
+    # a red build on a deploy that was already serving.
+    #
+    #   01:04:24  on-box GET https://staging.rock-dev.connect.passion.team/
+    #             -> "The underlying connection was closed: An unexpected error
+    #                occurred on a send."  (captured in the deploy's own diagnostics)
+    #   01:04:24  the same URL from off-box -> HTTP 302 in 0.115s
+    #
+    # The site was fine for the last five minutes of a health check that never
+    # passed. Reachability from the internet is a real thing to verify, but it is
+    # not this probe's job and this is not the vantage point to verify it from --
+    # the workflow checks the public URL from the GitHub runner, which can see it.
+    $probeUrl = $Url
+    $probeHostHeader = ''
+    if (![string]::IsNullOrWhiteSpace($HostHeader)) {
+        $probeUrl = 'https://127.0.0.1/'
+        $probeHostHeader = $HostHeader
+        Write-Host "Health check probing $probeUrl with Host: $probeHostHeader (public URL $Url is verified from the runner, not from this box)."
+    }
 
     while ((Get-Date) -lt $deadline) {
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 60
-            if ([int]$response.StatusCode -lt 400) {
-                Write-Host "Health check passed: $Url returned $($response.StatusCode)."
-                return $true
+        $attempt++
+        $probe = Invoke-SiteProbe -Url $probeUrl -HostHeader $probeHostHeader -TimeoutSeconds 60
+        if ($probe.Ok) {
+            Write-Host "Health check passed: $probeUrl returned $($probe.StatusCode) on attempt $attempt."
+            return $true
+        }
+        if ($probe.StatusCode -gt 0) { $lastError = "HTTP $($probe.StatusCode)" }
+        else { $lastError = $probe.Error }
+        Write-Host "Health check attempt ${attempt}: $lastError"
+
+        if (![string]::IsNullOrWhiteSpace($AppPoolName) -and
+            ((Get-Date) - $lastRecycle).TotalSeconds -ge $RecycleAfterSeconds -and
+            (Get-Date).AddSeconds(60) -lt $deadline) {
+            Write-Host "Still unhealthy after $([int]((Get-Date) - $lastRecycle).TotalSeconds)s; recycling app pool $AppPoolName to discard any cached startup failure."
+            try {
+                Stop-EnvironmentAppPool -Name $AppPoolName
+                Start-WebAppPool -Name $AppPoolName -ErrorAction Continue
             }
-            $lastError = "HTTP $($response.StatusCode)"
+            catch { Write-Warning "Could not recycle ${AppPoolName}: $($_.Exception.Message)" }
+            $lastRecycle = Get-Date
         }
-        catch {
-            $lastError = $_.Exception.Message
-        }
+
         Start-Sleep -Seconds 10
     }
 
-    Write-Warning "Health check did not pass within $TimeoutSeconds seconds. Last error: $lastError"
+    Write-Warning "Health check did not pass within $TimeoutSeconds seconds over $attempt attempts. Last error: $lastError"
     return $false
 }
 
@@ -620,6 +797,11 @@ try {
             -DestinationRoot $SitePath `
             -DirectoryList $SharedAssetDirectories
 
+        # Again, after the overlay. The strip above ran on the extracted artifact;
+        # the overlay has since backfilled Plugins from the base site and brought
+        # that site's own bin/obj along with it.
+        Remove-PluginBuildArtifacts -Path $SitePath
+
         Write-RuntimeConfiguration -Path $SitePath -PublicRoot "https://$HostName" -Connection $ConnectionString
         Ensure-AppPool -Name $AppPoolName
         Ensure-Website -Name $SiteName -PhysicalPath $SitePath -HostHeader $HostName -PoolName $AppPoolName -Thumbprint $CertificateThumbprint
@@ -686,7 +868,7 @@ try {
 
     Write-Host "Deployed $EnvironmentName ($Sha) to https://$HostName"
 
-    if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds)) {
+    if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds -HostHeader $HostName -AppPoolName $AppPoolName)) {
         # Gather the evidence while it is still fresh, and never let a problem
         # gathering it replace the failure it was meant to explain.
         try { Save-UnhealthyDiagnostics -SiteRoot $SitePath -Url "https://$HostName/" }

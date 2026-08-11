@@ -44,7 +44,7 @@ class DeployPrEnvironmentScriptTests(unittest.TestCase):
             "SharedAssetSourcePath",
             "PR_TEST_SHARED_ASSET_SOURCE_PATH",
             "SharedAssetDirectories",
-            "Themes,Content,Assets,Styles",
+            "Themes,Content,Assets,Styles,Plugins",
             "Sync-SharedSiteAssets",
             "robocopy",
             "Get-SharedAssetSourcePath",
@@ -73,6 +73,58 @@ class DeployPrEnvironmentScriptTests(unittest.TestCase):
         self.assertNotIn("/MIR", invocation, "shared asset overlay must not mirror over the branch's own files")
         for exclusion in ["/E", "/XC", "/XN", "/XO"]:
             self.assertIn(exclusion, invocation, f"overlay must pass {exclusion} so existing files are left alone")
+
+    def test_shared_asset_overlay_backfills_plugins_so_custom_blocks_render(self):
+        """RockWeb/Plugins/.gitignore is `*/*`, so not one plugin subfolder is
+        tracked in git and none of them reach the build artifact. Passion's login
+        page is a custom plugin block at Plugins/org_passion/Security/Login.ascx,
+        so unless the overlay backfills Plugins from the base site that file is
+        simply absent and every test site serves
+
+            Error Loading Block: Login
+            The file '/Plugins/org_passion/Security/Login.ascx' does not exist.
+
+        as its landing page. That is not a cosmetic fault: /Login and /page/3 both
+        render the error, and the admin pages 302 to /page/3, so nobody can log in
+        to a PR environment at all.
+
+        The artifact ships nothing under Plugins, so /XC /XN /XO has none of the
+        branch's own files to protect here -- for this directory the overlay can
+        only ever add.
+        """
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(r"PR_TEST_SHARED_ASSET_DIRECTORIES\)\)\s*\{\s*'([^']+)'\s*\}", text)
+        self.assertIsNotNone(match, "could not find the shared asset directory default list")
+
+        directories = [entry.strip() for entry in match.group(1).split(",")]
+        self.assertIn("Plugins", directories, f"overlay default must backfill Plugins, got {directories}")
+        for existing in ["Themes", "Content", "Assets", "Styles"]:
+            self.assertIn(existing, directories, f"overlay default must still carry {existing}")
+
+    def test_plugin_build_artifacts_are_stripped_after_the_overlay(self):
+        """Remove-PluginBuildArtifacts keeps a developer's bin/obj leftovers out of
+        a deployed site. It used to run before the overlay, which was harmless
+        while the overlay could not carry Plugins at all -- now that it does, a
+        strip that runs first is a strip that runs too early, because the base
+        site's own Plugins/*/bin and Plugins/*/obj are copied in behind it. The
+        strip has to be the last thing that touches Plugins."""
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        def call_sites(name):
+            hits = [
+                index for index, line in enumerate(lines)
+                if line.lstrip().startswith(name)
+            ]
+            self.assertTrue(hits, f"no call site found for {name}")
+            return hits
+
+        overlay = call_sites("Sync-SharedSiteAssets")
+        strip = call_sites("Remove-PluginBuildArtifacts")
+        self.assertGreater(
+            max(strip), max(overlay),
+            f"the strip must follow the overlay; strip at lines {strip}, overlay at lines {overlay}",
+        )
 
 
 if __name__ == "__main__":

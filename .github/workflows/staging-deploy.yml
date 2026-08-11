@@ -19,6 +19,12 @@ name: Deploy Staging
       - 'Documentation/**'
       - '.github/ISSUE_TEMPLATE/**'
       - 'Tests/PrTestEnvironments/**'
+      # Production's orchestration cannot change what staging builds or how it
+      # runs, so editing it should not cancel an in-flight staging deploy --
+      # cancel-in-progress below means a trigger here is not merely wasteful.
+      # Deliberately this one file and not '.github/workflows/**': a change to
+      # pr-test-artifact.yml changes the artifact staging is built from.
+      - '.github/workflows/production-deploy.yml'
   workflow_dispatch:
     inputs:
       ref:

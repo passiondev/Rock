@@ -7,6 +7,8 @@ properties that make the production path safe.
 """
 
 import pathlib
+import re
+import subprocess
 import unittest
 
 import yaml
@@ -16,6 +18,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEPLOY_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Deploy-RockEnvironment.ps1"
 QUEUE_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
 TASK_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Install-PrEnvironmentCommandQueueTask.ps1"
+RENEWAL_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCertificateRenewal.ps1"
 BOOTSTRAP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-bootstrap-command-queue.yml"
 ARTIFACT_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-artifact.yml"
 COMMAND_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "env-deploy-command.yml"
@@ -31,6 +34,64 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         text = DEPLOY_SCRIPT.read_text()
         self.assertIn("[ValidateSet('DedicatedSite', 'InPlace')]", text)
         self.assertIn("$EnvironmentName", text)
+
+    def test_shared_asset_overlay_backfills_plugins_for_staging(self):
+        """Staging deploys through this script, not Deploy-PrEnvironment.ps1, so the
+        overlay default has to carry Plugins here too or staging keeps serving
+        "Error Loading Block: Login" as its landing page. RockWeb/Plugins/.gitignore
+        is `*/*`, so no plugin subfolder is in git or in the artifact, and the
+        overlay is the only mechanism that can supply org_passion/Security."""
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(r"PR_TEST_SHARED_ASSET_DIRECTORIES\)\)\s*\{\s*'([^']+)'\s*\}", text)
+        self.assertIsNotNone(match, "could not find the shared asset directory default list")
+
+        directories = [entry.strip() for entry in match.group(1).split(",")]
+        self.assertIn("Plugins", directories, f"overlay default must backfill Plugins, got {directories}")
+        for existing in ["Themes", "Content", "Assets", "Styles"]:
+            self.assertIn(existing, directories, f"overlay default must still carry {existing}")
+
+    def test_shared_asset_overlay_never_runs_against_production(self):
+        """This is what makes adding Plugins to the overlay default safe to ship
+        without a production window: the overlay is reachable only from the
+        DedicatedSite branch, and production deploys InPlace. An InPlace deploy
+        copies over a live site that already has its own Plugins tree, maintained
+        outside git -- backfilling it from another site is exactly the wrong thing
+        to do there. If this test ever fails, a change to the overlay list has
+        become a change to production."""
+        text = DEPLOY_SCRIPT.read_text()
+
+        dedicated = text.index("if ($Mode -eq 'DedicatedSite') {")
+        overlay = text.index("Sync-SharedSiteAssets `")
+        in_place = text.index("$backupPath = Join-Path", dedicated)
+
+        self.assertLess(dedicated, overlay, "overlay must sit inside the DedicatedSite branch")
+        self.assertLess(
+            overlay, in_place,
+            "overlay must run before the InPlace branch begins, i.e. it is not on the production path",
+        )
+
+    def test_plugin_build_artifacts_are_stripped_after_the_overlay(self):
+        """The strip runs on the freshly extracted artifact, which was sufficient
+        while the overlay could not carry Plugins. Now that it does, the base
+        site's Plugins/*/bin and Plugins/*/obj arrive after the strip has already
+        run, so a second strip has to follow the overlay."""
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        overlay = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Sync-SharedSiteAssets")
+        ]
+        strip = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Remove-PluginBuildArtifacts")
+        ]
+        self.assertTrue(overlay, "no call site found for Sync-SharedSiteAssets")
+        self.assertTrue(strip, "no call site found for Remove-PluginBuildArtifacts")
+        self.assertGreater(
+            max(strip), max(overlay),
+            f"a strip must follow the overlay; strip at lines {strip}, overlay at lines {overlay}",
+        )
 
     def test_in_place_deploy_is_a_dry_run_unless_apply_is_passed(self):
         """A production overwrite should never be one mistyped argument away. The
@@ -106,12 +167,109 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         self.assertIn("$HealthCheckTimeoutSeconds", text)
         self.assertIn("did not become healthy", text)
 
+    def test_health_check_recycles_the_app_pool_instead_of_only_retrying(self):
+        """ASP.NET caches an Application_Start failure for the lifetime of the app
+        domain, so a site that faults its first start after a replace serves that
+        same cached exception to every later probe. Retrying alone therefore reads a
+        stale failure until the window closes -- which is how the 2026-08-10 staging
+        deploy reported unhealthy three times over while serving Rock normally
+        minutes later. The probe has to be able to discard the bad domain."""
+        text = DEPLOY_SCRIPT.read_text()
+        self.assertIn("$RecycleAfterSeconds", text)
+        self.assertIn("-AppPoolName $AppPoolName", text)
+        health = text.split("function Test-EnvironmentHealth", 1)[1]
+        health = health.split("\nfunction ", 1)[0]
+        self.assertIn("Stop-EnvironmentAppPool", health)
+        self.assertIn("Start-WebAppPool", health)
+
+    def test_health_check_window_outlasts_rock_running_its_migrations(self):
+        """First request after a deploy runs EF and plugin migrations; the demo
+        environment needed three 30-second timeouts before answering at all. The
+        window also has to stay under the queue agent's 1800s command timeout and
+        the deploy job's 60-minute limit, or the real ceiling moves to a layer that
+        reports 'timed out' with no diagnostics."""
+        text = DEPLOY_SCRIPT.read_text()
+        match = re.search(r"\$HealthCheckTimeoutSeconds = (\d+)", text)
+        self.assertIsNotNone(match, "health check timeout default not found")
+        seconds = int(match.group(1))
+        self.assertGreaterEqual(seconds, 600)
+        self.assertLess(seconds, 1800)
+
+    def test_health_check_forces_a_modern_tls_version(self):
+        """PowerShell 5.1 can default ServicePointManager to SSL3/TLS1.0, which a
+        hardened IIS refuses. It surfaces as 'the underlying connection was closed',
+        which reads like the site is down rather than like the probe is broken."""
+        text = DEPLOY_SCRIPT.read_text()
+        self.assertIn("SecurityProtocol", text)
+        self.assertIn("Tls12", text)
+
     def test_app_pool_is_stopped_and_drained_before_files_are_replaced(self):
         text = DEPLOY_SCRIPT.read_text()
         self.assertIn("Stop-EnvironmentAppPool", text)
         self.assertIn("Get-WebAppPoolState", text)
         self.assertNotIn("Restart-Computer", text)
         self.assertNotIn("iisreset", text.lower())
+
+
+class CertificateSelectionTests(unittest.TestCase):
+    """The deploy script rebinds an SSL certificate on every run, so its choice of
+    certificate silently decides whether renewal is durable or pointless."""
+
+    def test_deploy_prefers_a_ca_issued_certificate_over_the_self_signed_placeholder(self):
+        """This was a real, long-lived outage of trust. The placeholder is minted for
+        two years and a Let's Encrypt certificate lasts ninety days, so ranking
+        candidates by NotAfter alone made the placeholder win forever: renewal would
+        bind a real certificate and the very next deploy would quietly rebind the
+        self-signed one. Measured 2026-08-10 -- pr-4 served a real certificate at
+        16:57 UTC and was self-signed again after its 19:44 redeploy. A self-signed
+        certificate is its own issuer, which is what the ranking keys on."""
+        text = DEPLOY_SCRIPT.read_text()
+        selector = text.split("function Get-EnvironmentCertificateThumbprint", 1)[1]
+        selector = selector.split("\nfunction ", 1)[0]
+
+        self.assertIn("$_.Issuer -eq $_.Subject", selector)
+
+        issuer_rank = selector.index("$_.Issuer -eq $_.Subject")
+        not_after_rank = selector.index("$_.NotAfter }; Descending")
+        self.assertLess(
+            issuer_rank,
+            not_after_rank,
+            "issuer trust must be the primary sort key, expiry only the tie-breaker",
+        )
+
+    def test_deploy_never_binds_an_already_expired_certificate(self):
+        text = DEPLOY_SCRIPT.read_text()
+        selector = text.split("function Get-EnvironmentCertificateThumbprint", 1)[1]
+        selector = selector.split("\nfunction ", 1)[0]
+        self.assertIn("$_.NotAfter -gt (Get-Date)", selector)
+
+    def test_renewal_also_covers_in_place_environments_like_staging(self):
+        """In-place environments keep their manifest outside $EnvironmentRoot on
+        purpose, so a renewal that walked only that one tree could never see staging
+        -- and never did. Renewal already stops W3SVC service-wide for the HTTP-01
+        challenge, so those sites were taking the downtime without getting a
+        certificate for it."""
+        text = RENEWAL_SCRIPT.read_text()
+        self.assertIn("$AdditionalManifestRoots", text)
+        self.assertIn(r"C:\RockBackups", text)
+
+        discovery = text.split("function Get-DeployedPrEnvironmentManifests", 1)[1]
+        discovery = discovery.split("\nfunction ", 1)[0]
+        self.assertIn("$AdditionalManifestRoots", discovery)
+        # Backup siblings of that manifest are timestamped copies of the site.
+        # Recursing into them would bind certificates from stale manifests.
+        additional = discovery.split("foreach ($additionalRoot", 1)[1]
+        self.assertNotIn("-Recurse", additional)
+
+    def test_renewal_that_finds_nothing_says_so_instead_of_passing_quietly(self):
+        """A clean exit over an empty VM is indistinguishable from a successful
+        renewal in the command result. That ambiguity is why staging went months
+        untrusted while every run reported success."""
+        text = RENEWAL_SCRIPT.read_text()
+        self.assertIn("RENEWAL ISSUED NOTHING", text)
+        self.assertIn("Write-Warning", text)
+        # The scope line names the hosts, so a log proves what was actually touched.
+        self.assertIn("Renewal scope:", text)
 
 
 class CommandQueueTests(unittest.TestCase):
@@ -271,6 +429,101 @@ class ProductionWorkflowTests(unittest.TestCase):
         a site made of two different builds."""
         workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
         self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
+
+
+class ProductionVersionGuardTests(unittest.TestCase):
+    """Branch names in this repo do not carry the Rock version, and two of them are
+    actively misleading: `develop` declares 19.0.3 and `staging` declares 17.6.1
+    while the trunk declares 18.4.1. The last production build ran from `develop`,
+    so a 19.0 artifact was produced for a site running 18.x; the only reason that
+    was not an incident is that nobody installed it. Rock migrates the database on
+    the first request after a deploy, so the guard has to read the version out of
+    the source rather than trust the ref name."""
+
+    def _guard_step(self):
+        workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+        return next(
+            s
+            for s in workflow["jobs"]["resolve"]["steps"]
+            if s.get("name") == "Refuse a ref from a different Rock version"
+        )
+
+    def test_the_guard_runs_before_anything_is_built_or_approved(self):
+        workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+        step_names = [s.get("name") for s in workflow["jobs"]["resolve"]["steps"]]
+
+        self.assertIn("Refuse a ref from a different Rock version", step_names)
+        # `resolve` is what every other job depends on, so failing here costs no
+        # build minutes and never reaches a human approver.
+        for job in ["build", "approve", "deploy"]:
+            self.assertIn("resolve", workflow["jobs"][job]["needs"] if isinstance(
+                workflow["jobs"][job].get("needs"), list) else [workflow["jobs"][job]["needs"]])
+
+    def test_the_expected_version_is_read_from_the_default_branch_not_hardcoded(self):
+        """A hardcoded version would have to be edited during every Rock upgrade, and
+        the upgrade is exactly when nobody is thinking about this file. Reading the
+        default branch means promoting the new trunk to default is enough."""
+        run = self._guard_step()["run"]
+
+        self.assertIn("github.event.repository.default_branch", run)
+        self.assertIn("Rock.Version/AssemblySharedInfo.cs", run)
+        self.assertNotRegex(
+            run,
+            r'expected_version=["\']?1[0-9]\.[0-9]',
+            "the expected Rock version is hardcoded; it must come from the default branch",
+        )
+
+    def test_a_version_mismatch_fails_the_run(self):
+        run = self._guard_step()["run"]
+
+        self.assertIn("::error::", run)
+        self.assertRegex(run, r"(?m)^\s*exit 1\s*$")
+        self.assertIn("acknowledge_version_change", run)
+
+    def test_the_acknowledgement_is_off_by_default(self):
+        workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+        ack = workflow["on"]["workflow_dispatch"]["inputs"]["acknowledge_version_change"]
+
+        self.assertFalse(ack["default"])
+        self.assertFalse(ack.get("required", False))
+
+    def test_the_guards_own_regex_reads_the_version_and_nothing_else(self):
+        """The whole control rests on one sed expression. AssemblyFileVersion,
+        AssemblyInformationalVersion, and the prose comment above them all contain
+        the word "version", so an over-broad pattern silently reads the wrong line
+        and the guard starts comparing garbage."""
+        run = self._guard_step()["run"]
+        match = re.search(r"""sed -n '([^']+)' "\$1\"""", run)
+        self.assertIsNotNone(match, "could not find the version_of sed expression in the guard")
+        expression = match.group(1)
+
+        def extract(text):
+            result = subprocess.run(
+                ["sed", "-n", expression],
+                input=text,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return result.stdout.split()
+
+        # The trunk's real file, so the fixtures below cannot drift from reality.
+        real = (REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs").read_text()
+        self.assertEqual(extract(real), ["18.4.1"])
+
+        for version, informational in [("19.0.3", "19.0"), ("17.6.1", "17.6")]:
+            fixture = (
+                "// The AssemblyVersion number should change only when we are\n"
+                "// shipping a new major or minor release.\n"
+                f'[assembly: AssemblyVersion( "{version}" )]\n'
+                f'[assembly: AssemblyFileVersion( "{version}" )]\n'
+                f'[assembly: AssemblyInformationalVersion( "Rock McKinley {informational}" )]\n'
+            )
+            self.assertEqual(
+                extract(fixture),
+                [version],
+                f"expected exactly one match for {version}; the pattern is over-broad",
+            )
 
 
 class ReusableWorkflowPermissionTests(unittest.TestCase):

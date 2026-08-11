@@ -65,7 +65,11 @@ Apply one of these labels to manage the environment:
 
 ### Access and data notes
 
-VPN/office network access is required. This environment uses a shared sanitized sandbox database and shared sandbox file storage; it isolates code/runtime, not data.
+This URL is reachable from anywhere — no VPN needed. Port 443 on the test VM is open to the public internet (firewall rule \`https-from-world\`); the office-egress restriction applies only to RDP and SQL.
+
+The first request after a deploy is slow, sometimes minutes: Rock applies its EF and plugin migrations at startup. Reload once before concluding anything is broken.
+
+This environment uses a shared sanitized sandbox database and shared sandbox file storage, so it isolates code and runtime, **not data**. Every PR environment and staging point at the same catalog — treat the data as disposable and shared, and don't rely on it to prove anything about a data change.
 `;
 }
 

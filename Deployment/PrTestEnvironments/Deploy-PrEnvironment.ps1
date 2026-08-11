@@ -43,9 +43,18 @@ param(
     [string]
     $SharedAssetSourcePath = $env:PR_TEST_SHARED_ASSET_SOURCE_PATH,
 
+    # Plugins is in this list because RockWeb/Plugins/.gitignore is `*/*`: not one
+    # plugin subfolder is tracked in git, so none of them ride in the build
+    # artifact. Passion's login page is a plugin block at
+    # Plugins/org_passion/Security/Login.ascx, so without this backfill every test
+    # site serves "Error Loading Block: Login -- The file
+    # '/Plugins/org_passion/Security/Login.ascx' does not exist" as its landing
+    # page, and that takes /Login and every admin page redirecting to it with it.
+    # Nobody can sign in to a PR environment at all. Removing Plugins from this
+    # list puts that failure straight back.
     [Parameter(Mandatory = $false)]
     [string]
-    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES })
+    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles,Plugins' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES })
 )
 
 Set-StrictMode -Version Latest
@@ -102,9 +111,24 @@ function Get-PrEnvironmentCertificateThumbprint {
     }
 
     $domain = ($HostHeader -replace '^[^.]+\.', '*.')
-    $cert = Get-ChildItem Cert:\LocalMachine\My |
+    $candidates = @(Get-ChildItem Cert:\LocalMachine\My |
         Where-Object { ($_.DnsNameList -contains $HostHeader) -or ($_.DnsNameList -contains $domain) -or ($_.Subject -eq "CN=$domain") } |
-        Sort-Object NotAfter -Descending |
+        Where-Object { $_.NotAfter -gt (Get-Date) })
+
+    # Rank CA-issued certificates ahead of the self-signed placeholder, and only
+    # then prefer the later expiry. This is the same selector as
+    # Deploy-RockEnvironment.ps1 and it is here for the same reason: the
+    # placeholder minted below lasts two years while a Let's Encrypt certificate
+    # lasts ninety days, so sorting on NotAfter alone made the placeholder win
+    # forever and every PR deploy silently rebound the site to an untrusted
+    # certificate. Measured 2026-08-11: pr-4 held a real Let's Encrypt
+    # certificate expiring 2026-11-08 while the placeholder expires 2028-05-06.
+    # A self-signed certificate is its own issuer; a CA-issued one is not.
+    $cert = $candidates |
+        Sort-Object -Property @(
+            @{ Expression = { $_.Issuer -eq $_.Subject }; Ascending = $true },
+            @{ Expression = { $_.NotAfter }; Descending = $true }
+        ) |
         Select-Object -First 1
 
     if ($null -eq $cert) {
@@ -298,9 +322,13 @@ try {
         Remove-Item $SitePath -Recurse -Force
     }
     Move-Item -Path $ExtractPath -Destination $SitePath
-    Remove-PluginBuildArtifacts -SitePath $SitePath
     $sharedAssetSource = Get-SharedAssetSourcePath -ExplicitPath $SharedAssetSourcePath
     Sync-SharedSiteAssets -SourceRoot $sharedAssetSource -DestinationRoot $SitePath -DirectoryList $SharedAssetDirectories
+
+    # After the overlay, not before it. The overlay backfills Plugins from the base
+    # site now, so stripping first would strip the artifact's build leftovers and
+    # then copy the base site's own Plugins/*/bin and Plugins/*/obj in on top.
+    Remove-PluginBuildArtifacts -SitePath $SitePath
 
     $RuntimeConfigScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "Set-PrEnvironmentRuntimeConfiguration.ps1"
     & $RuntimeConfigScript -PrNumber $PrNumber -SitePath $SitePath -EnvironmentPath $EnvironmentPath -SandboxConnectionString $SandboxConnectionString

@@ -181,8 +181,8 @@ says is what you must branch **from** and target **into**. If you target anythin
 robot will quietly do nothing — no error, no comment.
 
 `passion-18.4.1` is also the repository's **default branch**, so it is what you get by
-default when you open the repo. It matches what production runs. Re-read the file rather
-than trusting your memory — this value changes on every Rock upgrade.
+default when you open the repo, and it is the Rock version production runs. Re-read the file
+rather than trusting your memory — this value changes on every Rock upgrade.
 
 ### Step 2 — Find the file
 
@@ -269,7 +269,7 @@ comment spam. It looks like this:
 The label on the PR tracks the same thing: `queued` → `building` → `deploying` →
 `deployed`, or `failed`.
 
-**Budget about 30 minutes.** The build is the slow part — it compiles all of Rock plus
+**Budget about 40 minutes.** The build is the slow part — it compiles all of Rock plus
 three JavaScript bundles on a fresh Windows machine every time. This is normal, not stuck.
 Go do something else; the comment updates itself.
 
@@ -279,14 +279,28 @@ Go do something else; the comment updates itself.
 https://pr-<your PR number>.rock-dev.connect.passion.team
 ```
 
-This works from anywhere — no VPN, no office network. It is ordinary public HTTPS with a real
-Let's Encrypt certificate, so you should see a normal padlock and no browser warning.
+This works from anywhere — no VPN, no office network.
 
-One thing to expect on first visit:
+Two things to expect on first visit:
+
+- **A certificate warning only on a brand-new environment.** As of 2026-08-11, `staging` and
+  the existing `pr-*` hosts hold real Let's Encrypt certificates and show a normal padlock —
+  measured after a deploy, so it is not a one-off. A *newly created* PR environment is the
+  exception: it starts on a self-signed placeholder until the weekly renewal issues a
+  certificate for its host name, so a warning on a site you just spun up is expected and not a
+  sign that anything is wrong. Click through it once for these
+  `*.rock-dev.connect.passion.team` hosts — and nowhere else.
 
 - **A very slow first page load.** Rock compiles and warms up on the first request; a
   minute or more is normal. Subsequent pages are fast. If it times out, reload once
   before reporting a problem.
+
+  This happens *again* after **20 minutes** with nobody using the site — the server shuts the
+  site down when it is idle and has to start it back up on the next request. So a test site
+  that was quick this morning can be slow again this afternoon. Measured 2026-08-11: a site
+  answered in 0.2 seconds, sat untouched for about half an hour, and then took 62 seconds.
+  Nothing was wrong with it. If you are about to demo your change to somebody, open the page a
+  few minutes beforehand so they never see the slow load.
 
 ### Step 8 — Test it
 
@@ -306,7 +320,7 @@ Then either:
 - **Add `rock-test:start` again** to rebuild with your new commit. If the label is already
   on the PR, remove it and re-add it. Or
 - **Add `rock-test:auto` once**, and every future push to your branch rebuilds
-  automatically. Convenient while iterating; remember each rebuild is another ~30 minutes
+  automatically. Convenient while iterating; remember each rebuild is another ~40 minutes
   of build time, and pushing again cancels the in-flight run.
 
 ### Step 10 — Review and merge
@@ -316,13 +330,13 @@ Then either:
 
 **Merging your PR into `passion-18.4.1` deploys it to staging automatically.** It does not
 touch production, it does not reboot anything, and it does not need anyone's permission —
-but roughly 30 minutes later your change is live on
+but roughly 40 minutes later your change is live on
 <https://staging.rock-dev.connect.passion.team> for the whole team to see. That is the
 point: staging is the shared "does it work on a real server" copy, and it always shows
 what is on the trunk branch.
 
 Getting from staging to **production** is a separate, deliberate act that a person has to
-perform and a second person has to approve. Merging never triggers it. See
+perform and a named reviewer has to approve. Merging never triggers it. See
 [Part 5](#part-5--deploying-to-staging-and-production).
 
 ### Step 11 — Cleanup, and the part you have to do yourself
@@ -338,7 +352,7 @@ renewal. A stopped environment keeps its files on the test VM until a person des
 and an environment on an open PR stays running indefinitely.
 
 So when you are finished with a PR's environment, add `rock-test:destroy` yourself. If you
-stopped one and want it back, `rock-test:start` is a full rebuild — budget ~30 minutes
+stopped one and want it back, `rock-test:start` is a full rebuild — budget ~40 minutes
 rather than expecting it to pop straight back up.
 
 ---
@@ -536,7 +550,7 @@ change the base branch dropdown.
 > ### ⚠️ The one thing to remember
 >
 > **Merging to `passion-18.4.1` deploys to staging automatically. Nothing deploys to
-> production without a person choosing it and a second person approving it.**
+> production without a person choosing it and a named reviewer approving it.**
 >
 > There is no way to reach production by merging, by pushing, or by adding a label. The
 > only door is a manual run of the **Deploy Production** workflow, and that run stops and
@@ -604,7 +618,11 @@ What the deploy does on the server, in order:
 3. Stops the app pool and waits for the worker process to release its file handles.
 4. Copies the new files over the site, **preserving** `Content`, `App_Data`, `Logs`,
    `Uploads` and `web.ConnectionStrings.config`.
-5. Starts the app pool and polls the site until it answers.
+5. Starts the app pool and polls the site until it answers — over the server's own loopback,
+   with the public host name in the `Host` header. Same site, same app pool, same app domain,
+   so it proves the application started without depending on DNS or the route in from
+   outside. GitHub then loads the public URL itself, from the internet, which is the only
+   vantage point that can honestly answer "can a person actually open this".
 
 Two design decisions worth knowing:
 
@@ -691,7 +709,7 @@ instructions do.
 | Build succeeded but my change isn't there | A project failed to compile ([Trap 5](#trap-5-a-green-build-does-not-prove-your-code-shipped)) or, before 2026-08-10, the file was under an overlaid directory ([Trap 1](#trap-1-themes-content-assets-and-styles-used-to-get-overwritten--fixed-2026-08-10)) | Search the build log for `Warning: Failed to build`. Build failures now fail the run, so a green build really did compile |
 | URL doesn't load at all | Environment never deployed, or DNS | It is *not* VPN — these hosts are public. Confirm the status comment says `deployed`, then ask DevOps to check DNS |
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
-| Certificate warning | Unexpected — `pr-*` hosts carry real Let's Encrypt certificates | Report it. Do not click through as a matter of course; on these hosts a warning is new information |
+| Certificate warning | Expected only on a **brand-new** environment, which starts self-signed until the weekly renewal covers its host name. `staging` and existing `pr-*` hosts hold real Let's Encrypt certificates (measured 2026-08-11, after a deploy) | Click through for `*.rock-dev.connect.passion.team` only. Report it if you see it on an established host, or on any *other* domain |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
 | A plugin page is missing or broken on a test site | Plugin blocks are not in the repo, so no test environment has them ([Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)) | Not a bug in your PR. Verify that page in production instead, and talk to DevOps |
 | Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
@@ -794,17 +812,20 @@ re-diagnosing them. All verified 2026-08-10.
 
 ### Still open
 
-1. **Certificate renewal works for `pr-*` but has not yet issued one for `staging`.**
-   Measured 2026-08-10: `pr-4` serves a valid Let's Encrypt certificate issued that day
-   (expires 2026-11-08) and verifies cleanly, so the renewal path is functional — the earlier
-   revision of this document, which said renewal was failing and told readers to click
-   through warnings on every host, was wrong. `staging` is a newer host and still serves an
-   untrusted certificate. Renewal only covers environments that have an `env.json` manifest
-   marked `deployed` under `C:\RockTestEnvs`, and staging's deploys have been failing, so it
-   has not been picked up yet. Re-dispatch renewal once a staging deploy actually succeeds,
-   and confirm from the run log that it names `staging` — the run on 2026-08-10 at 17:53
-   reported `succeeded` after 90 seconds with no per-host output, which is what "found nothing
-   to do" looks like. Workflow: `.github/workflows/pr-test-renew-certificates.yml`.
+1. **Every deploy rebound the self-signed certificate over the real one.** Renewal was never
+   broken; it was being undone. Deploys rebind a certificate on every run and picked whichever
+   matching certificate expired latest — and the self-signed placeholder is minted for two
+   years while a Let's Encrypt certificate lasts ninety days, so the placeholder won every
+   time. The timeline shows it exactly: renewal put a real certificate on `pr-4` at 16:57 UTC
+   on 2026-08-10, `pr-4` was redeployed at 19:44, and it was self-signed again afterwards.
+   Renewal also could not see `staging` at all, because in-place environments keep their
+   manifest outside the tree renewal walked.
+   Both are fixed in code — the selector now ranks CA-issued certificates above self-signed
+   ones, and renewal scans the additional manifest root — but the fixes are VM-side scripts
+   and take effect only after the bootstrap workflow runs. Until then, expect the warning.
+   Verify by measuring the issuer, never by reading a run's conclusion; a run that finds
+   nothing to do now says `RENEWAL ISSUED NOTHING` instead of passing quietly.
+   Workflow: `.github/workflows/pr-test-renew-certificates.yml`.
 
 2. **The production command-queue agent is not installed yet.** Everything upstream of it —
    build, approval gate, backup, copy, health check — is proven against staging. Until the
@@ -812,13 +833,16 @@ re-diagnosing them. All verified 2026-08-10.
    deploy will build, gate, queue, and then time out. Being done with DevOps rather than
    unattended.
 
-3. **Which branch production should deploy *from* is genuinely unsettled.** The trunk tracks
-   2 files under `RockWeb/Plugins/`; `develop` and `staging` track 276 each. The last
-   production build ran from `develop` on 2026-05-06 and produced only an artifact — the
-   server was then updated by hand. Production will not lose its plugins either way (the copy
-   is `robocopy /E` with no `/PURGE`, so server-only files stay), but choosing a source of
-   truth needs the assembly versions read off the production box. This is why the production
-   path is built and proven but deliberately unfired.
+3. **Production deploys from the trunk, and only the trunk.** Each branch declares its own Rock
+   version: the trunk is **18.4.1**, `develop` is **19.0.3**, `staging` is **17.6.1**.
+   Production's own assemblies are 18.x — a mix of 18.1.0, 18.3.1, and 18.4.1 — so a trunk
+   deploy brings the older ones forward, which is what production needs. Deploying `develop`
+   would be a jump to Rock 19 whose database migrations cannot be walked back; the workflow
+   should refuse any ref but the trunk. The remaining real risk is narrower than the branch
+   question: production's `Rock.Migrations.dll` is 18.3.1 and the trunk's is 18.4.1, so the
+   first deploy runs the 18.3.1 → 18.4.1 migrations at startup. That needs a verified database
+   backup taken immediately beforehand, which is why the production path is built and proven
+   but deliberately unfired.
 
 4. **`GCP_COMPUTE_PROJECT_ID` is a dead secret** — no workflow references it. Worth removing
    so the secret list reflects reality.
@@ -852,9 +876,16 @@ re-diagnosing them. All verified 2026-08-10.
    before polling the site, so a deploy is green whether the certificate is valid, expired,
    or self-signed. That is deliberate — a brand-new host has no certificate until its first
    successful ACME run, so gating the health check on TLS would deadlock the very first
-   deploy of any environment (exactly staging's situation in item 1) — but it
-   means CI will never tell us the certificate is broken. Once renewal is green, this should
-   become a separate non-blocking check that reports certificate expiry.
+   deploy of any environment (exactly staging's situation in item 1). It is now also
+   unavoidable: the probe goes to `127.0.0.1`, and no certificate issued for the public host
+   name will ever match that address.
+
+   **Partly addressed.** After every staging and production deploy, GitHub reads the
+   certificate from the internet side and prints its issuer in the run summary, warning when
+   the site is presenting a self-signed one. That is a warning and not an error on purpose —
+   a certificate due for renewal is not an outage, and a pipeline that reports it as one
+   teaches people to ignore red. Still to do: report days remaining rather than just who
+   issued it.
 
 ### Fixed since the last revision — recorded so nobody re-diagnoses them
 

@@ -319,9 +319,19 @@
         <tbody>
           <tr><td class="k"><strong>Your PR</strong></td><td><code>pr-&lt;n&gt;.rock-dev.connect.passion.team</code><br>add <span class="tag tag-do">rock-test:start</span> &middot; anyone</td></tr>
           <tr><td class="k"><strong>Staging</strong></td><td><code>staging.rock-dev.connect.passion.team</code><br><strong>merging into the trunk deploys this automatically</strong></td></tr>
-          <tr><td class="k"><strong>Production</strong></td><td>manual <em>Deploy Production</em> run + a second person's approval. Nothing merges here.</td></tr>
+          <tr><td class="k"><strong>Production</strong></td><td>manual <em>Deploy Production</em> run + a named reviewer's approval. Nothing merges here.</td></tr>
         </tbody>
       </table>
+      <p>No VPN &mdash; these open from anywhere, on a phone too. <code>staging</code> and <code>pr-4</code> have
+      real Let's Encrypt certificates, so no warning. A <strong>brand-new</strong> PR environment starts on a
+      self-signed placeholder until the weekly renewal issues one for its host name &mdash; that warning is
+      expected and safe to click through for <code>*.rock-dev.connect.passion.team</code> only.</p>
+      <p>Expect a <strong>slow first load</strong> &mdash; one to two minutes &mdash; while Rock runs its
+      migrations and warms its caches. Every load after that is well under a second. Reload once, and wait
+      it out, before reporting anything.</p>
+      <p>It goes cold again after <strong>20 minutes</strong> of nobody touching it, so a site that was
+      fast before lunch is slow after. That is normal and is not your change breaking. If you are about to
+      show someone, load it a few minutes early.</p>
     </section>
 
     <section>
@@ -338,8 +348,8 @@
       <table>
         <tbody>
           <tr><td class="k">~25 min</td><td>Compile Rock + build both Vue workspaces on a fresh Windows runner</td></tr>
-          <tr><td class="k">~5 min</td><td>Package, upload, install, health check</td></tr>
-          <tr><td class="k">First load</td><td>Slow &mdash; Rock applies migrations on first request. Reload once.</td></tr>
+          <tr><td class="k">~5&ndash;10 min</td><td>Package, upload, install, then wait for the site to answer</td></tr>
+          <tr><td class="k">First load</td><td>Slow &mdash; Rock applies migrations on first request, and it can take a few minutes. Reload once.</td></tr>
         </tbody>
       </table>
     </section>
@@ -376,9 +386,9 @@
   </div>
 
   <div class="foot">
-    <span>Trunk branch: <code>passion-18.4.1</code> &mdash; matches production, and is the repo default</span>
+    <span>Trunk branch: <code>passion-18.4.1</code> &mdash; the repo default, and what staging builds from</span>
     <span>Base branch is set by <code>.github/pr-test-environments.json</code></span>
-    <span>Never open a PR against <code>develop</code> &mdash; it is a clean mirror of upstream Rock</span>
+    <span>Never open a PR against <code>develop</code> &mdash; it is our older line, not a mirror of upstream</span>
     <span>Verified 2026-08-10</span>
   </div>
 

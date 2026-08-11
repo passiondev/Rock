@@ -16,7 +16,8 @@ Example: `https://pr-123.rock-dev.connect.passion.team`.
 
 ## Access
 
-VPN/office access is required. The current office/VPN public IP allowlist includes `159.63.145.194`.
+No VPN or office network is required: HTTPS/443 on the test VM is open to the internet
+(firewall rule `https-from-world`). The `159.63.145.194` allowlist applies to RDP and SQL only.
 
 ## Labels
 
@@ -33,11 +34,14 @@ PR environments isolate code/runtime only. They share one shared sanitized sandb
 
 ## Status comment
 
-A sticky PR comment shows the current status, URL, deployed SHA, logs, and command reminders. The comment also notes that VPN access is required and that data is shared/sandboxed.
+A sticky PR comment shows the current status, URL, deployed SHA, logs, and command reminders. The comment also notes that the URL is reachable without a VPN, that the first request is slow while migrations run, and that data is shared/sandboxed.
 
 ## Troubleshooting
 
 - Failed build: open the linked GitHub Actions run from the sticky comment.
 - Failed deploy: check the deploy job logs and ask an operator to inspect `C:\RockDeploy\logs` and IIS.
 - Stopped environment: add `rock-test:start` again.
-- DNS/certificate warning: confirm VPN access first, then ask an operator to verify wildcard DNS/TLS.
+- Certificate warning: currently expected. These hosts serve a self-signed certificate
+  (measured 2026-08-11); the fix is written but not yet on the VM. There is no VPN involved
+  in reaching them -- port 443 is open to the internet.
+- DNS failure (host does not resolve at all): ask an operator to verify the wildcard record.

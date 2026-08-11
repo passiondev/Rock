@@ -12,7 +12,18 @@ class PrTestStatusCommentScriptTests(unittest.TestCase):
         text = STATUS_SCRIPT.read_text()
 
         self.assertIn("<!-- rock-test-environment-status -->", text)
-        self.assertIn("VPN/office network access is required", text)
+
+        # The comment used to claim VPN/office network access was required. It is
+        # not: port 443 on the test VM is open to the internet via the
+        # `https-from-world` rule, and the office-egress restriction covers only
+        # RDP and SQL. Telling reviewers they need a VPN they don't have is how a
+        # working environment gets reported as broken.
+        self.assertIn("reachable from anywhere", text)
+        self.assertNotIn("VPN/office network access is required", text)
+
+        # A slow first request is migrations running, not a hang.
+        self.assertIn("migrations", text)
+
         self.assertIn("shared sanitized sandbox database", text)
         self.assertIn("rock-test:start", text)
         self.assertIn("rock-test:stop", text)

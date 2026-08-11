@@ -714,8 +714,8 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>What's ours</h3>
-          <p>On the trunk, <strong>20 commits</strong> and <strong>69 files</strong> upstream doesn't have &mdash; and 55 of the 69 are this pipeline itself.</p>
-          <p style="margin-top:.5rem">Our long-standing custom blocks &mdash; check-in, scheduling, RSVP, finance, CMS &mdash; are <strong>276 files under <code>RockWeb/Plugins/</code></strong>, and they live on the older <code>develop</code> branch rather than on the trunk. Reconciling those two is the next piece of work, and it's on the open-items list.</p>
+          <p>Our trunk differs from Rock's <code>18.4.1</code> in <strong>68 files</strong>. <strong>61 don't exist in Rock at all</strong> &mdash; the workflows, the deploy scripts, the runbooks, the tests. Only <strong>7</strong> of Rock's own files have been edited, and 5 of those are one Form Builder feature. Nothing deleted.</p>
+          <p style="margin-top:.5rem">Our long-standing custom blocks &mdash; check-in, scheduling, RSVP, finance, CMS &mdash; are <strong>78 files under <code>RockWeb/Plugins/org_passion</code></strong> and <code>team_passion</code>. They are on the older <code>develop</code> branch, <strong>not on the trunk.</strong> Reconciling those two is the next piece of work and the top item on the open-items list.</p>
         </div>
         <div class="card">
           <h3>Why fork instead of starting clean</h3>
@@ -733,7 +733,8 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>Down: their work into ours</h3>
-          <p>Our <code>develop</code> branch is a <strong>pristine mirror of theirs</strong>. Nothing of ours is ever committed to it. That is what makes upgrades possible: we can always see exactly what changed upstream, with our customizations not in the way.</p>
+          <p>The clean reference point is not a branch of ours at all &mdash; it is <strong>Spark's tag <code>18.4.1</code></strong>, fetched from the <code>upstream</code> remote. That tag is what we diff against to see exactly what is ours and what is theirs.</p>
+          <p style="margin-top:.6rem">Our <code>develop</code> branch is <strong>not</strong> a clean mirror, despite the name. It carries 276 files under <code>RockWeb/Plugins/</code>, 78 of them ours, where upstream's tag carries 2. It is history we still need, not a reference copy.</p>
           <p class="card-note" style="margin-top:.6rem">Never open a PR against <code>develop</code>.</p>
         </div>
         <div class="card">
@@ -753,19 +754,22 @@
     <div class="eyebrow"><span class="eyebrow-num">03</span><span class="eyebrow-text">Version branches</span></div>
     <div class="body">
       <h2>The trunk is named after the Rock version it runs.</h2>
-      <div class="graph" role="img" aria-label="Diagram: upstream develop mirror, and the passion-18.4.1 trunk branched from Rock 18.4.1">
-        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">untouched mirror of SparkDevNetwork/Rock</span></div>
-        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;</span></div>
-        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">Rock 18.4.1 + our 233 commits = production</span></div>
+      <div class="graph" role="img" aria-label="Diagram: the passion-18.4.1 trunk continues from Spark's 18.4.1 tag, while our older develop branch diverged from a shared commit in January 2026">
+        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9670;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">Spark's tag 18.4.1 (&#9670;, July) + this pipeline</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;</span></div>
+        <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">diverged Jan 2026 &mdash; holds our 78 plugin files</span></div>
       </div>
+      <p class="lede">Read the fork from the left: we share history with Spark up to January, they carried on to the <strong>18.4.1</strong> tag in July, and our trunk continues from that tag. <code>develop</code> is the older line that kept going in parallel.</p>
       <div class="cols cols-2">
         <div class="card">
           <h3>Why the version is in the name</h3>
           <p>A Rock upgrade is not a normal change &mdash; it moves thousands of files at once. Naming the trunk after the version makes the answer to "what is production running?" a thing you can read, not a thing you ask about.</p>
+          <p style="margin-top:.5rem">The cost of <em>not</em> doing that is already in this repo: <code>develop</code> is really Rock <strong>19.0.3</strong> and <code>staging</code> is really Rock <strong>17.6.1</strong>. Neither name says so &mdash; you have to open a source file to find out.</p>
         </div>
         <div class="card card-server">
-          <h3>What production runs today</h3>
-          <p><span class="mono">passion-18.4.1</span> &mdash; and the branch is the repository's default, so it is what you land on when you open the repo. If they match, there is nothing to remember.</p>
+          <h3>What the pipeline builds today</h3>
+          <p><span class="mono">passion-18.4.1</span> is the repository's default branch, so it's what you land on when you open the repo, and it's what staging builds from.</p>
+          <p style="margin-top:.5rem">Production runs Rock 18.4 at its core and was last touched <strong>by hand, in July.</strong> Pointing this pipeline at it is the next step, and it happens with DevOps in the room &mdash; not from a laptop.</p>
         </div>
       </div>
     </div>
@@ -778,9 +782,9 @@
       <h2>How the next upgrade happens.</h2>
       <p class="lede">You will not do this. It's here so the branch names you'll see next year make sense.</p>
       <ol>
-        <li>Pull Spark's <code>develop</code> down so the mirror is current.</li>
+        <li>Fetch from <code>upstream</code> so we have Spark's tags for the new release.</li>
         <li>Cut <code>passion-18.5</code> from the upstream tag for that release.</li>
-        <li>Replay our 233 commits onto it and fix what conflicts.</li>
+        <li>Replay our own work onto it and fix what conflicts.</li>
         <li>Point <code>.github/pr-test-environments.json</code> at the new branch &mdash; <strong>one file decides which base branch gets test environments.</strong></li>
         <li>Make it the repo default. Deploy it to staging. Live on staging until it's boring.</li>
         <li>Deploy to production. Retire the old trunk.</li>
@@ -896,7 +900,7 @@
     <div class="eyebrow"><span class="eyebrow-num">05</span><span class="eyebrow-text">Why GitHub builds it</span></div>
     <div class="body">
       <h2>What "build" actually means for Rock.</h2>
-      <p class="lede">Not a website that gets uploaded. An application that gets compiled &mdash; roughly 25 minutes of work on a machine none of us owns.</p>
+      <p class="lede">Not a website that gets uploaded. An application that gets compiled &mdash; roughly half an hour of work on a machine none of us owns.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Step</th><th>What runs</th><th>Needs</th></tr></thead>
@@ -936,10 +940,10 @@
         </div>
         <div class="card">
           <h3>4 &middot; It runs while you don't</h3>
-          <p>25 minutes of compiling happens on someone else's computer. You close the tab and come back to a working URL.</p>
+          <p>Half an hour of compiling happens on someone else's computer. You close the tab and come back to a working URL.</p>
         </div>
       </div>
-      <p class="card-note">The trade: you can't get a 10-second feedback loop. Budget ~30 minutes from label to live site, and batch your changes accordingly.</p>
+      <p class="card-note">The trade: you can't get a 10-second feedback loop. Budget ~40 minutes from label to live site, and batch your changes accordingly.</p>
     </div>
   </section>
 
@@ -966,7 +970,7 @@
             </tr>
             <tr>
               <td><strong>Production</strong><br><span class="mono card-note">the real site</span></td>
-              <td>run <strong>Deploy Production</strong> by hand, then a second person approves</td>
+              <td>run <strong>Deploy Production</strong> by hand, then a named reviewer approves</td>
               <td>DevOps / Global Eng</td>
               <td>production</td>
             </tr>
@@ -989,14 +993,14 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>Staging &mdash; automatic, and safe</h3>
-          <p>Merge your PR and ~30 minutes later it's live on staging for the whole team. It's a separate site on the test server, on the sandbox database. It cannot see production data and cannot take production down.</p>
+          <p>Merge your PR and ~40 minutes later it's live on staging for the whole team. It's a separate site on the test server, on the sandbox database. It cannot see production data and cannot take production down.</p>
           <p class="card-note" style="margin-top:.6rem">Documentation-only commits are skipped &mdash; a 30-minute Windows build per typo fix isn't a good trade.</p>
         </div>
         <div class="card card-server">
           <h3>Production &mdash; two locks</h3>
           <ol style="gap:.35rem">
             <li>Someone opens Actions and runs <strong>Deploy Production</strong> deliberately. The default run is a <strong>dry run</strong> that reports its plan and changes nothing.</li>
-            <li>It builds, then <strong>stops and waits for a second person to approve</strong> &mdash; after the build, so nobody is asked to approve a commit that doesn't compile.</li>
+            <li>It builds, then <strong>stops and waits for a named reviewer to approve</strong> &mdash; after the build, so nobody is asked to approve a commit that doesn't compile. Not even a repo admin can skip that gate.</li>
           </ol>
         </div>
       </div>
@@ -1012,7 +1016,7 @@
     <div class="eyebrow"><span class="eyebrow-num">07</span><span class="eyebrow-text">Demo</span></div>
     <div class="body">
       <h2>Let's go look at a real one.</h2>
-      <p class="lede">A PR was opened before this meeting so the 25-minute build is already done &mdash; like taking the finished cake out of the oven.</p>
+      <p class="lede">A PR was opened before this meeting so the half-hour build is already done &mdash; like taking the finished cake out of the oven.</p>
       <div class="cols cols-2">
         <div class="card">
           <h3>On the PR page</h3>
@@ -1029,7 +1033,7 @@
             <li><strong>The PR's own copy</strong><br><span class="mono">pr-4.rock-dev.connect.passion.team</span></li>
             <li style="margin-top:.5rem"><strong>Staging, built from the trunk</strong><br><span class="mono">staging.rock-dev.connect.passion.team</span></li>
           </ul>
-          <p class="card-note" style="margin-top:.75rem">Both are public HTTPS with real certificates &mdash; open them from your phone if you want. Same trunk on staging, so the PR site is the only one with the change in it.</p>
+          <p class="card-note" style="margin-top:.75rem">Both are public HTTPS with real Let's Encrypt certificates &mdash; open them from your phone if you want, no warning and no VPN. Same trunk on staging, so the PR site is the only one with the change in it.</p>
         </div>
       </div>
       <p class="card-note">Then I'll add a second commit live, so you can see <span class="tag tag-state">deployed</span> flip back to <span class="tag tag-state">building</span> the moment a push lands.</p>
@@ -1048,7 +1052,7 @@
         </div>
         <div class="qa-item">
           <div class="qa-q">I merged and my change isn't on the live site.</div>
-          <div class="qa-a">Correct and expected. Merging deploys <em>staging</em>. Production is a separate, deliberate run that someone has to start and someone else has to approve.</div>
+          <div class="qa-a">Correct and expected. Merging deploys <em>staging</em>. Production is a separate, deliberate run that someone has to start and a named reviewer has to approve.</div>
         </div>
         <div class="qa-item">
           <div class="qa-q">Can I break production by doing this wrong?</div>
@@ -1112,8 +1116,9 @@
         <div class="card">
           <h3>DevOps</h3>
           <ol>
-            <li>Install the command-queue agent on the production VM, together, so the last step of the production path is proven.</li>
-            <li>Create the <code>production</code> environment with required reviewers, and get the certificate renewal green.</li>
+            <li>Install the command-queue agent on the production VM, together, so the last step of the production path is proven. It needs a stop/start window, so we schedule it rather than squeeze it in.</li>
+            <li><strong>Be the second approver on production.</strong> The gate is live and admins can't bypass it &mdash; but I'm the only name on it, so today production is one person, not two. Adding you is about five minutes and it's the single biggest control we're missing.</li>
+            <li>Decide the staging database question with me: staging and every PR site share one catalog today, which is why two sites can break each other.</li>
           </ol>
         </div>
       </div>

@@ -97,7 +97,29 @@ jobs:
             Copy-GcsObjectToFile -ObjectName "pr-environments/bootstrap/latest/`$script" -DestinationPath "C:\RockDeploy\`$script"
           }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Invoke-PrEnvironmentCommandQueue.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
+          # Deliberately NOT running the agent inline here. The line above installs a
+          # task that fires every minute, so a pending command is picked up within 60
+          # seconds anyway -- and running it here as well is the one thing that makes
+          # two agents overlap.
+          #
+          # Nothing claims a command: Invoke-PrEnvironmentCommandQueue.ps1:206 lists
+          # pending/ and runs what it finds, and the object is not deleted until the
+          # command completes (line 305). Two runs therefore both see the same command
+          # and both execute it. schtasks defaults to MultipleInstances: IgnoreNew, so
+          # the scheduled task can never overlap *itself* -- this inline run was the
+          # only way to get a second agent, and it did:
+          #
+          #   00:47:43  task installed
+          #   00:47:44  this inline run claimed deploy-staging-31444814051-1, took the
+          #             per-environment mutex, and deployed staging successfully
+          #   00:48:5x  the scheduled task fired, re-claimed the same command, blocked
+          #   01:03:53  it gave up -- "Timed out waiting for deployment lock" -- and
+          #             wrote a FAILED result for a deploy that was working
+          #
+          # GitHub reported that staging deploy as a failure while the site was serving
+          # HTTP 302 in 0.1s. Losing 60 seconds at boot is a good trade for not doing
+          # that. The real fix is claim semantics on the queue (see open item 19);
+          # this removes the only trigger until that lands.
           "@
 
           $scriptFile = Join-Path $env:RUNNER_TEMP 'pr-test-bootstrap-startup.ps1'
