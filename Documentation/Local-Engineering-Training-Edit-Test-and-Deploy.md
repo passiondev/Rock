@@ -295,6 +295,13 @@ Two things to expect on first visit:
   minute or more is normal. Subsequent pages are fast. If it times out, reload once
   before reporting a problem.
 
+  This happens *again* after **20 minutes** with nobody using the site — the server shuts the
+  site down when it is idle and has to start it back up on the next request. So a test site
+  that was quick this morning can be slow again this afternoon. Measured 2026-08-11: a site
+  answered in 0.2 seconds, sat untouched for about half an hour, and then took 62 seconds.
+  Nothing was wrong with it. If you are about to demo your change to somebody, open the page a
+  few minutes beforehand so they never see the slow load.
+
 ### Step 8 — Test it
 
 Click through your change. Then read

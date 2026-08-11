@@ -224,6 +224,12 @@ version of this line said 30 minutes and no recent run has come in under 40.
 
 ### 0:35 — Three doors (slides 15–16, 7 min)
 
+> ⚠️ **First, before you say anything: open `pr-4` in a background tab.** The app pool idles
+> out after 20 minutes, so whatever warming you did before the meeting has already expired by
+> now. Loading it here means it is warm when you switch to it at 0:42 instead of showing the
+> room a 60-second white screen. It loads while you talk through this segment. See the
+> morning-of checklist for the measurement behind this.
+
 Slide 15's table is the mental model for the whole hour. Walk the rows in order — PR,
 staging, production — and note that the first two share a sandbox database.
 
@@ -293,8 +299,16 @@ ahead of it is what makes the rest credible:
 > tests that fail if they come back. There's a written list of what's still open, and DevOps
 > has it."
 
-Close on slide 20: two asks for the team, two for DevOps. End on the last line — *the
+Close on slide 20: two asks for the team, three for DevOps. End on the last line — *the
 pipeline's job is to make a change boring.*
+
+**Land the second-approver ask while the Director is still in the room.** It is the only one
+of the five that needs someone else's authority rather than someone else's calendar, and it is
+five minutes of clicking. Say the uncomfortable version out loud — *"the production gate is
+real, admins can't bypass it, and right now I'm the only name on it, which means production is
+one person"* — and ask for the name in the room rather than in a follow-up. Asking for a
+control on yourself is the most credible thing you will say all hour. If you get a yes, you
+can have it configured before the room stands up.
 
 ---
 
@@ -304,6 +318,11 @@ pipeline's job is to make a change boring.*
 Branch `demo/ptp-cicd-training-walkthrough` · deployed SHA `c78d87c277`
 Live: <https://pr-4.rock-dev.connect.passion.team>
 Staging: <https://staging.rock-dev.connect.passion.team>
+
+> "Pre-warmed" means the environment is **built and deployed**, not that it will still be warm
+> when you get here. The app pool idles out after 20 minutes. If you did not load pr-4 during
+> the 0:35 segment, load it *now* and talk over the first slide of this section — do not open
+> it cold on the projector and wait.
 
 `c78d87c277` is a merge of the trunk into the demo branch, not one of the two demo commits
 below. That is deliberate and worth a sentence if anyone asks: the branch was brought up to
@@ -436,6 +455,30 @@ second. If the second pass is still slow, something is actually wrong — go to 
 Note `-k`: it skips certificate validation, so this warms the site without telling you anything
 about the certificate. Check that separately with the `openssl` line in the certificate item.
 
+### Warming before you start is not enough — warm it again at 0:35
+
+This is the trap, and it is worth more than everything above it. **Warming a site at 0:00 does
+not keep it warm until the demo at 0:42.** Nothing in this repo ever sets `idleTimeout`,
+`startMode`, or `preloadEnabled` on the app pool, so IIS defaults apply: the worker process
+shuts down after **20 minutes** with no requests. Warm pr-4 at 0:00, talk for forty minutes,
+open it for the demo, and you are opening a *cold* site in front of the room — the exact
+failure the pre-meeting warm-up was supposed to prevent.
+
+Measured on 2026-08-11: pr-4 answered in 0.23s, sat untouched for about 32 minutes, and then
+took **62.2 seconds** on the next request. Nothing had been deployed to it and nothing had
+restarted; it simply idled out.
+
+So add one item to the run of show: **at the start of the "Three doors" segment (0:35), load
+pr-4 in a background tab.** Seven minutes ahead of the demo is comfortably inside the 20-minute
+window and far enough ahead that the load finishes while you are still talking. If you would
+rather not touch the keyboard mid-segment, ask someone in the room to hit it — that is a fine
+thing for Ops to do and it costs them nothing.
+
+The good news, measured the same night: **a site you just deployed to is already warm.** The
+deploy's own health check makes a real request as its last step, so staging answered in 0.10s
+just 33 seconds after deploy `31453111607` finished. A freshly deployed site never needs
+warming — only an idle one does.
+
 ---
 
 ## Don't do these live
@@ -473,9 +516,26 @@ Say "I don't know, I'll find out" rather than improvising. These are the plausib
 - **"What happens if two people merge at once?"** Staging deploys supersede each other by
   design — the newer commit cancels the older in-flight one. Nobody's change is lost, because
   the newer build already contains it.
-- **"Who can approve a production deploy?"** Whoever is on the `production` environment's
-  reviewer list — which doesn't exist yet. That's item 5 on the open list, and configuring it
-  *is* the answer to this question.
+- **"Who can approve a production deploy?"** You can answer this one now — it changed on
+  2026-08-11. The `production` environment exists, has **one required reviewer**
+  (`justinpbarnett`), and admins **cannot** bypass it, all verified against the GitHub API that
+  night. So today the honest answer is *"me, and only me — which is exactly one person too
+  few."* The open item is no longer creating the gate; it is adding the DevOps engineer as a
+  second reviewer and then turning on `prevent_self_review`, which is the point at which
+  production genuinely takes two people. Say that plainly in front of the Director — asking for
+  the second reviewer in the room is the cheapest way to get it.
+
+  *(Earlier drafts of this script said the reviewer list "doesn't exist yet." That was true when
+  written and is not true now; don't say it.)*
+
+- **"Why is the test site so slow? / It was fast earlier and now it isn't."** Very likely, and
+  it may happen live during the demo. Nothing is broken. The server shuts a site down after
+  **20 minutes** of no traffic and starts it again on the next request, and Rock's startup
+  rebuilds caches and applies pending migrations before rendering anything. Measured 2026-08-11:
+  0.2s warm, idle ~32 minutes, then 62 seconds. Every load after that is sub-second again. Two
+  useful follow-ons: a site you *just deployed to* is already warm, because the deploy's health
+  check makes a real request as its last step; and if they are about to show their change to
+  somebody, open the page a few minutes early. This is on the printed handout too.
 
 - **"Can these test environments break each other?"** *(Most likely from DevOps, and the
   honest answer is yes — say so plainly, because it's the top item on the fix list.)* Every
