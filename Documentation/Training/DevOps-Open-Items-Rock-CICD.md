@@ -312,15 +312,48 @@ mask this, and neither is a fix:
   minutes it throws "Timed out waiting for deployment lock" and writes a *failed* result for a
   command that actually succeeded.
 
-**Status: established from the code, not yet caught in the act.** The scheduled task's output
-does not reach the serial console — only the startup script's does — so the live 00:47 restart
-can't confirm or rule out the second execution. Do not treat the absence of a second
-`Processing` line in serial as evidence either way. The code path is unambiguous on its own.
+**Status: confirmed in production on 2026-08-11, trigger removed, root fix still open.**
 
-The fix is the claim that was already designed: copy the object to `processing/` and delete it
-from `pending/` before running it, and make that move conditional (GCS supports
-`ifGenerationMatch`) so exactly one run wins the race. That also makes item 16's heartbeat
-cheaper, because `processing/` then means what its name says.
+It was caught in the act within the hour:
+
+```
+00:47:43  scheduled task installed by the Windows startup script
+00:47:44  the startup script's own inline agent run claimed
+          deploy-staging-31444814051-1, took Global\RockEnvironment-staging,
+          and deployed staging -- successfully
+00:48:5x  the scheduled task fired, listed pending/, found the same command
+          still there, claimed it too, and blocked on the mutex
+01:03:53  it gave up after the full 15-minute wait and wrote:
+            "status": "failed",
+            "error":  "Timed out waiting for deployment lock
+                       Global\\RockEnvironment-staging."
+01:04     GitHub reported the staging deploy as FAILED while
+          https://staging.rock-dev.connect.passion.team was serving
+          HTTP 302 in 0.105s, warm and correct
+```
+
+01:03:53 minus the 15-minute wait is 00:48:53 — one minute after the task was installed, which
+is the first firing. The uploaded log is one line long, the mutex message and nothing else.
+
+**Trigger removed.** The startup script in `pr-test-bootstrap-command-queue.yml` ran the agent
+inline immediately after installing the every-minute task. Since `IgnoreNew` stops the task
+overlapping *itself*, that inline run was the only way to get two agents at once. It is gone;
+a pending command is now picked up by the task within 60 seconds instead. That closes the
+observed failure, and it is a mitigation, not the fix.
+
+**The fix is still the claim that was designed and never written:** copy the object to
+`processing/` and delete it from `pending/` *before* running it, with the move made conditional
+(`ifGenerationMatch`) so exactly one run wins. Until that exists, any second agent process from
+any source reintroduces this. It also makes item 16's heartbeat cheaper, because `processing/`
+would finally mean what its name says.
+
+> **The diagnostic lesson is worth more than the bug.** On the night of 2026-08-10 this same
+> "command sitting in `pending/`" observation was read as *the agent is dead*, and the response
+> was to reboot the VM. Nothing supports that conclusion: a claimed, actively-running command
+> looks identical, because nothing is removed from `pending/` until it finishes. The agent was
+> probably fine. Worse, the reboot is what created the overlap that produced the false failure
+> above — the diagnosis caused the outage it thought it was fixing. If you find yourself
+> reasoning from the contents of `pending/`, stop; that is the exact inference item 16 retracts.
 
 ### 17. Every queued command carries the database password in cleartext
 
