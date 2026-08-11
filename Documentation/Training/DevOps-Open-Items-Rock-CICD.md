@@ -627,6 +627,24 @@ needed in `bin` — but a plugin written against a different Rock line can still
 against 18.4.1. That failure mode is a compile error on the page rather than a missing file,
 and it is why this was verified by rendering the page and not by reading the script.
 
+**It is not only `Plugins`, and that is the part with the wider consequences.** Chasing why the
+demo PR's change would not appear on the landing page turned up the same gap in `Themes`.
+Measured 2026-08-11 against `pr-4`: `/page/3` is not drawn by the repo's
+`Themes/Rock/Layouts/Splash.aspx` — the rendered markup has no `<div id="content">` and carries
+a `login-background` class that appears nowhere in this repository — and `/checkin` loads
+`/Themes/Checkin-Guest/Styles/checkin-theme.css`. Neither `CONNECT` nor `Checkin-Guest` appears
+in `git ls-files RockWeb/Themes` at all — the trunk tracks 13 themes and every one of them is a
+stock Rock theme name. Both of Passion's arrive by overlay, exactly like the plugins.
+
+The practical consequence is the one to remember: **every page an anonymous visitor can reach
+on this install is rendered by a file outside version control.** The front door, the check-in
+kiosk, and the login box are all server-side assets. A branch can change core blocks, the
+upstream themes, `RockWeb`'s own pages, and the compiled assemblies — but it cannot change what
+a signed-out visitor sees, and the only page in this repository that a signed-out visitor
+reaches at all is `RockWeb/Http404Error.aspx`. That is why the demo's visible proof is a
+deliberate 404 rather than the home page. It is also a caution for anyone reviewing a PR by
+eye on a test URL: seeing no change is not evidence the change did not deploy.
+
 One thing still worth deciding:
 
 - **Should Passion's plugins be version-controlled on the trunk?** A larger question, and a
