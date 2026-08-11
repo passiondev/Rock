@@ -93,9 +93,16 @@ param(
     [string]
     $SharedAssetSourcePath = $env:PR_TEST_SHARED_ASSET_SOURCE_PATH,
 
+    # Plugins is in this list because RockWeb/Plugins/.gitignore is `*/*`: not one
+    # plugin subfolder is tracked in git, so none of them ride in the build
+    # artifact. Passion's login page is a plugin block at
+    # Plugins/org_passion/Security/Login.ascx, so without this backfill staging
+    # serves "Error Loading Block: Login" as its landing page and nobody can sign
+    # in at all. Only the DedicatedSite branch below reaches the overlay, so this
+    # list has no effect on an InPlace production deploy.
     [Parameter(Mandatory = $false)]
     [string]
-    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES }),
+    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles,Plugins' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES }),
 
     # Fifteen minutes, not five. Rock runs EF and plugin migrations on the first
     # request after a deploy, and the pr-4 environment needed three 30-second
@@ -789,6 +796,11 @@ try {
             -SourceRoot $sharedAssetSource `
             -DestinationRoot $SitePath `
             -DirectoryList $SharedAssetDirectories
+
+        # Again, after the overlay. The strip above ran on the extracted artifact;
+        # the overlay has since backfilled Plugins from the base site and brought
+        # that site's own bin/obj along with it.
+        Remove-PluginBuildArtifacts -Path $SitePath
 
         Write-RuntimeConfiguration -Path $SitePath -PublicRoot "https://$HostName" -Connection $ConnectionString
         Ensure-AppPool -Name $AppPoolName

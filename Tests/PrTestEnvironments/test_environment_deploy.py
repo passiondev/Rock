@@ -35,6 +35,64 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         self.assertIn("[ValidateSet('DedicatedSite', 'InPlace')]", text)
         self.assertIn("$EnvironmentName", text)
 
+    def test_shared_asset_overlay_backfills_plugins_for_staging(self):
+        """Staging deploys through this script, not Deploy-PrEnvironment.ps1, so the
+        overlay default has to carry Plugins here too or staging keeps serving
+        "Error Loading Block: Login" as its landing page. RockWeb/Plugins/.gitignore
+        is `*/*`, so no plugin subfolder is in git or in the artifact, and the
+        overlay is the only mechanism that can supply org_passion/Security."""
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(r"PR_TEST_SHARED_ASSET_DIRECTORIES\)\)\s*\{\s*'([^']+)'\s*\}", text)
+        self.assertIsNotNone(match, "could not find the shared asset directory default list")
+
+        directories = [entry.strip() for entry in match.group(1).split(",")]
+        self.assertIn("Plugins", directories, f"overlay default must backfill Plugins, got {directories}")
+        for existing in ["Themes", "Content", "Assets", "Styles"]:
+            self.assertIn(existing, directories, f"overlay default must still carry {existing}")
+
+    def test_shared_asset_overlay_never_runs_against_production(self):
+        """This is what makes adding Plugins to the overlay default safe to ship
+        without a production window: the overlay is reachable only from the
+        DedicatedSite branch, and production deploys InPlace. An InPlace deploy
+        copies over a live site that already has its own Plugins tree, maintained
+        outside git -- backfilling it from another site is exactly the wrong thing
+        to do there. If this test ever fails, a change to the overlay list has
+        become a change to production."""
+        text = DEPLOY_SCRIPT.read_text()
+
+        dedicated = text.index("if ($Mode -eq 'DedicatedSite') {")
+        overlay = text.index("Sync-SharedSiteAssets `")
+        in_place = text.index("$backupPath = Join-Path", dedicated)
+
+        self.assertLess(dedicated, overlay, "overlay must sit inside the DedicatedSite branch")
+        self.assertLess(
+            overlay, in_place,
+            "overlay must run before the InPlace branch begins, i.e. it is not on the production path",
+        )
+
+    def test_plugin_build_artifacts_are_stripped_after_the_overlay(self):
+        """The strip runs on the freshly extracted artifact, which was sufficient
+        while the overlay could not carry Plugins. Now that it does, the base
+        site's Plugins/*/bin and Plugins/*/obj arrive after the strip has already
+        run, so a second strip has to follow the overlay."""
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        overlay = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Sync-SharedSiteAssets")
+        ]
+        strip = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Remove-PluginBuildArtifacts")
+        ]
+        self.assertTrue(overlay, "no call site found for Sync-SharedSiteAssets")
+        self.assertTrue(strip, "no call site found for Remove-PluginBuildArtifacts")
+        self.assertGreater(
+            max(strip), max(overlay),
+            f"a strip must follow the overlay; strip at lines {strip}, overlay at lines {overlay}",
+        )
+
     def test_in_place_deploy_is_a_dry_run_unless_apply_is_passed(self):
         """A production overwrite should never be one mistyped argument away. The
         script reports its plan and returns unless -Apply is explicitly given."""
