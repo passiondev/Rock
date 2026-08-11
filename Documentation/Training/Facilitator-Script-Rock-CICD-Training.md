@@ -460,5 +460,18 @@ Say "I don't know, I'll find out" rather than improvising. These are the plausib
   Don't hide it. It is a better argument for the fix than any slide, and "a catalog per
   environment" is the first thing on the list after this meeting.
 
+  If you want the specifics, they're measured, not guessed — `AssemblySharedInfo.cs` declares
+  **18.4.1** on the trunk and on PR #4, and **17.6.1** on PR #3 (its base branch is
+  `develop-17.6.1`). So `pr-3` is Rock 17.6 trying to run against a database that Rock 18.4
+  already migrated forward. Newer wins; older serves the error page.
+
+  **Be ready for the follow-up — "then could your staging deploy break the demo you just
+  showed us?"** The answer is no, and for a specific reason worth saying out loud: `staging`
+  and `pr-4` are both **18.4.1**, so a staging deploy runs the exact migration set `pr-4` has
+  already run. They're safe because their versions match, *not* because they're isolated —
+  they aren't. That holds as long as every live `pr-*` sits on the trunk's minor line. Saying
+  this precisely is much stronger than claiming isolation you don't have; if you overclaim
+  here, DevOps will find the seam in about ten seconds.
+
   Resist the urge to redeploy `pr-3` to make it green before the meeting: that just moves the
   breakage to whichever environment matches the schema now.
