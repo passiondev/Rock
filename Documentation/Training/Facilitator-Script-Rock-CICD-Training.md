@@ -39,7 +39,7 @@ correctly.
 | 0:12 | 6 | The fork | 6–7 | We didn't write Rock. We keep our changes next to theirs. Repo is **public**. |
 | 0:18 | 4 | Version branches | 8–9 | The trunk is named after the version production runs. |
 | 0:22 | 8 | Making changes | 10–12 | Base branch `passion-18.4.1`, or nothing happens. |
-| 0:30 | 5 | Why GitHub builds it | 13–14 | 25 minutes of compiling on a Windows machine none of us owns. |
+| 0:30 | 5 | Why GitHub builds it | 13–14 | Half an hour of compiling on a Windows machine none of us owns. |
 | 0:35 | 7 | Three doors | 15–16 | Merging deploys **staging**. Production takes a deliberate run *and* an approval. |
 | 0:42 | 10 | **Demo** | 17 | It's real, and here's the URL. |
 | 0:52 | 8 | Q&A + asks | 18–20 | Two things for the team, two for DevOps. |
@@ -202,8 +202,24 @@ Slide 13's table answers "why does it take so long" before it's asked. The line 
 Slide 14, reason 3 is for the Technology Director: credentials live in GitHub secrets and are
 only ever read by a build. They never land on anyone's laptop.
 
-Set the expectation explicitly: **~30 minutes, label to live site.** Better they hear it from
+Set the expectation explicitly: **~40 minutes, label to live site.** Better they hear it from
 you than discover it while staring at a PR.
+
+Measured from the two most recent successful PR deploys, so quote it with confidence — and
+quote the range, not a single number, because the spread is real:
+
+| Run | Build | Deploy on the VM | Total |
+| --- | --- | --- | --- |
+| `31425587536` (2026-08-10 19:44) | 24m32s | 17m01s | **42m33s** |
+| `31412537693` (2026-08-10 17:08) | 33m14s | 6m44s | **40m56s** |
+
+Two things worth saying out loud if anyone asks why it varies. The build is slower on a cold
+GitHub runner cache and faster on a warm one. The VM half depends on whether it waits behind
+another deploy — `Deploy-RockEnvironment.ps1` takes a per-environment mutex, so two deploys of
+the same site queue rather than collide. Neither is a fault; both are the system working.
+
+If you would rather round, say "about forty minutes" and never "about half an hour." The old
+version of this line said 30 minutes and no recent run has come in under 40.
 
 ### 0:35 — Three doors (slides 15–16, 7 min)
 
@@ -245,7 +261,7 @@ person in the room most likely to notice the difference.
 
 ### 0:42 — Demo (slide 17, 10 min)
 
-See the runbook below. Narrate the baking-show framing as you go: the 25-minute build is
+See the runbook below. Narrate the baking-show framing as you go: the half-hour build is
 already done, so you're taking the finished one out of the oven.
 
 ### 0:52 — Q&A + asks (slides 18–20, 8 min)
@@ -414,8 +430,9 @@ about the certificate. Check that separately with the `openssl` line in the cert
 Say "I don't know, I'll find out" rather than improvising. These are the plausible ones:
 
 - **"How much does this cost per month in GitHub Actions minutes?"** Windows runners bill at
-  a higher multiplier than Linux, and a full build is ~25 minutes. Not measured yet — worth
-  putting a number on before anyone asks twice.
+  a higher multiplier than Linux. The build step itself measured 24m32s and 33m14s on the two
+  most recent successful PR deploys, so call it ~30 minutes of Windows-runner time per deploy.
+  The *cost* is still not measured — worth putting a number on before anyone asks twice.
 - **"Can we have a test environment with a copy of real data?"** A real request with real
   privacy consequences. Don't answer in the room; it's a DevOps + Director decision.
 - **"What happens if two people merge at once?"** Staging deploys supersede each other by

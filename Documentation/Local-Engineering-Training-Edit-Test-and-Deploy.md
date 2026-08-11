@@ -269,7 +269,7 @@ comment spam. It looks like this:
 The label on the PR tracks the same thing: `queued` → `building` → `deploying` →
 `deployed`, or `failed`.
 
-**Budget about 30 minutes.** The build is the slow part — it compiles all of Rock plus
+**Budget about 40 minutes.** The build is the slow part — it compiles all of Rock plus
 three JavaScript bundles on a fresh Windows machine every time. This is normal, not stuck.
 Go do something else; the comment updates itself.
 
@@ -311,7 +311,7 @@ Then either:
 - **Add `rock-test:start` again** to rebuild with your new commit. If the label is already
   on the PR, remove it and re-add it. Or
 - **Add `rock-test:auto` once**, and every future push to your branch rebuilds
-  automatically. Convenient while iterating; remember each rebuild is another ~30 minutes
+  automatically. Convenient while iterating; remember each rebuild is another ~40 minutes
   of build time, and pushing again cancels the in-flight run.
 
 ### Step 10 — Review and merge
@@ -321,7 +321,7 @@ Then either:
 
 **Merging your PR into `passion-18.4.1` deploys it to staging automatically.** It does not
 touch production, it does not reboot anything, and it does not need anyone's permission —
-but roughly 30 minutes later your change is live on
+but roughly 40 minutes later your change is live on
 <https://staging.rock-dev.connect.passion.team> for the whole team to see. That is the
 point: staging is the shared "does it work on a real server" copy, and it always shows
 what is on the trunk branch.
@@ -343,7 +343,7 @@ renewal. A stopped environment keeps its files on the test VM until a person des
 and an environment on an open PR stays running indefinitely.
 
 So when you are finished with a PR's environment, add `rock-test:destroy` yourself. If you
-stopped one and want it back, `rock-test:start` is a full rebuild — budget ~30 minutes
+stopped one and want it back, `rock-test:start` is a full rebuild — budget ~40 minutes
 rather than expecting it to pop straight back up.
 
 ---
