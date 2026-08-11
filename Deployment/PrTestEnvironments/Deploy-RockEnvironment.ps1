@@ -285,6 +285,23 @@ function Save-UnhealthyDiagnostics {
     catch { $lines.Add("Could not read the application logs: $($_.Exception.Message)") }
     $lines.Add("")
 
+    # Both vantage points, always, and labelled. The difference between them is the
+    # whole diagnosis: loopback failing means the application is broken, loopback
+    # passing while the public name fails means the application is fine and the
+    # problem is DNS, the certificate binding or the route in. Recording only the
+    # public one is what made an already-serving site look dead for 900 seconds.
+    $lines.Add("=== Health probes ===")
+    foreach ($probeCase in @(
+        @{ Label = "loopback  https://127.0.0.1/ (Host: $HostName)"; Url = 'https://127.0.0.1/'; HostHeader = $HostName },
+        @{ Label = "public    $Url";                                 Url = $Url;                HostHeader = '' }
+    )) {
+        $probe = Invoke-SiteProbe -Url $probeCase.Url -HostHeader $probeCase.HostHeader -TimeoutSeconds 30
+        if ($probe.Ok) { $lines.Add("$($probeCase.Label) -> HTTP $($probe.StatusCode)") }
+        elseif ($probe.StatusCode -gt 0) { $lines.Add("$($probeCase.Label) -> HTTP $($probe.StatusCode)  $($probe.Error)") }
+        else { $lines.Add("$($probeCase.Label) -> FAILED  $($probe.Error)") }
+    }
+    $lines.Add("")
+
     $lines.Add("=== Response body from the health check URL ===")
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 60 -ErrorAction SilentlyContinue
@@ -520,10 +537,77 @@ function Write-RuntimeConfiguration {
     }
 }
 
+function Invoke-SiteProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $false)][string]$HostHeader = '',
+        [Parameter(Mandatory = $false)][int]$TimeoutSeconds = 60
+    )
+
+    # HttpWebRequest rather than Invoke-WebRequest for one reason: it can set the
+    # Host header. .NET treats Host as restricted and Invoke-WebRequest refuses it
+    # ("The 'Host' header must be modified using the appropriate property"), and
+    # without it a request to 127.0.0.1 cannot match a host-named IIS binding.
+    #
+    # AllowAutoRedirect is off deliberately. Rock answers / with a 302 to the login
+    # page and that Location is absolute -- following it would leave the loopback
+    # and go straight back out to the public name this probe exists to avoid. A 302
+    # already proves what is being asked: the app domain started and is routing.
+    $outcome = @{ Ok = $false; StatusCode = 0; Error = '' }
+
+    # Set here rather than only in the caller: the loopback probe is answered with
+    # a certificate for the public host name, so it never matches 127.0.0.1 and
+    # would fail validation on every single attempt. The diagnostics path calls
+    # this too, and it has no reason to know that.
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+    try {
+        $request = [System.Net.HttpWebRequest]::Create($Url)
+        $request.Method = 'GET'
+        $request.Timeout = $TimeoutSeconds * 1000
+        $request.ReadWriteTimeout = $TimeoutSeconds * 1000
+        $request.AllowAutoRedirect = $false
+        $request.UserAgent = 'RockDeployHealthCheck'
+        if (![string]::IsNullOrWhiteSpace($HostHeader)) { $request.Host = $HostHeader }
+
+        $response = $request.GetResponse()
+        try {
+            $outcome.StatusCode = [int]$response.StatusCode
+            $outcome.Ok = $outcome.StatusCode -lt 400
+        }
+        finally { $response.Close() }
+    }
+    catch [System.Net.WebException] {
+        # A 4xx or 5xx arrives here as an exception carrying the response, and the
+        # status on it is far more useful than the generic "remote server returned
+        # an error" message wrapped around it.
+        $failedResponse = $_.Exception.Response
+        if ($null -ne $failedResponse) {
+            try {
+                $outcome.StatusCode = [int]$failedResponse.StatusCode
+                $outcome.Ok = $outcome.StatusCode -lt 400
+            }
+            catch { }
+            try { $failedResponse.Close() } catch { }
+        }
+        $outcome.Error = $_.Exception.Message
+    }
+    catch {
+        $outcome.Error = $_.Exception.Message
+    }
+
+    return $outcome
+}
+
 function Test-EnvironmentHealth {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+
+        # The public host name, sent as the Host header on the loopback probe so it
+        # matches this environment's IIS binding.
+        [Parameter(Mandatory = $false)][string]$HostHeader = '',
 
         # Optional so the function still works for a caller that has no app pool to
         # recycle; when supplied it is what makes a poisoned app domain recoverable.
@@ -557,19 +641,39 @@ function Test-EnvironmentHealth {
     # which reads like the site is down rather than like the probe is misconfigured.
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
+    # Probe the loopback, not the public name. Both are the same IIS site, the same
+    # app pool and the same app domain, so the loopback answers the only question a
+    # deploy can actually be blamed for -- did this build start up. What it does not
+    # drag in is DNS, the external address and everything between: this VM cannot
+    # reliably reach its own public IP, and on 2026-08-11 that cost 900 seconds and
+    # a red build on a deploy that was already serving.
+    #
+    #   01:04:24  on-box GET https://staging.rock-dev.connect.passion.team/
+    #             -> "The underlying connection was closed: An unexpected error
+    #                occurred on a send."  (captured in the deploy's own diagnostics)
+    #   01:04:24  the same URL from off-box -> HTTP 302 in 0.115s
+    #
+    # The site was fine for the last five minutes of a health check that never
+    # passed. Reachability from the internet is a real thing to verify, but it is
+    # not this probe's job and this is not the vantage point to verify it from --
+    # the workflow checks the public URL from the GitHub runner, which can see it.
+    $probeUrl = $Url
+    $probeHostHeader = ''
+    if (![string]::IsNullOrWhiteSpace($HostHeader)) {
+        $probeUrl = 'https://127.0.0.1/'
+        $probeHostHeader = $HostHeader
+        Write-Host "Health check probing $probeUrl with Host: $probeHostHeader (public URL $Url is verified from the runner, not from this box)."
+    }
+
     while ((Get-Date) -lt $deadline) {
         $attempt++
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -TimeoutSec 60
-            if ([int]$response.StatusCode -lt 400) {
-                Write-Host "Health check passed: $Url returned $($response.StatusCode) on attempt $attempt."
-                return $true
-            }
-            $lastError = "HTTP $($response.StatusCode)"
+        $probe = Invoke-SiteProbe -Url $probeUrl -HostHeader $probeHostHeader -TimeoutSeconds 60
+        if ($probe.Ok) {
+            Write-Host "Health check passed: $probeUrl returned $($probe.StatusCode) on attempt $attempt."
+            return $true
         }
-        catch {
-            $lastError = $_.Exception.Message
-        }
+        if ($probe.StatusCode -gt 0) { $lastError = "HTTP $($probe.StatusCode)" }
+        else { $lastError = $probe.Error }
         Write-Host "Health check attempt ${attempt}: $lastError"
 
         if (![string]::IsNullOrWhiteSpace($AppPoolName) -and
@@ -752,7 +856,7 @@ try {
 
     Write-Host "Deployed $EnvironmentName ($Sha) to https://$HostName"
 
-    if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds -AppPoolName $AppPoolName)) {
+    if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds -HostHeader $HostName -AppPoolName $AppPoolName)) {
         # Gather the evidence while it is still fresh, and never let a problem
         # gathering it replace the failure it was meant to explain.
         try { Save-UnhealthyDiagnostics -SiteRoot $SitePath -Url "https://$HostName/" }

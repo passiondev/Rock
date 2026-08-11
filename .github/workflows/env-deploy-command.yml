@@ -237,3 +237,50 @@ jobs:
           # access. Say so, because "timed out" alone sends people to the wrong place.
           Write-Host "::error::No result after $($attempts * 15) seconds. Check that $env:GCS_BUCKET is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running on the target VM against queue '$env:QUEUE_NAME'."
           exit 1
+
+      # The VM checks that the application started, by probing its own loopback.
+      # It deliberately does not check the public name, because it cannot reach
+      # its own external address -- and when it tried, it spent 900 seconds
+      # failing to see a site that was serving the whole time. The runner is on
+      # the internet, so this is the vantage point that can answer "can a person
+      # actually load it", and it is the only place that question gets asked.
+      - name: Verify the public URL from the internet
+        shell: bash
+        run: |
+          set -uo pipefail
+          url="https://${HOST_NAME}/"
+
+          # -k, then report the certificate separately below. Reachability and
+          # trust are different failures with different owners, and folding them
+          # together means a certificate that needs renewing reads as an outage.
+          code=""
+          for attempt in $(seq 1 10); do
+            code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 90 "$url" || echo 000)"
+            if [ "$code" != "000" ] && [ "$code" -lt 400 ]; then break; fi
+            echo "attempt $attempt: HTTP $code"
+            sleep 15
+          done
+
+          if [ "$code" = "000" ] || [ "$code" -ge 400 ]; then
+            echo "::error::$url is not reachable from the internet (last response: HTTP $code), even though the VM reported the deploy healthy. The application started; something between the internet and IIS did not."
+            exit 1
+          fi
+          echo "$url returned HTTP $code from the runner."
+
+          # Never fatal. A self-signed certificate serves traffic perfectly well
+          # and a browser warning is not a failed deploy -- but it is the thing
+          # everyone will ask about, so state it plainly rather than leaving it
+          # to be discovered in the meeting.
+          issuer="$(echo | openssl s_client -connect "${HOST_NAME}:443" -servername "${HOST_NAME}" 2>/dev/null \
+                    | openssl x509 -noout -issuer 2>/dev/null || true)"
+          echo "Certificate ${issuer:-(could not be read)}"
+          if echo "$issuer" | grep -q "CN=${HOST_NAME%%.*}\|CN=\*\."; then
+            if ! echo "$issuer" | grep -qi "let's encrypt\|encrypt"; then
+              echo "::warning::$HOST_NAME is presenting a self-signed certificate, so browsers will show a warning. ${issuer}"
+            fi
+          fi
+
+          {
+            echo "| Public URL | HTTP $code from the GitHub runner |"
+            echo "| Certificate | ${issuer:-unknown} |"
+          } >> "$GITHUB_STEP_SUMMARY"
