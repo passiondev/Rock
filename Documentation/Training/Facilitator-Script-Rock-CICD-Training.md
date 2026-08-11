@@ -388,6 +388,11 @@ pending migrations before it renders anything. Cold, that measured **55 seconds*
 browser on 2026-08-11. Warm, it is instant. Fifty-five seconds of white screen while a room
 watches is the demo failing even though nothing is broken.
 
+Budget more than that if the VM has been restarted rather than merely gone idle. Measured on
+2026-08-11 on the first request after a reboot: **pr-4 53s, staging 129s.** Two minutes of
+white screen is well past what a room will sit through politely, so if anything rebooted that
+morning, warm the sites early and warm them twice.
+
 ```bash
 # Run this immediately before presenting. Both should come back fast the second time.
 for h in pr-4 staging; do
@@ -441,3 +446,19 @@ Say "I don't know, I'll find out" rather than improvising. These are the plausib
 - **"Who can approve a production deploy?"** Whoever is on the `production` environment's
   reviewer list — which doesn't exist yet. That's item 5 on the open list, and configuring it
   *is* the answer to this question.
+
+- **"Can these test environments break each other?"** *(Most likely from DevOps, and the
+  honest answer is yes — say so plainly, because it's the top item on the fix list.)* Every
+  test site — staging and all the `pr-*` ones — points at **one shared database**. The web
+  servers are separate; the database is not. Rock applies its migrations to that database on
+  first load, so two sites on different commits can disagree about the schema, and the one
+  that loses serves an error page on every request.
+
+  There is a live example to show if it comes up: **`pr-3` returns a 500 right now**, while
+  `pr-4` and `staging` on the same box answer normally — and GitHub still shows PR #3 as
+  successfully deployed, because the PR path doesn't check that the site actually came up.
+  Don't hide it. It is a better argument for the fix than any slide, and "a catalog per
+  environment" is the first thing on the list after this meeting.
+
+  Resist the urge to redeploy `pr-3` to make it green before the meeting: that just moves the
+  breakage to whichever environment matches the schema now.
