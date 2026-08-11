@@ -22,6 +22,16 @@
 <body id="splash" class="error">
     <form id="form1" runat="server">
 
+        <!-- CI/CD training walkthrough banner, second of two. The first is in
+             Themes/Rock/Layouts/Site.Master, which only renders once you have signed in.
+             This one is here because Http404Error.aspx is the one page a *signed-out*
+             visitor can reach that this repository actually owns: the landing page is
+             drawn by Themes/CONNECT/Layouts/Splash.aspx and /checkin by
+             Themes/Checkin-Guest, and neither of those themes is in version control.
+             Ask for any address that does not exist and you are looking at the branch. -->
+        <div style="background:#00c08b;color:#0b0b0f;font:600 13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:8px 16px;text-align:center;letter-spacing:.02em;">
+            PR TEST ENVIRONMENT &mdash; deployed from GitHub Actions, running against the sandbox database
+        </div>
 
         <div id="content">
             <div id="logo">
