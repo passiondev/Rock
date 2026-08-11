@@ -45,21 +45,33 @@ out waiting for a server that isn't listening.
   exclusions were always correct — so this is the belt for the day someone reaches for
   `DedicatedSite`, plus the diagnostic.)
 
-### 2. The `production` GitHub Environment does not exist
+### 2. The `production` gate exists now, but it rests on one person
 
-Without it, the `approve` job in `production-deploy.yml` **passes straight through**. The gate
-is written and wired, but there is currently nothing on the other side of it. This is the
-single highest-value 10-minute task on the list.
+**Created 2026-08-11.** Until then the environment did not exist, which meant the `approve` job
+in `production-deploy.yml` **passed straight through** — the gate was written and wired with
+nothing on the other side of it. Referencing an environment that does not exist does not fail;
+GitHub creates it with no rules, so the run sails past. Worth remembering as a category: an
+approval gate is not self-evidencing, and this one read as present in every review of the YAML.
 
-Needs:
+Current settings:
 
-- Environment `production`, with **required reviewers** (at least two people named, so a
-  deploy never waits on one person's availability)
-- Repo variables: `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`, `PRODUCTION_SITE_NAME`
+| Setting | Value | Why |
+| --- | --- | --- |
+| Required reviewers | `justinpbarnett` | Someone must click Approve; a dispatch alone deploys nothing |
+| `can_admins_bypass` | `false` | Deliberately closed. On the default (`true`) a repo admin can skip the gate, which would have made the training's claim false for exactly the people most able to cause harm |
+| `prevent_self_review` | `false` | Has to stay false while there is one reviewer, or the only person named could never approve |
+| Branch policy | none | The version guard in `production-deploy.yml` already refuses a ref from another Rock minor, which is the risk a branch policy would be covering |
 
-The workflow falls back to `rock.passion.team`, `C:\inetpub\wwwroot` and `Default Web Site`
-if the variables are absent — **confirm those against the actual VM before the first real
-run** rather than trusting the defaults.
+**What's left, and it is the point of this item:** add a second reviewer — the DevOps engineer
+— and then set `prevent_self_review` to `true`. Only at that point is production genuinely
+two-person. Today it is one deliberate click by one person, which stops an accident but not a
+mistake. The reviewer was not chosen on anyone's behalf: several people hold admin on this
+repo, and who guards production is a decision, not a default.
+
+Also still needed: repo variables `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`,
+`PRODUCTION_SITE_NAME`. The workflow falls back to `rock.passion.team`, `C:\inetpub\wwwroot`
+and `Default Web Site` if they are absent — **confirm those against the actual VM before the
+first real run** rather than trusting the defaults.
 
 ### 3. The trunk branch has no protection at all
 

@@ -40,7 +40,7 @@ correctly.
 | 0:18 | 4 | Version branches | 8–9 | The trunk is named after the version production runs. |
 | 0:22 | 8 | Making changes | 10–12 | Base branch `passion-18.4.1`, or nothing happens. |
 | 0:30 | 5 | Why GitHub builds it | 13–14 | 25 minutes of compiling on a Windows machine none of us owns. |
-| 0:35 | 7 | Three doors | 15–16 | Merging deploys **staging**. Production takes two people. |
+| 0:35 | 7 | Three doors | 15–16 | Merging deploys **staging**. Production takes a deliberate run *and* an approval. |
 | 0:42 | 10 | **Demo** | 17 | It's real, and here's the URL. |
 | 0:52 | 8 | Q&A + asks | 18–20 | Two things for the team, two for DevOps. |
 
@@ -200,7 +200,7 @@ email/texts/payments/jobs.
 
 Slide 16 is the production story, and it's where you earn the Director's trust. The two locks:
 someone runs it deliberately (and the default run is a **dry run** that changes nothing), then
-a second person approves — **after** the build, so nobody approves a commit that doesn't
+a named reviewer approves — **after** the build, so nobody approves a commit that doesn't
 compile.
 
 Then the two design decisions, in your own words:
@@ -209,6 +209,17 @@ Then the two design decisions, in your own words:
 > can't delete them. And CI never writes production's connection string — the production
 > database password doesn't exist as a secret in GitHub at all, so a deploy physically can't
 > point production at the wrong database."
+
+**If the Director asks "who approves?"** — and it is the obvious question — answer it exactly:
+
+> "Today, me. The gate is real: GitHub holds the run and deploys nothing until a named reviewer
+> clicks Approve, and I turned off the setting that lets a repo admin skip it. But one name on
+> that list is a control against an accident, not against a bad decision. Adding [DevOps] as a
+> second reviewer is a two-minute settings change and it's on the handoff list — that's the
+> version I'd want before we're deploying to production regularly."
+
+That answer is worth more than a claim of two-person control would be, and the Director is the
+person in the room most likely to notice the difference.
 
 **Be straight about where production stands.** Don't oversell and don't apologize:
 
