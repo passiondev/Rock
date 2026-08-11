@@ -96,12 +96,35 @@ merged branches accumulate forever. Turning it on prevents the next round of ite
 
 ### 4. Every deploy rebound the self-signed placeholder over the real certificate
 
-**Root cause found 2026-08-11 and fixed in code; the fix is not on the VM yet.** An earlier
+**Root cause found 2026-08-11, fixed, and proven end-to-end the same night.** An earlier
 revision of this document claimed this item was fixed because `pr-4` was measured serving a
 real Let's Encrypt certificate at 16:57 UTC on 2026-08-10. That measurement was correct. The
 conclusion was not — by 2026-08-11 00:30 UTC `pr-4` was serving a **self-signed** wildcard
 again, and so was `staging`. Both hosts presented the same certificate: subject and issuer
 both `CN=*.rock-dev.connect.passion.team`, expiring 2028-05-06.
+
+**What proof required, and why the first attempt did not qualify.** A certificate measured
+right after a renewal proves only that renewal works — it was never the thing in doubt. The
+failure was that *the next deploy took it away*, so nothing short of measuring again on the
+far side of a deploy is evidence. The full chain, all on 2026-08-11:
+
+| Step | Evidence |
+| --- | --- |
+| 1. Fixed selector on the VM | bootstrap run, scripts refreshed from `bootstrap/latest` |
+| 2. Renewal issues a real certificate | run `31450951458`; staging gets Let's Encrypt YR2, expires 2026-11-09 |
+| 3. A deploy runs afterwards | staging deploy run `31451302897`, green, 02:30:50 → 02:40:29 |
+| 4. **Re-measured after the deploy** | **still Let's Encrypt YR2, same expiry, strict TLS 302 in 0.099s** |
+
+Step 4 is the item. Steps 1–3 were true of the 2026-08-10 attempt as well.
+
+**A second copy of the same bug was found while verifying this, on the PR path.**
+`Deploy-PrEnvironment.ps1` — which every `pr-*` environment deploys through, including the
+training demo host — still sorted on `NotAfter` alone. Because the placeholder expires
+2028-05-06 and a Let's Encrypt certificate expires ninety days out, the placeholder would have
+won there too: the next `pr-4` deploy would have silently restored the untrusted certificate.
+Fixed in `b1e8569ab8` with the same selector. The lesson worth keeping is that the original fix
+was applied to the file where the bug was *observed* rather than to every file that shared the
+logic, and a duplicated seven-line block is exactly where that goes wrong.
 
 Two independent defects, and the first one is the interesting one:
 

@@ -283,11 +283,13 @@ This works from anywhere — no VPN, no office network.
 
 Two things to expect on first visit:
 
-- **A browser certificate warning, for now.** Measured 2026-08-11: the test hosts serve a
-  self-signed certificate rather than a public one, so your browser will object. This is a
-  known open item with a fix already written, not a sign that anything is wrong with your
-  environment. Click through it once for these `*.rock-dev.connect.passion.team` hosts —
-  and nowhere else. If you see a padlock instead, the fix has landed and this note is stale.
+- **A certificate warning only on a brand-new environment.** As of 2026-08-11, `staging` and
+  the existing `pr-*` hosts hold real Let's Encrypt certificates and show a normal padlock —
+  measured after a deploy, so it is not a one-off. A *newly created* PR environment is the
+  exception: it starts on a self-signed placeholder until the weekly renewal issues a
+  certificate for its host name, so a warning on a site you just spun up is expected and not a
+  sign that anything is wrong. Click through it once for these
+  `*.rock-dev.connect.passion.team` hosts — and nowhere else.
 
 - **A very slow first page load.** Rock compiles and warms up on the first request; a
   minute or more is normal. Subsequent pages are fast. If it times out, reload once
@@ -700,7 +702,7 @@ instructions do.
 | Build succeeded but my change isn't there | A project failed to compile ([Trap 5](#trap-5-a-green-build-does-not-prove-your-code-shipped)) or, before 2026-08-10, the file was under an overlaid directory ([Trap 1](#trap-1-themes-content-assets-and-styles-used-to-get-overwritten--fixed-2026-08-10)) | Search the build log for `Warning: Failed to build`. Build failures now fail the run, so a green build really did compile |
 | URL doesn't load at all | Environment never deployed, or DNS | It is *not* VPN — these hosts are public. Confirm the status comment says `deployed`, then ask DevOps to check DNS |
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
-| Certificate warning | Currently expected — these hosts serve a self-signed certificate (measured 2026-08-11); fix written, not yet on the VM | Click through for `*.rock-dev.connect.passion.team` only. Report it if you see it on any *other* host |
+| Certificate warning | Expected only on a **brand-new** environment, which starts self-signed until the weekly renewal covers its host name. `staging` and existing `pr-*` hosts hold real Let's Encrypt certificates (measured 2026-08-11, after a deploy) | Click through for `*.rock-dev.connect.passion.team` only. Report it if you see it on an established host, or on any *other* domain |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
 | A plugin page is missing or broken on a test site | Plugin blocks are not in the repo, so no test environment has them ([Trap 7](#trap-7-plugin-blocks-are-not-in-this-repository-at-all)) | Not a bug in your PR. Verify that page in production instead, and talk to DevOps |
 | Environment was working, now says `stopped` | Someone added `rock-test:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock-test:start` again (full rebuild, ~30 min) |
