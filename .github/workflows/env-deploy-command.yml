@@ -271,16 +271,43 @@ jobs:
           # and a browser warning is not a failed deploy -- but it is the thing
           # everyone will ask about, so state it plainly rather than leaving it
           # to be discovered in the meeting.
-          issuer="$(echo | openssl s_client -connect "${HOST_NAME}:443" -servername "${HOST_NAME}" 2>/dev/null \
-                    | openssl x509 -noout -issuer 2>/dev/null || true)"
-          echo "Certificate ${issuer:-(could not be read)}"
-          if echo "$issuer" | grep -q "CN=${HOST_NAME%%.*}\|CN=\*\."; then
-            if ! echo "$issuer" | grep -qi "let's encrypt\|encrypt"; then
-              echo "::warning::$HOST_NAME is presenting a self-signed certificate, so browsers will show a warning. ${issuer}"
+          #
+          # Self-signed is decided by issuer == subject, not by pattern-matching a
+          # CN, because the printed form of a DN is not stable: depending on the
+          # OpenSSL build and how the name is dumped it comes out as
+          # "/CN=*.example" (slash-prefixed oneline), "CN=*.example", or
+          # "CN = *.example" with spaces. All three were observed while building
+          # this. A grep for any one literal silently matches nothing on the
+          # others, and a check that can only fail closed is worse than none --
+          # it reports "certificate fine" for every certificate. Comparing the
+          # two strings to each other needs no format at all.
+          cert="$(echo | openssl s_client -connect "${HOST_NAME}:443" -servername "${HOST_NAME}" 2>/dev/null || true)"
+          issuer="$(printf '%s' "$cert"  | openssl x509 -noout -issuer  2>/dev/null | sed 's/^issuer=//'  || true)"
+          subject="$(printf '%s' "$cert" | openssl x509 -noout -subject 2>/dev/null | sed 's/^subject=//' || true)"
+          expiry="$(printf '%s' "$cert"  | openssl x509 -noout -enddate 2>/dev/null | sed 's/^notAfter=//' || true)"
+
+          echo "Certificate issuer:  ${issuer:-(could not be read)}"
+          echo "Certificate subject: ${subject:-(could not be read)}"
+          echo "Certificate expires: ${expiry:-(could not be read)}"
+
+          days_left=""
+          if [ -n "$expiry" ]; then
+            end_epoch="$(date -u -d "$expiry" +%s 2>/dev/null || true)"
+            if [ -n "$end_epoch" ]; then
+              days_left="$(( (end_epoch - $(date -u +%s)) / 86400 ))"
+              echo "Certificate has ${days_left} days remaining."
+              if [ "$days_left" -lt 21 ]; then
+                echo "::warning::The certificate for $HOST_NAME expires in ${days_left} days. Run the certificate renewal workflow."
+              fi
             fi
+          fi
+
+          if [ -n "$issuer" ] && [ "$issuer" = "$subject" ]; then
+            echo "::warning::$HOST_NAME is presenting a self-signed certificate, so browsers will show a warning before the site loads. Issuer and subject are both: ${issuer}"
           fi
 
           {
             echo "| Public URL | HTTP $code from the GitHub runner |"
             echo "| Certificate | ${issuer:-unknown} |"
+            echo "| Expires | ${expiry:-unknown}${days_left:+ (${days_left} days) }|"
           } >> "$GITHUB_STEP_SUMMARY"
