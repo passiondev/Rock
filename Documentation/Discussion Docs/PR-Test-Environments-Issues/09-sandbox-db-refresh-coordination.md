@@ -17,6 +17,7 @@ Coordinate the daily sanitized sandbox DB refresh with PR environments by stoppi
 - Log refresh coordination to `C:\RockDeploy\logs\sandbox-refresh-*.log`.
 - Leave sticky PR comment updates for a later/manual integration unless GitHub credentials are configured on the server.
 - Coordinate shared sandbox file storage through an optional command hook alongside the DB refresh.
+- **Non-PR environments are out of scope and are left running.** Decided 2026-08-17. `staging` gets its own catalog (`STAGING_DB_NAME`) and is excluded from the prod restore, so there is nothing being refreshed underneath it and its app pool must not be stopped. Manifests without a `prNumber` are therefore skipped deliberately, with a message that says so, rather than warned about as invalid — the previous wording described `staging` as an invalid manifest on every run. This holds only once the catalog exists; until then staging is still on the shared catalog and *is* being restored out from under a live app pool. See `Documentation/PR-Test-Environments-Operator-Runbook.md` for provisioning.
 
 ## Acceptance criteria
 

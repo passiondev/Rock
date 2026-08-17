@@ -31,6 +31,29 @@ class SandboxRefreshCoordinationTests(unittest.TestCase):
         self.assertIn('catch', text)
         self.assertIn('finally', text)
 
+    def test_non_pr_environments_are_left_running_rather_than_called_invalid(self):
+        """`staging` writes its manifest at C:\\RockTestEnvs\\staging\\env.json --
+        inside the tree this script walks -- but carries no prNumber, because only
+        Deploy-PrEnvironment.ps1 emits one. So it has always reached this branch.
+
+        Once staging has its own catalog it is not the database being refreshed, so
+        leaving its app pool up is the correct outcome; calling it an invalid manifest
+        read as a defect in the log every single night.
+        """
+        text = REFRESH_SCRIPT.read_text()
+
+        self.assertIn("Leaving non-PR environment", text)
+        self.assertNotIn("Skipping invalid PR manifest", text)
+
+    def test_a_present_but_unusable_pr_number_still_warns(self):
+        """Absent and <= 0 are different conditions with different owners: one is a
+        non-PR environment behaving normally, the other is a genuinely malformed
+        manifest that somebody needs to look at."""
+        text = REFRESH_SCRIPT.read_text()
+
+        self.assertIn("Skipping malformed manifest", text)
+        self.assertIn("prNumber -le 0", text)
+
     def test_issue_records_human_decisions(self):
         text = ISSUE.read_text()
 

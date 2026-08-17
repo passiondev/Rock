@@ -224,6 +224,33 @@ into reachability means the pipeline cries wolf.
 Still to do: report **days to expiry** rather than just the issuer, so renewal is driven by a
 number instead of by someone noticing the warning.
 
+**5c. The timeout stack is sized for a patch deploy, not a major-version migration.**
+A major-version upgrade runs the whole EF and plugin migration set on the first request. The
+current budget cannot absorb that:
+
+| Knob | Where | Now | Agreed for a migration deploy |
+|---|---|---|---|
+| `HealthCheckTimeoutSeconds` | `Deploy-RockEnvironment.ps1:117` | 900 (15 min) | **1800** (30 min) |
+| `RecycleAfterSeconds` | `Deploy-RockEnvironment.ps1:622` | 240 (4 min) | **900** |
+| `deploy-environment` cap | `Invoke-PrEnvironmentCommandQueue.ps1` | 1800 | must exceed the above |
+| Result poll | `env-deploy-command.yml` | 140 x 15s = 35 min | must exceed the queue cap |
+| Job timeout | `env-deploy-command.yml` | 60 min | outermost, unchanged |
+
+The failure mode is not a timeout, it is a **recycle**: at 240s the deploy restarts the app pool
+while it is still migrating, up to roughly three times, and only then reports failure. Interrupting
+a migration set part-way is materially worse than waiting.
+
+**Decided 2026-08-17: 30-minute health check, 900s recycle.** That figure was chosen because it
+fits inside the existing 1800s queue cap and 60-minute job timeout, so only the two inner knobs and
+the poll window move — no restructuring of the outer limits.
+
+**Not yet implemented — deliberately deferred.** Both knobs are already proper `[Parameter]`s with
+defaults, so this must be a per-deploy override threaded from `env-deploy-command.yml` through the
+command JSON to the script, **not** a change to the defaults: PR environments should keep the fast
+feedback that a 15-minute ceiling gives them. The comment at `Deploy-RockEnvironment.ps1:105-113`
+is the constraint to respect — every layer has to move together or the effective ceiling just
+relocates to whichever limit was not raised, which is harder to diagnose than the original.
+
 ### 6. Nothing reaps abandoned environments
 
 Closing a PR **stops** its environment but never destroys it. An environment on a long-lived
@@ -261,7 +288,7 @@ because the PR deploy path never checks (item 5a) — the two defects compound e
 written, and the result is a broken environment that the pipeline reports as good.
 
 **The version split is now measured, not inferred.** `Rock.Version/AssemblySharedInfo.cs` —
-the same file `production-deploy.yml`'s version guard reads — declares:
+one of the two files `production-deploy.yml`'s version guard reads — declares:
 
 | Ref | Rock version |
 | --- | --- |
@@ -269,6 +296,11 @@ the same file `production-deploy.yml`'s version guard reads — declares:
 | `demo/ptp-cicd-training-walkthrough` (PR #4) | **18.4.1** |
 | `pilot/pr-test-env-doc-smoke-v1761` (PR #3) | **17.6.1** |
 | `develop` | 19.0.3 |
+
+Note for the upgrade: **Rock 19 deleted that file.** From 19.x the version lives in
+`Directory.Build.props` as `<Version>19.3.4</Version>` (`Rock.Version/` keeps only
+`VersionInfo.cs` and the `.csproj`). The guard reads both locations, historical path first,
+so it spans the upgrade — see item 15.
 
 So `pr-3`'s 500 is not a vague "collision" — it is Rock **17.6.1** running against a catalog
 that Rock **18.4.1** has already migrated forward. PR #3's base branch is `develop-17.6.1`;
@@ -285,7 +317,7 @@ again and is very likely to break whichever environment currently matches instea
 the whole point: there is one schema and N sites that each believe they own it.
 
 A cheap guard that needs no new database: have the PR deploy path refuse a head whose
-`AssemblySharedInfo.cs` minor differs from the default branch's — the same comparison
+declared minor differs from the default branch's — the same comparison
 `production-deploy.yml` already makes, pointed at PR environments. That converts this from a
 silent mutual corruption into a refused deploy with a clear reason.
 
@@ -296,6 +328,36 @@ a new repo variable (`STAGING_DB_NAME`, say) and a real database to point it at:
   N restores or a template-plus-copy step.
 - Cheapest useful half-step: give `staging` its own catalog and leave the `pr-*` sites sharing
   one. Staging is the one that must be trustworthy during a demo.
+
+**Decided 2026-08-17: take the half-step, and exclude staging's catalog from the nightly prod
+restore.** Isolating staging without excluding it from the refresh would be nearly pointless —
+a prod restore puts prod's 18.x schema back, so a staging site on a newer Rock line would
+re-run its whole migration set against a fresh restore every night, or fail the way `pr-3`
+did. Not resetting nightly is what makes staging trustworthy and a version upgrade durable.
+It also means staging's data drifts from prod over time, which is the accepted cost.
+
+Repo-side work is done and is a no-op until the catalog exists:
+
+- `env-deploy-command.yml` takes an optional `db_name` input and builds the connection string
+  from `inputs.db_name || secrets.DB_NAME`. Unset arrives as the empty string, which is falsy
+  in a GitHub expression, so every `pr-*` site keeps exactly its current behaviour.
+- `staging-deploy.yml` passes `db_name: ${{ vars.STAGING_DB_NAME }}`.
+- A `Report which catalog this deploy will use` step names the *source* (never the value, which
+  has to stay redacted) and warns when an environment lands on the shared catalog. Without it a
+  misspelled variable falls back silently and the deploy still reports success.
+- `Invoke-SandboxRefreshWithPrEnvironments.ps1` now skips non-PR manifests deliberately instead
+  of calling them invalid. Staging's manifest lives at `C:\RockTestEnvs\staging\env.json` with
+  no `prNumber` — only `Deploy-PrEnvironment.ps1` writes one — so it has been logged as an
+  invalid manifest on every refresh. Leaving `rock-staging` running is correct *once the catalog
+  is separate*; while staging is still on the shared catalog, that catalog is being restored out
+  from under a live app pool.
+
+Remaining, and it is DevOps' call because it is where the change can be silently undone: decide
+whether the refresh imports a `.bak` into a named database or restores a Cloud SQL *backup*.
+A backup restore replaces **every database on the target instance**, so a staging catalog beside
+`RockConnectProd` on `connect-restore-test` would be destroyed nightly regardless of anything in
+this repo — that case needs a separate instance, not a separate catalog. Provisioning steps are
+in `Documentation/PR-Test-Environments-Operator-Runbook.md`.
 
 ### 8. `build-develop.yml` still deploys by rebooting a VM
 
@@ -667,8 +729,9 @@ migration step that has to be taken deliberately, and one guard to add to the wo
 stated *why* that is the right source, so it was measured. **The default is correct**, and the
 reason is worth writing down, because the obvious alternative is actively dangerous.
 
-Each branch declares its own Rock version in `Rock.Version/AssemblySharedInfo.cs`. They are not
-three points on one line — they are three different Rock majors:
+Each branch declares its own Rock version — in `Rock.Version/AssemblySharedInfo.cs` through
+18.x, and in `Directory.Build.props` as `<Version>` from 19.x, which deleted the older file.
+They are not three points on one line — they are three different Rock majors:
 
 | Branch | Declares | Descends from upstream tag `18.4.1`? | Commits the tag has that it lacks | Files under `RockWeb/Plugins/` |
 | --- | --- | --- | --- | --- |
