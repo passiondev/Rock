@@ -94,8 +94,8 @@ function Get-PrEnvironmentManifests {
             # deploys staging in DedicatedSite mode, writes environmentName and no
             # PR number, at C:\RockTestEnvs\staging\env.json -- inside the tree this
             # function walks. So staging has always reached this branch and been
-            # logged as an invalid manifest every night, which reads as a defect and
-            # buries the one line that matters.
+            # logged as an invalid manifest on every run of this script, which reads
+            # as a defect and buries the one line that matters.
             #
             # Skipping it is now correct rather than incidental: staging has its own
             # catalog (STAGING_DB_NAME) and is deliberately excluded from the prod

@@ -38,7 +38,7 @@ class SandboxRefreshCoordinationTests(unittest.TestCase):
 
         Once staging has its own catalog it is not the database being refreshed, so
         leaving its app pool up is the correct outcome; calling it an invalid manifest
-        read as a defect in the log every single night.
+        read as a defect in the log on every run.
         """
         text = REFRESH_SCRIPT.read_text()
 

@@ -12,7 +12,7 @@ Document how developers use PR test environments and how operators maintain the 
 
 - [x] Developer docs explain when to use `rock:start`, `rock:stop`, `rock:destroy`, and `rock:auto`.
 - [x] Developer docs explain that PR sites require VPN access.
-- [x] Developer docs explain that the sandbox DB and file storage are shared and refreshed daily.
+- [x] Developer docs explain that the sandbox DB and file storage are shared. Amended 2026-08-17: they no longer say "refreshed daily", because it is not — the sandbox was seeded once on 2026-04-14 and has no scheduled refresh. The docs now say so, since telling developers their data resets overnight when it does not is worse than saying nothing.
 - [x] Developer docs explain that re-adding `rock:start` restarts/redeploys stale environments.
 - [x] Operator docs cover DNS, TLS certificate, firewall/VPN allowlist, SSH deploy user, GCS bucket, and GitHub secrets.
 - [x] Operator docs cover environment paths, manifests, IIS naming, logs, cleanup policy, and manual recovery.
