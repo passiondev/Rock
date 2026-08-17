@@ -268,7 +268,20 @@ jobs:
 
           Invoke-Build -Project "Rock\Rock.csproj" -ExtraArgs @("/m:4")
 
-          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*")
+          # Rock.Mandrill is excluded because upstream ships it broken. Rock 19 deleted
+          # Rock.Version/AssemblySharedInfo.cs (the version moved to Directory.Build.props),
+          # but three .csproj files still <Compile Include> it: Rock.Client and
+          # CheckScannerUtility escape this glob, and Rock.Mandrill does not, so it is the
+          # one that turns an upstream oversight into a failed build --
+          #   error CS2001: Source file 'Rock.Mandrill\..\Rock.Version\AssemblySharedInfo.cs'
+          #                 could not be found.
+          # Still unfixed on upstream develop as of 2026-08-17. Excluding rather than
+          # patching the .csproj on purpose: this file is ours and merges cleanly forever,
+          # whereas editing an upstream project file is a conflict on every future merge.
+          # Nothing is lost -- Rock.Mandrill is a single legacy SMTP transport whose assembly
+          # is not in RockWeb/Bin and is referenced nowhere but license.aspx. If Rock ever
+          # ships it again, drop this pattern and fix the reference properly.
+          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*", "*Rock.Mandrill*")
           $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object {
             $include = $true
             foreach ($pattern in $excludePatterns) {
