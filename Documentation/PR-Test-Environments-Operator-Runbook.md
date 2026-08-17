@@ -99,6 +99,28 @@ To provision:
 
 Then redeploy staging and check the run's `Report which catalog this deploy will use` step. It prints `Catalog source: caller-supplied` when the variable resolved, and emits a warning naming the shared catalog when it did not. An unset or misspelled variable falls back silently to the shared catalog otherwise -- the deploy still succeeds, so this step is the only place that difference is visible. `pr-*` deploys have no equivalent step: they inline the connection string, so the only way to confirm one moved is to redeploy it and check the site works.
 
+## Trunk cutover (bumping the Rock version)
+
+Flipping the trunk branch -- `passion-18.4.1` to `passion-19.3.4`, say -- is the one routine operation that can break every environment at once, and it does it quietly. Read this before starting one.
+
+**Why it is dangerous.** Staging and every `pr-*` site share one catalog by design (above). The flip points staging at a new Rock minor, and the first request after that deploy runs the new minor's EF and plugin migrations against that shared catalog. Every `pr-*` site still serving the old minor's binaries is then old code against a newly-migrated schema -- which is precisely `pr-3` on 2026-08-11, reproduced once per live environment.
+
+**Flipping the pins does not stop the old fleet -- this is the part that surprises people.** It is tempting to assume the PR gate (`pull.base.ref !== configuredBaseBranch`) starts rejecting the retired branch's PRs the moment the config changes. It does not. Both gates fetch the config with `ref: pull.base.ref` (`pr-test-deploy.yml:82-95`, `pr-test-lifecycle.yml:79-92`), so a PR based on `passion-18.4.1` reads `.github/pr-test-environments.json` **from `passion-18.4.1`**, which still names itself. The comparison passes and the deploy proceeds exactly as before.
+
+So the retired fleet does not fail closed, it stays fully live -- rebuilding old-minor artifacts and pushing them onto a catalog staging has already migrated forward, on every `rock:start`, indefinitely. **`rock:stop` is not enough** either; it leaves the files for someone to start later. Destroy them, and shut the door behind them (step 3).
+
+**Order of operations:**
+
+1. **Destroy every live `pr-*` environment**, with `rock:destroy` on each open PR. `C:\RockTestEnvs` lists what is actually deployed; the label state on GitHub can lag it. Ordering against the other steps is not enforced by anything -- `rock:destroy` keeps working for retired-branch PRs after the flip, for the same reason `rock:start` does -- so the only thing making this step first is you doing it first.
+2. **Flip every pin in the same commit.** Bump `EXPECTED_BASE_BRANCH` in `Tests/PrTestEnvironments/test_base_branch_config.py` first and on its own -- that constant is the oracle the guard compares everything against, not a pin. Then run that one file. `BASE_BRANCH_PIN_SITES` enumerates the eight real pins, spread over seven other files, and the failure message names every one still on the old branch; work it until green. That list is the checklist -- do not rebuild it by hand. Nothing else will tell you: no build fails if you miss one. A missed `production-deploy.yml` keeps offering the retired branch as the default for a manual **production** deploy, and a missed `deployment-pipeline-tests.yml` stops running on pushes altogether, silently.
+3. **Shut the door on the retired branch.** This is the step that actually stops the old fleet, and it is easy to skip because nothing prompts for it. Either delete the retired branch, which closes its PRs, or -- gentler and reversible -- commit the *new* `baseBranch` value into `.github/pr-test-environments.json` **on the retired branch itself**. Its gate then reads `passion-19.3.4` while `pull.base.ref` is still `passion-18.4.1`, the comparison fails, and those PRs stop deploying. Until you do one of these, every stale PR keeps its `rock:start` button.
+4. **Deploy staging and let the migrations finish.** Watch the run's `Report which catalog this deploy will use` step, then load the site once to trigger `Application_Start`. Migrations are irreversible; if the catalog is wrong, this is the last moment it is cheap to find out.
+5. **Rebase the open PRs onto the new trunk**, then re-add `rock:start` per PR. Each redeploys from an artifact built against the new minor.
+
+**If you migrate staging before clearing the fleet,** every live `pr-*` site is serving old binaries against the new schema, and each one keeps re-breaking itself on redeploy until its PR is rebased or its environment destroyed. Reverting the pins does not undo it: the catalog has already moved forward and the old minor cannot run against it.
+
+**Nothing in the pipeline reports any of this.** The gate skip is a `core.info` line and `should_deploy=false`, not a failure -- a skipped deploy and a healthy one look the same on the PR. Verify by loading the sites.
+
 ## Manual recovery
 
 - Stuck deploying: cancel stale GitHub Actions runs, then rerun with `rock:start`.
