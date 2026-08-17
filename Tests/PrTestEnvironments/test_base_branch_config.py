@@ -2,11 +2,15 @@ import json
 import pathlib
 import unittest
 
+import yaml
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPO_ROOT / ".github" / "pr-test-environments.json"
-DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-deploy.yml"
-LIFECYCLE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-lifecycle.yml"
+WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+DEPLOY_WORKFLOW = WORKFLOW_DIR / "pr-test-deploy.yml"
+STAGING_WORKFLOW = WORKFLOW_DIR / "staging-deploy.yml"
+LIFECYCLE_WORKFLOW = WORKFLOW_DIR / "pr-test-lifecycle.yml"
 DEV_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Developer-Runbook.md"
 OP_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Operator-Runbook.md"
 PILOT_ISSUE = REPO_ROOT / "Documentation" / "Discussion Docs" / "PR-Test-Environments-Issues" / "12-pilot-rollout.md"
@@ -49,6 +53,63 @@ class BaseBranchConfigTests(unittest.TestCase):
             text = path.read_text()
             self.assertNotIn("develop-17.6.1", text, f"{path.name} still references the retired 17.6.1 branch")
             self.assertIn(f"config.baseBranch || '{EXPECTED_BASE_BRANCH}'", text)
+
+
+def _triggers(workflow):
+    """`on` is a YAML 1.1 boolean, so an unquoted key parses to True while a
+    quoted one stays the string "on". Both spellings exist in this repo."""
+    return workflow.get("on", workflow.get(True))
+
+
+class StagingAndPrEnvironmentCouplingTests(unittest.TestCase):
+    """PR environments follow staging -- same Rock version, same catalog. Decided
+    2026-08-17. The version half is what makes the catalog half safe: Rock applies
+    EF and plugin migrations at Application_Start, so one catalog shared across two
+    Rock minors gets migrated out from under whichever site started first, which is
+    what put pr-3 on a permanent HTTP 500 on 2026-08-11. Pinned to a single branch,
+    everything on the catalog is the same minor and the shared schema is consistent."""
+
+    def test_staging_tracks_the_same_branch_pr_environments_are_gated_to(self):
+        """GitHub Actions cannot read a JSON file to build `on: push: branches:`,
+        so the branch is necessarily a literal in the staging workflow and a value
+        in the PR config -- there is no expression that could single-source them.
+        Nothing but this test keeps the two in step, and drift is not visible in a
+        deploy log: both environments succeed, they just migrate one catalog to two
+        different Rock versions."""
+        staging = yaml.safe_load(STAGING_WORKFLOW.read_text())
+        triggers = _triggers(staging)
+
+        self.assertEqual(
+            triggers["push"]["branches"],
+            [EXPECTED_BASE_BRANCH],
+            "staging deploys from a branch other than the one PR environments are based on",
+        )
+        self.assertEqual(
+            triggers["workflow_dispatch"]["inputs"]["ref"]["default"],
+            EXPECTED_BASE_BRANCH,
+            "a manual staging deploy defaults to a branch other than the trunk",
+        )
+
+    def test_staging_and_pr_environments_resolve_the_same_catalog(self):
+        """Both sides must read the catalog the same way, fallback included. If one
+        reads vars.STAGING_DB_NAME and the other pins secrets.DB_NAME, then setting
+        the variable silently splits them onto different databases -- every deploy
+        still reports success, so the split has no symptom until a migration or a
+        missing row shows up somewhere unrelated."""
+        staging_text = STAGING_WORKFLOW.read_text()
+        deploy_text = DEPLOY_WORKFLOW.read_text()
+
+        self.assertIn("db_name: ${{ vars.STAGING_DB_NAME }}", staging_text)
+        self.assertIn(
+            "Initial Catalog=${{ vars.STAGING_DB_NAME || secrets.DB_NAME }}",
+            deploy_text,
+            "pr-* sites no longer follow staging's catalog",
+        )
+        self.assertNotIn(
+            "Initial Catalog=${{ secrets.DB_NAME }}",
+            deploy_text,
+            "pr-* sites still pin the prod-derived shared catalog directly",
+        )
 
 
 if __name__ == "__main__":

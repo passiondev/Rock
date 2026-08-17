@@ -179,7 +179,18 @@ jobs:
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ needs.build.outputs.artifact_gcs_object_path }}
       PR_TEST_DB_DATA_SOURCE: ${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }}
-      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
+      # PR environments follow staging: same catalog, same Rock version. The version
+      # half is what makes the catalog half safe -- a shared catalog is only
+      # dangerous across *different* Rock minors, because Rock migrates the schema at
+      # Application_Start. Every pr-* site builds from a PR based on the branch named
+      # in .github/pr-test-environments.json, and that branch is the one staging
+      # tracks, so everything pointed at this catalog is the same minor by
+      # construction. StagingAndPrEnvironmentCouplingTests guards both halves.
+      #
+      # STAGING_DB_NAME unset resolves to the empty string and falls back to the
+      # prod-derived shared sandbox catalog, which is where every pr-* site sits
+      # today, so this is a no-op until the staging catalog is provisioned.
+      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ vars.STAGING_DB_NAME || secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2

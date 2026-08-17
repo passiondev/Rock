@@ -486,11 +486,13 @@ class StagingWorkflowTests(unittest.TestCase):
         self.assertTrue(deploy["write_connection_string"])
 
     def test_staging_asks_for_its_own_catalog(self):
-        """Open item 7's chosen half-step: isolate staging, leave the pr-* sites
-        sharing one catalog, because staging is the environment that has to be
-        trustworthy during a demo. A repository variable rather than a secret -- a
-        catalog name is not a credential, and keeping it visible is what lets the
-        deploy log state which database staging used without redacting it."""
+        """Open item 7: staging names its own catalog rather than inheriting the
+        prod-derived one. Superseded 2026-08-17 in one respect -- the pr-* sites
+        now follow staging onto this same catalog instead of being left behind on
+        the shared one, so this variable moves the whole fleet, not just staging.
+        A repository variable rather than a secret -- a catalog name is not a
+        credential, and keeping it visible is what lets the deploy log state which
+        database staging used without redacting it."""
         workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())
 
         self.assertEqual(
