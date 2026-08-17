@@ -22,10 +22,15 @@ name: Deployment Pipeline Tests
       - 'Deployment/PrTestEnvironments/**'
       - 'Tests/PrTestEnvironments/**'
       - '.github/workflows/**'
-      # Read by test_environment_deploy.py, which pins the trunk's declared
-      # version so the production version guard is tested against reality rather
-      # than against a fixture that can drift from it.
+      # Both read by test_environment_deploy.py, which checks the production version
+      # guard against whichever file this checkout actually declares its version in,
+      # rather than against a fixture that can drift from it. 18.x uses the first;
+      # Rock 19 deleted it and moved the version into the second. Both are listed so
+      # the suite still triggers on a version change from either line -- dropping the
+      # stale one at cutover would be the kind of silent gap that only shows up as a
+      # version guard nobody tested.
       - 'Rock.Version/AssemblySharedInfo.cs'
+      - 'Directory.Build.props'
   # The path list is repeated rather than shared through a YAML anchor: PyYAML
   # resolves anchors happily, so the suite's own YAML tests would pass while
   # GitHub Actions -- which does not support them -- rejected the file.
@@ -35,6 +40,7 @@ name: Deployment Pipeline Tests
       - 'Tests/PrTestEnvironments/**'
       - '.github/workflows/**'
       - 'Rock.Version/AssemblySharedInfo.cs'
+      - 'Directory.Build.props'
   workflow_dispatch:
 
 permissions:

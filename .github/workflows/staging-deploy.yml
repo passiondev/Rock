@@ -5,8 +5,22 @@ name: Deploy Staging
 #
 #   https://staging.rock-dev.connect.passion.team
 #
-# It is its own IIS site on the test VM (connect-srv-test), pointed at the same
-# sandbox database the PR environments use. Nothing here can touch production.
+# It is its own IIS site on the test VM (connect-srv-test). Nothing here can touch
+# production.
+#
+# Its database depends on whether the repository variable STAGING_DB_NAME is set:
+#
+#   set    -- staging gets its own catalog, isolated from the pr-* sites, and is
+#             excluded from the nightly prod restore. This is the intended state.
+#   unset  -- staging falls back to secrets.DB_NAME, the one shared sandbox catalog
+#             every pr-* site uses, which is how this environment ran until the
+#             staging catalog was provisioned.
+#
+# The fallback is not a safe steady state, it is a migration path. Rock runs EF and
+# plugin migrations at Application_Start, so on the shared catalog staging and every
+# pr-* site migrate one schema out from under each other; that is what put pr-3 on a
+# permanent HTTP 500 on 2026-08-11. Until the variable is set, staging is only safe
+# while every live pr-* sits on the same Rock minor version as the trunk.
 
 "on":
   push:
@@ -99,4 +113,10 @@ jobs:
       mode: DedicatedSite
       queue_name: commands
       write_connection_string: true
+      # A repository variable rather than a secret: a catalog name is not a
+      # credential, and keeping it visible means the deploy log can say which
+      # database staging landed on without redacting the one detail you want to
+      # check. Unset resolves to the empty string and falls back to the shared
+      # sandbox catalog -- see the header.
+      db_name: ${{ vars.STAGING_DB_NAME }}
     secrets: inherit

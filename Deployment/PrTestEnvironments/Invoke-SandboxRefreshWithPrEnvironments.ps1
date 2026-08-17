@@ -87,8 +87,33 @@ function Get-PrEnvironmentManifests {
     foreach ($manifestFile in $manifestFiles) {
         try {
             $manifest = Get-Content $manifestFile.FullName -Raw | ConvertFrom-Json -AsHashtable
-            if (!$manifest.ContainsKey("prNumber") -or $manifest.prNumber -le 0) {
-                Write-Warning "Skipping invalid PR manifest $($manifestFile.FullName)."
+
+            # A manifest with no prNumber is not corrupt -- it is a non-PR
+            # environment, and `staging` is one. Deploy-PrEnvironment.ps1 is the
+            # only writer that emits prNumber; Deploy-RockEnvironment.ps1, which
+            # deploys staging in DedicatedSite mode, writes environmentName and no
+            # PR number, at C:\RockTestEnvs\staging\env.json -- inside the tree this
+            # function walks. So staging has always reached this branch and been
+            # logged as an invalid manifest every night, which reads as a defect and
+            # buries the one line that matters.
+            #
+            # Skipping it is now correct rather than incidental: staging has its own
+            # catalog (STAGING_DB_NAME) and is deliberately excluded from the prod
+            # restore, so its app pool must NOT be stopped -- there is nothing being
+            # refreshed underneath it. That is only true once the catalog exists. If
+            # staging is still falling back to the shared catalog, it is being
+            # restored out from under a running app pool, and the fix is to finish
+            # provisioning the catalog, not to start stopping the pool here.
+            if (!$manifest.ContainsKey("prNumber")) {
+                $label = if ($manifest.ContainsKey("environmentName")) { $manifest.environmentName } else { $manifestFile.FullName }
+                Write-Host "Leaving non-PR environment '$label' running: it does not share the catalog being refreshed."
+                continue
+            }
+
+            # Reaching here means prNumber is present but unusable, which is a real
+            # malformed manifest and worth a warning that says so.
+            if ($manifest.prNumber -le 0) {
+                Write-Warning "Skipping malformed manifest $($manifestFile.FullName): prNumber is '$($manifest.prNumber)'."
                 continue
             }
 

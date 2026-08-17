@@ -117,23 +117,62 @@ jobs:
           # than hardcoded, so this needs no editing at upgrade time: promote the new
           # trunk to default and deploys of that line begin passing on their own.
           # Rolling back to an older commit on the same minor still passes.
+          #
+          # Rock declares its version in two different places depending on the line,
+          # and this guard has to span both -- it is least dispensable exactly during
+          # the upgrade, when one line is on each side of the comparison. Through
+          # 18.x it lives in Rock.Version/AssemblySharedInfo.cs as
+          #   [assembly: AssemblyVersion( "18.4.1" )]
+          # Rock 19 deleted that file and moved the version into
+          # Directory.Build.props as
+          #   <Version>19.3.4</Version>
+          # Reading only the old path would make every v19 ref unreadable, and an
+          # unreadable version is a hard refusal below -- the guard would block the
+          # upgrade it exists to make safe. Both candidate files are consulted in
+          # order and the first one that yields a version wins. 18.x ships a
+          # Directory.Build.props too, but it carries no <Version>, so probing the
+          # old path first is what keeps 18.x answering 18.x.
+          #
+          # `<Version>` is matched literally and cannot be confused with the
+          # neighbouring `<FileVersion>` or `<InformationalVersion>`: both contain
+          # "Version" but neither contains "<Version>".
+          VERSION_FILES="Rock.Version/AssemblySharedInfo.cs Directory.Build.props"
+
           version_of() {
-            sed -n 's/.*AssemblyVersion( *"\([^"]*\)".*/\1/p' "$1" | head -1
+            sed -n 's/.*AssemblyVersion( *"\([^"]*\)".*/\1/p; s/.*<Version>\([^<]*\)<\/Version>.*/\1/p' "$1" | head -1
           }
 
-          ref_version="$(version_of Rock.Version/AssemblySharedInfo.cs)"
+          for candidate in $VERSION_FILES; do
+            [ -f "$candidate" ] || continue
+            ref_version="$(version_of "$candidate")"
+            if [ -n "$ref_version" ]; then
+              echo "Read Rock $ref_version from $candidate."
+              break
+            fi
+          done
           if [ -z "$ref_version" ]; then
-            echo "::error::Could not read AssemblyVersion from the chosen ref. Refusing to deploy a ref whose Rock version cannot be established."
+            echo "::error::Could not read the Rock version from the chosen ref (looked in: $VERSION_FILES). Refusing to deploy a ref whose Rock version cannot be established."
             exit 1
           fi
 
           default_branch='${{ github.event.repository.default_branch }}'
-          gh api "repos/${{ github.repository }}/contents/Rock.Version/AssemblySharedInfo.cs?ref=$default_branch" \
-            --jq '.content' | tr -d '\n' | base64 -d > default-shared-info.cs
-          expected_version="$(version_of default-shared-info.cs)"
-          rm -f default-shared-info.cs
+          for candidate in $VERSION_FILES; do
+            # A default branch on the other line simply will not have one of these
+            # paths, so a 404 here is an expected outcome and not a failure.
+            if ! gh api "repos/${{ github.repository }}/contents/$candidate?ref=$default_branch" \
+                 --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > default-version-file 2>/dev/null; then
+              rm -f default-version-file
+              continue
+            fi
+            expected_version="$(version_of default-version-file)"
+            rm -f default-version-file
+            if [ -n "$expected_version" ]; then
+              echo "Read expected Rock $expected_version from $candidate on '$default_branch'."
+              break
+            fi
+          done
           if [ -z "$expected_version" ]; then
-            echo "::error::Could not read AssemblyVersion from the default branch ($default_branch)."
+            echo "::error::Could not read the Rock version from the default branch ($default_branch) (looked in: $VERSION_FILES)."
             exit 1
           fi
 

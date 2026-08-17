@@ -46,6 +46,36 @@ Run the refresh through `Invoke-SandboxRefreshWithPrEnvironments.ps1` on the Win
 
 The script writes maintenance state to `C:\RockTestEnvs\maintenance.json` and logs to `C:\RockDeploy\logs\sandbox-refresh-*.log`.
 
+Note that this script only *coordinates* the refresh -- `-RefreshCommand` is mandatory and the restore itself lives outside this repository. Nothing in the repo invokes the script, so the daily trigger is on the VM.
+
+### Staging is deliberately out of scope
+
+The coordinator stops app pools only for manifests carrying a `prNumber`, which `Deploy-PrEnvironment.ps1` is the only writer to emit. `staging` is deployed by `Deploy-RockEnvironment.ps1` in `DedicatedSite` mode, so its manifest at `C:\RockTestEnvs\staging\env.json` has no PR number and the coordinator now logs `Leaving non-PR environment 'staging' running` and moves on. That message replaced a `Skipping invalid PR manifest` warning that read like a defect on every run.
+
+**That is only correct once staging has its own catalog.** While `STAGING_DB_NAME` is unset, staging falls back to the shared catalog, which means the nightly restore is replacing the database under a running `rock-staging` app pool. The fix is to finish provisioning the catalog below, not to start stopping the pool.
+
+## Provisioning the staging catalog
+
+Staging and every `pr-*` site currently share one catalog, so Rock's startup migrations from one environment rewrite the schema the others depend on -- this is what put `pr-3` on a permanent HTTP 500 on 2026-08-11. The agreed half-step is to isolate `staging` only and leave the `pr-*` sites sharing one catalog.
+
+Current shared setup, for reference:
+
+| | |
+|---|---|
+| Instance | `connect-restore-test` (`172.20.0.2`) -- *not* `connect-prod` (`172.20.0.8`) |
+| Catalog | `RockConnectProd` -- the name is an artifact of restoring a prod backup, not production data |
+| Consumed via | secrets `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` |
+
+To provision:
+
+1. **Decide where the catalog lives, and check the refresh mechanism first.** This is the one step that can silently undo the whole change. If the nightly refresh imports a `.bak` into a named database (`gcloud sql import bak ... --database=RockConnectProd`), a second catalog on the same instance survives it, and `RockStaging` on `connect-restore-test` is fine. If instead it restores a Cloud SQL *backup* onto the instance, that operation replaces **every database on the target instance**, and a staging catalog sitting beside `RockConnectProd` would be destroyed nightly no matter what this repo does -- in which case staging needs its own instance. Confirm which before creating anything.
+2. **Create the catalog** and seed it from the current shared one so staging starts from the same sanitized data it has today.
+3. **Grant the existing `DB_USER`** access to it, so no new credential is introduced and `DB_USER` / `DB_PASSWORD` keep working unchanged.
+4. **Exclude it from the refresh.** Whatever `-RefreshCommand` is, it must target only `RockConnectProd`. Staging not resetting nightly is the entire point -- it is what makes a version upgrade durable and staging trustworthy during a demo.
+5. **Set the repository variable** `STAGING_DB_NAME` to the catalog name. A variable, not a secret: a catalog name is not a credential, and keeping it visible lets the deploy log state which database staging used.
+
+Then redeploy staging and check the run's `Report which catalog this deploy will use` step. It prints `Catalog source: caller-supplied` when the variable resolved, and emits a warning naming the shared catalog when it did not. An unset or misspelled variable falls back silently to the shared catalog otherwise -- the deploy still succeeds, so this step is the only place that difference is visible.
+
 ## Manual recovery
 
 - Stuck deploying: cancel stale GitHub Actions runs, then rerun with `rock:start`.
