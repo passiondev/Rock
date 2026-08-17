@@ -615,12 +615,22 @@ class ProductionVersionGuardTests(unittest.TestCase):
     def test_the_expected_version_is_read_from_the_default_branch_not_hardcoded(self):
         """A hardcoded version would have to be edited during every Rock upgrade, and
         the upgrade is exactly when nobody is thinking about this file. Reading the
-        default branch means promoting the new trunk to default is enough."""
-        run = self._guard_step()["run"]
+        default branch means promoting the new trunk to default is enough.
 
-        self.assertIn("github.event.repository.default_branch", run)
+        Look in the step as a whole, not only its `run:`. The expansion moved into
+        `env:` so that operator-typed input in the same script stops being pasted in
+        as source (see test_workflow_input_injection.py); the guard still reads the
+        default branch, it just reads it a line higher up."""
+        step = self._guard_step()
+
+        self.assertIn(
+            "github.event.repository.default_branch",
+            str(step.get("env", {})) + step["run"],
+            "the version guard no longer reads the trunk from the repository, so it "
+            "would compare against whatever branch name was hardcoded when it was written",
+        )
         self.assertNotRegex(
-            run,
+            step["run"],
             r'expected_version=["\']?1[0-9]\.[0-9]',
             "the expected Rock version is hardcoded; it must come from the default branch",
         )
@@ -818,7 +828,3 @@ class ReusableWorkflowPermissionTests(unittest.TestCase):
         # Guard against the walk silently finding nothing, which would make this
         # test pass forever without checking anything.
         self.assertGreaterEqual(edges, 3, "expected to find local reusable workflow calls")
-
-
-if __name__ == "__main__":
-    unittest.main()

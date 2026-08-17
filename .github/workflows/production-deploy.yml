@@ -75,6 +75,13 @@ jobs:
       - name: Resolve SHA and summarize the request
         id: resolve
         shell: bash
+        env:
+          # `ref` is free text an operator types. An Actions expansion is pasted into
+          # the script as source before bash parses it, so `${{ inputs.ref }}` inside
+          # a double-quoted echo would let a ref containing `$(...)` or a backtick run
+          # as a command in a job that holds production credentials. Through `env:`
+          # bash expands `$REF` at runtime and never reparses what it finds.
+          REF: ${{ inputs.ref }}
         run: |
           sha="$(git rev-parse HEAD)"
           short="$(git rev-parse --short HEAD)"
@@ -91,7 +98,7 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Ref | \`${{ inputs.ref }}\` |"
+            echo "| Ref | \`$REF\` |"
             echo "| Commit | \`$short\` |"
             echo "| Subject | $(git log -1 --pretty=%s) |"
             echo "| Mode | **$mode** |"
@@ -102,6 +109,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # Free text, read at runtime rather than pasted into the script. See the
+          # note on the resolve step above.
+          REF: ${{ inputs.ref }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           # Branch names in this repository do not tell you the Rock version, and
           # two of them are actively misleading: `develop` declares 19.0.3 and
@@ -155,11 +167,11 @@ jobs:
             exit 1
           fi
 
-          default_branch='${{ github.event.repository.default_branch }}'
+          default_branch="$DEFAULT_BRANCH"
           for candidate in $VERSION_FILES; do
             # A default branch on the other line simply will not have one of these
             # paths, so a 404 here is an expected outcome and not a failure.
-            if ! gh api "repos/${{ github.repository }}/contents/$candidate?ref=$default_branch" \
+            if ! gh api "repos/$REPOSITORY/contents/$candidate?ref=$default_branch" \
                  --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > default-version-file 2>/dev/null; then
               rm -f default-version-file
               continue
@@ -195,10 +207,10 @@ jobs:
             exit 0
           fi
 
-          echo "::error::Ref '${{ inputs.ref }}' declares Rock $ref_version, but production is expected to run $expected_minor (per the default branch '$default_branch'). Rock migrates the database on first request after a deploy and that is not reversible. If this is a deliberate upgrade, take a verified database backup and re-run with 'acknowledge_version_change' checked."
+          echo "::error::Ref '$REF' declares Rock $ref_version, but production is expected to run $expected_minor (per the default branch '$default_branch'). Rock migrates the database on first request after a deploy and that is not reversible. If this is a deliberate upgrade, take a verified database backup and re-run with 'acknowledge_version_change' checked."
           {
             echo ""
-            echo "> **Refused.** \`${{ inputs.ref }}\` is Rock \`$ref_version\`; production expects \`$expected_minor\`."
+            echo "> **Refused.** \`$REF\` is Rock \`$ref_version\`; production expects \`$expected_minor\`."
             echo "> Rock runs its migrations on the first request after a deploy, so this would change the"
             echo "> production database in a way a file rollback does not undo. If the version change is"
             echo "> intended, back up the database, verify the backup, then re-run with"
