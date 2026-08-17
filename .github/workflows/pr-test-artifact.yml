@@ -268,7 +268,21 @@ jobs:
 
           Invoke-Build -Project "Rock\Rock.csproj" -ExtraArgs @("/m:4")
 
-          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*")
+          # Rock.Mandrill is excluded to keep this list identical to the one on
+          # passion-19.3.4, so the trunk cutover is a version bump and nothing else.
+          # It is not fixing a break here: on this branch Rock.Version/AssemblySharedInfo.cs
+          # still exists and Rock.Mandrill compiles. Rock 19 deletes that file (the version
+          # moves to Directory.Build.props) while leaving three .csproj files still
+          # <Compile Include>-ing it, and Rock.Mandrill is the only one this glob catches --
+          #   error CS2001: Source file 'Rock.Mandrill\..\Rock.Version\AssemblySharedInfo.cs'
+          #                 could not be found.
+          # Still unfixed on upstream develop as of 2026-08-17. Excluding rather than
+          # patching the .csproj on purpose: this file is ours and merges cleanly forever,
+          # whereas editing an upstream project file is a conflict on every future merge.
+          # Nothing is lost either way -- Rock.Mandrill is a single legacy SMTP transport
+          # that builds to its own bin\, is absent from RockWeb/Bin, and is referenced
+          # nowhere in RockWeb. If Rock ever ships it again, drop this pattern.
+          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*", "*Rock.Mandrill*")
           $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object {
             $include = $true
             foreach ($pattern in $excludePatterns) {
