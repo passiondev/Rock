@@ -8,9 +8,16 @@ OP_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Operator-Runboo
 
 
 class RunbookTests(unittest.TestCase):
+    def assertCovers(self, path, needles, why):
+        """assertIn against a runbook prints the entire runbook into the failure,
+        which buries the one term that is missing. Report the missing terms and
+        nothing else."""
+        text = path.read_text()
+        missing = [needle for needle in needles if needle not in text]
+        self.assertFalse(missing, f"{path.name}: {why}: missing {missing}")
+
     def test_developer_runbook_covers_commands_access_and_shared_data(self):
-        text = DEV_RUNBOOK.read_text()
-        for expected in [
+        self.assertCovers(DEV_RUNBOOK, [
             'rock:start',
             'rock:stop',
             'rock:destroy',
@@ -20,12 +27,10 @@ class RunbookTests(unittest.TestCase):
             'shared sanitized sandbox database',
             'shared sandbox file storage',
             're-add `rock:start`',
-        ]:
-            self.assertIn(expected, text)
+        ], "developer runbook no longer covers the commands, access or shared data")
 
     def test_operator_runbook_covers_infrastructure_and_recovery(self):
-        text = OP_RUNBOOK.read_text()
-        for expected in [
+        self.assertCovers(OP_RUNBOOK, [
             '*.rock-dev.connect.passion.team',
             "Let's Encrypt",
             'pr-test-renew-certificates.yml',
@@ -38,8 +43,7 @@ class RunbookTests(unittest.TestCase):
             'Invoke-PrEnvironmentCleanup.ps1',
             'Invoke-SandboxRefreshWithPrEnvironments.ps1',
             'Troubleshooting',
-        ]:
-            self.assertIn(expected, text)
+        ], "operator runbook no longer covers the infrastructure and recovery basics")
 
     def test_operator_runbook_documents_the_trunk_cutover_ordering(self):
         """Flipping the trunk branch points staging at a new Rock minor, and the
