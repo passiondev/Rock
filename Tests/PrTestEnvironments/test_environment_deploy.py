@@ -828,3 +828,56 @@ class ReusableWorkflowPermissionTests(unittest.TestCase):
         # Guard against the walk silently finding nothing, which would make this
         # test pass forever without checking anything.
         self.assertGreaterEqual(edges, 3, "expected to find local reusable workflow calls")
+
+
+class PipelineTestTriggerTests(unittest.TestCase):
+    """This suite asserts on the source text of files it does not live beside, so
+    its trigger paths have to name every tree it reads. A file the suite tests but
+    the trigger does not list is worse than an untested file: the test exists,
+    passes on somebody's laptop, and never runs on the change that breaks it.
+
+    Two such gaps existed. `.github/scripts/**` holds `pr-test-status.js`, which
+    `test_status_comment_script.py` reads, and it is not covered by
+    `.github/workflows/**` -- `scripts` is a sibling of `workflows`, not a child.
+    `Deployment/**` was listed only as `Deployment/PrTestEnvironments/**`, so
+    `Deployment/Repository/set-trunk-protection.sh` and its tests were outside it.
+    Both are listed as whole trees rather than as the specific subdirectories, so
+    the next thing added under them cannot reopen the same hole."""
+
+    PIPELINE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
+
+    REQUIRED_PATHS = [
+        "Deployment/**",
+        "Tests/PrTestEnvironments/**",
+        ".github/workflows/**",
+        ".github/scripts/**",
+    ]
+
+    def test_every_tree_the_suite_reads_triggers_the_suite(self):
+        workflow = yaml.safe_load(self.PIPELINE_WORKFLOW.read_text())
+
+        for trigger in ["push", "pull_request"]:
+            configured = workflow["on"][trigger]["paths"]
+            missing = [path for path in self.REQUIRED_PATHS if path not in configured]
+            self.assertFalse(
+                missing,
+                f"deployment-pipeline-tests.yml {trigger} paths do not cover {missing}; "
+                f"edits there would not run the suite that tests them",
+            )
+
+    def test_the_two_path_lists_stay_identical(self):
+        """They are duplicated rather than shared through a YAML anchor -- GitHub
+        Actions rejects anchors, as the comment in the workflow records. Duplication
+        that nothing checks is duplication that drifts, and the failure mode is a
+        suite that runs on pull requests but not on the push that merges them."""
+        workflow = yaml.safe_load(self.PIPELINE_WORKFLOW.read_text())
+
+        self.assertEqual(
+            workflow["on"]["push"]["paths"],
+            workflow["on"]["pull_request"]["paths"],
+            "the push and pull_request path lists have drifted apart",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
