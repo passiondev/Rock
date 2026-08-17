@@ -105,6 +105,81 @@ jobs:
             echo "| Requested by | @${{ github.actor }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Refuse a ref that is not on the trunk
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Free text, read at runtime rather than pasted into the script. See the
+          # note on the resolve step above.
+          REF: ${{ inputs.ref }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # Production deploys the trunk. `develop` is the 19.0 line and `staging`
+          # is 17.6.1 -- these are different Rock majors, not points on one line.
+          # The last production *build* ran from `develop` on 2026-05-06 and the
+          # only reason no 19.x assembly is on the box is that the artifact was
+          # never installed. That was luck, not a control. This is the control.
+          #
+          # The version guard below is not a substitute: it can be switched off
+          # with `acknowledge_version_change`, and it has to be, because a real
+          # Rock upgrade is a real thing someone does. A checkbox that exists for
+          # a legitimate purpose cannot also be the thing holding `develop` back.
+          #
+          # Ancestry, not equality. The `ref` input's own description says to use
+          # the trunk "unless you are rolling back", so demanding ref == trunk
+          # would break the one exception the workflow already documents. The
+          # compare API answers this directly and needs no git history, which
+          # matters because this job checks out at fetch-depth 1 and a full clone
+          # of Rock is not cheap.
+          #
+          #   identical -- the ref IS the trunk tip
+          #   behind    -- the ref is an earlier trunk commit: a rollback
+          #   ahead     -- built on the trunk but carrying unmerged commits
+          #   diverged  -- another line entirely: develop, staging
+          #
+          # `ahead` is refused deliberately. Production ships what was reviewed
+          # and merged, not what is about to be.
+          default_branch="$DEFAULT_BRANCH"
+          sha='${{ steps.resolve.outputs.sha }}'
+
+          # Keep gh's stderr. A 404, a permissions problem and a rate limit all fail
+          # this call and all need different responses from whoever is reading the
+          # run; discarding the message leaves them with "could not compare" and no
+          # way to tell which of the three happened.
+          if ! status="$(gh api "repos/$REPOSITORY/compare/$default_branch...$sha" --jq '.status' 2>compare-error.txt)"; then
+            echo "::error::Could not compare '$REF' against the trunk ('$default_branch'). Refusing to deploy a ref whose relationship to the trunk cannot be established."
+            echo "::group::gh output"
+            cat compare-error.txt
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          echo "Ref '$REF' is '$status' relative to '$default_branch'."
+
+          case "$status" in
+            identical)
+              echo "| Trunk check | at the tip of \`$default_branch\` |" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            behind)
+              echo "::warning::Deploying an earlier commit on '$default_branch' -- this is a rollback. File contents roll back; database migrations already applied do not."
+              echo "| Trunk check | **rollback** -- an earlier commit on \`$default_branch\` |" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::Ref '$REF' is not on the trunk: it is '$status' relative to '$default_branch'. Production deploys the trunk, or an earlier commit on it for a rollback. Merge this into '$default_branch' first."
+              {
+                echo ""
+                echo "> **Refused.** \`$REF\` is \`$status\` relative to the trunk (\`$default_branch\`)."
+                echo "> Production deploys the trunk, or an earlier commit on it when rolling back."
+                echo "> There is no override for this one -- merge the change into \`$default_branch\`"
+                echo "> and deploy that."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
       - name: Refuse a ref from a different Rock version
         shell: bash
         env:
