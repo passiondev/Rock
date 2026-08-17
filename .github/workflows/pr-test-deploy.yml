@@ -79,11 +79,30 @@ jobs:
               }
             }
 
+            // Read the config from the *default branch*, not from pull.base.ref.
+            // This is what makes a trunk cutover shut the old fleet off. Reading
+            // the PR's own base branch means a PR on a retired branch reads that
+            // branch's copy of this file, which still names itself, so the
+            // comparison below always passes and the site keeps redeploying
+            // old-minor artifacts onto a catalog staging has already migrated --
+            // pr-3 again, once per live environment. Read from the default branch
+            // and the same flip rejects it on the next deploy attempt.
+            //
+            // The default branch is the trunk by convention here, and
+            // production-deploy.yml already treats it as the version oracle for
+            // the same reason. That makes "move the default branch" a required
+            // cutover step; if it is missed, PRs on the new trunk are refused
+            // rather than wrongly accepted, which is the safe direction to fail.
+            //
+            // pr-test-lifecycle.yml deliberately still reads pull.base.ref. It
+            // only runs stop/destroy, and those have to keep working on retired
+            // PRs -- that is how the old fleet gets torn down after a flip.
+            // CutoverGateFailClosedTests guards both halves of the asymmetry.
             const configResponse = await github.rest.repos.getContent({
               owner,
               repo,
               path: '.github/pr-test-environments.json',
-              ref: pull.base.ref
+              ref: context.payload.repository.default_branch
             });
             const config = JSON.parse(Buffer.from(configResponse.data.content, 'base64').toString('utf8'));
             const configuredBaseBranch = config.baseBranch || 'passion-18.4.1';

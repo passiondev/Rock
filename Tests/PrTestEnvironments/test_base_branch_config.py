@@ -150,6 +150,52 @@ BASE_BRANCH_PIN_SITES = [
 ]
 
 
+class CutoverGateFailClosedTests(unittest.TestCase):
+    """Which ref the gate reads its config from decides whether a cutover shuts
+    the old fleet off or leaves it running. Read from `pull.base.ref` and a PR
+    on the retired branch reads *that branch's* config, which still names
+    itself, so the comparison passes and the site keeps deploying old-minor
+    artifacts onto the migrated catalog -- pr-3 again, once per environment.
+    Read from the default branch and the same flip rejects it immediately."""
+
+    def assertContains(self, path, needle, why):
+        """assertIn dumps the entire file into the failure when the haystack is a
+        workflow, which buries the one line that matters. These are the failures a
+        cutover reads under time pressure, so they stay one line."""
+        self.assertTrue(needle in path.read_text(), f"{path.name}: {why} (looked for {needle!r})")
+
+    def assertLacks(self, path, needle, why):
+        self.assertFalse(needle in path.read_text(), f"{path.name}: {why} (found {needle!r})")
+
+    def test_the_deploy_gate_reads_its_config_from_the_default_branch(self):
+        self.assertContains(
+            DEPLOY_WORKFLOW,
+            "ref: context.payload.repository.default_branch",
+            "the deploy gate reads config from somewhere other than the default branch, "
+            "so flipping the trunk pin will not stop the retired fleet",
+        )
+        self.assertLacks(
+            DEPLOY_WORKFLOW,
+            "ref: pull.base.ref",
+            "the deploy gate still reads the retired branch's own config, which always "
+            "names itself -- the gate can never reject it",
+        )
+
+    def test_the_lifecycle_gate_still_reads_the_pull_request_base_branch(self):
+        """Deliberately the opposite of the deploy gate, and the asymmetry is the
+        whole point. Lifecycle only ever runs `stop` and `destroy`. If it also read
+        the default branch, then the moment the pin flipped, the retired fleet would
+        become undestroyable through the pipeline -- exactly when the runbook needs
+        `rock:destroy` to work on every one of those PRs. Deploy fails closed;
+        teardown stays open."""
+        self.assertContains(
+            LIFECYCLE_WORKFLOW,
+            "ref: pull.base.ref",
+            "the lifecycle gate no longer reads the PR's own base branch, so rock:destroy "
+            "stops working on retired PRs -- the fleet cannot be cleaned up after a cutover",
+        )
+
+
 class BaseBranchCutoverPinTests(unittest.TestCase):
     """Flipping the trunk branch is an eight-file edit with no compiler behind it.
     A pin left on the old branch does not fail a build -- production-deploy.yml
