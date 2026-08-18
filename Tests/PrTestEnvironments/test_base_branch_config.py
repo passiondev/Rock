@@ -248,12 +248,24 @@ class BaseBranchCutoverPinTests(unittest.TestCase):
 
 
 class StagingAndPrEnvironmentCouplingTests(unittest.TestCase):
-    """PR environments follow staging -- same Rock version, same catalog. Decided
-    2026-08-17. The version half is what makes the catalog half safe: Rock applies
-    EF and plugin migrations at Application_Start, so one catalog shared across two
-    Rock minors gets migrated out from under whichever site started first, which is
-    what put pr-3 on a permanent HTTP 500 on 2026-08-11. Pinned to a single branch,
-    everything on the catalog is the same minor and the shared schema is consistent."""
+    """One Rock minor per catalog.
+
+    Decided 2026-08-17 as "PR environments follow staging: same Rock version, same
+    catalog". Narrowed 2026-08-18 to the half that was actually load-bearing. Rock
+    applies EF and plugin migrations at Application_Start, so a catalog shared
+    across two Rock minors gets migrated out from under whichever site started
+    first -- that is what put pr-3 on a permanent HTTP 500 on 2026-08-11, and what
+    stranded the sandbox catalog part-way through v19 on 2026-08-18. Sharing a
+    catalog was never the safety property. Sharing a *minor* was, and requiring the
+    catalog to be shared as well is what made staging unusable as the place to find
+    out whether the next minor migrates cleanly.
+
+    So staging and the fleet now name separate variables and fall back to the same
+    catalog. Unset, they resolve identically and the 2026-08-17 arrangement holds
+    unchanged; set one and exactly one environment moves. What keeps two minors off
+    one catalog is no longer the wiring but the guard in staging-deploy.yml, which
+    refuses a minor change while staging's variable is unset -- a rule that reads
+    the variable at deploy time instead of inferring it from the file."""
 
     def test_staging_tracks_the_same_branch_pr_environments_are_gated_to(self):
         """GitHub Actions cannot read a JSON file to build `on: push: branches:`,
@@ -261,7 +273,12 @@ class StagingAndPrEnvironmentCouplingTests(unittest.TestCase):
         in the PR config -- there is no expression that could single-source them.
         Nothing but this test keeps the two in step, and drift is not visible in a
         deploy log: both environments succeed, they just migrate one catalog to two
-        different Rock versions."""
+        different Rock versions.
+
+        Still asserted after the catalog split, because the split does not by itself
+        give staging a database -- it only makes one possible. Moving staging to the
+        next minor is `vars.STAGING_DB_NAME` and this literal, in that order, and
+        the guard in staging-deploy.yml fails the deploy if the literal moves first."""
         staging = yaml.safe_load(STAGING_WORKFLOW.read_text())
         triggers = _triggers(staging)
 
@@ -276,25 +293,71 @@ class StagingAndPrEnvironmentCouplingTests(unittest.TestCase):
             "a manual staging deploy defaults to a branch other than the trunk",
         )
 
-    def test_staging_and_pr_environments_resolve_the_same_catalog(self):
-        """Both sides must read the catalog the same way, fallback included. If one
-        reads vars.STAGING_DB_NAME and the other pins secrets.DB_NAME, then setting
-        the variable silently splits them onto different databases -- every deploy
-        still reports success, so the split has no symptom until a migration or a
-        missing row shows up somewhere unrelated."""
+    def test_staging_and_the_pr_fleet_name_separate_catalog_variables(self):
+        """`vars.STAGING_DB_NAME` reads like staging's variable and was documented as
+        staging's variable, but pr-test-deploy.yml read it too -- so setting it moved
+        the whole fleet. Staging is the environment a version bump is supposed to be
+        tried on first; a variable that cannot be set without taking every pr-* site
+        with it means there is nowhere to try it."""
         staging_text = STAGING_WORKFLOW.read_text()
         deploy_text = DEPLOY_WORKFLOW.read_text()
 
         self.assertIn("db_name: ${{ vars.STAGING_DB_NAME }}", staging_text)
         self.assertIn(
-            "Initial Catalog=${{ vars.STAGING_DB_NAME || secrets.DB_NAME }}",
+            "Initial Catalog=${{ vars.PR_TEST_DB_NAME || secrets.DB_NAME }}",
             deploy_text,
-            "pr-* sites no longer follow staging's catalog",
+            "the pr-* fleet does not name its own catalog variable",
+        )
+
+        # Comments may still discuss it -- the reason the fleet has its own variable
+        # cannot be written down without naming the one it used to share.
+        code = "\n".join(
+            line.split("#", 1)[0] for line in deploy_text.splitlines()
         )
         self.assertNotIn(
-            "Initial Catalog=${{ secrets.DB_NAME }}",
-            deploy_text,
-            "pr-* sites still pin the prod-derived shared catalog directly",
+            "STAGING_DB_NAME",
+            code,
+            "pr-* sites still read staging's catalog variable, so setting it moves the fleet too",
+        )
+
+    def test_the_catalog_split_is_inert_until_a_variable_is_set(self):
+        """Neither variable is set today and both environments sit on the
+        prod-derived sandbox catalog. The split has to preserve that exactly: an
+        unset variable interpolates to the empty string, and `|| secrets.DB_NAME`
+        is the only thing standing between that and a deploy whose connection
+        string names no database at all.
+
+        Asserted as the operand order rather than the presence of the fallback,
+        because reversed it still parses, still deploys, and still reports success
+        -- it just pins every environment to the shared catalog forever and makes
+        both variables dead config."""
+        for path in [DEPLOY_WORKFLOW, STAGING_WORKFLOW, WORKFLOW_DIR / "env-deploy-command.yml"]:
+            text = path.read_text()
+            self.assertNotIn(
+                "secrets.DB_NAME ||",
+                text,
+                f"{path.name} prefers the shared catalog over the environment's own variable",
+            )
+
+        self.assertIn(
+            "vars.PR_TEST_DB_NAME || secrets.DB_NAME",
+            DEPLOY_WORKFLOW.read_text(),
+            "the fleet no longer falls back to the shared catalog, so an unset variable "
+            "would deploy a connection string with an empty Initial Catalog",
+        )
+
+    def test_the_operator_runbook_does_not_still_promise_one_variable_moves_both(self):
+        """The runbook told operators that setting the catalog variable moves staging
+        and every pr-* site together, and that was true when it was written. Left
+        standing it is worse than no note at all: it describes a blast radius large
+        enough to talk someone out of the move this change exists to make safe."""
+        runbook = OP_RUNBOOK.read_text()
+
+        self.assertIn("PR_TEST_DB_NAME", runbook, "the fleet's own variable is undocumented")
+        self.assertNotIn(
+            "moves **staging and every `pr-*` site**",
+            runbook,
+            "the runbook still describes the pre-split blast radius",
         )
 
 
