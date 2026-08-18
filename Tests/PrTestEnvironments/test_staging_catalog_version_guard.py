@@ -157,6 +157,40 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
                     f"staging was refused a v19 deploy onto its own dedicated catalog:\n{output}",
                 )
 
+    def test_the_all_clear_does_not_promise_the_fleet_is_insulated(self):
+        """Waving the deploy through is right -- see the test above -- but the words
+        it waves it through with are what an operator acts on, and the ones it used
+        before 2026-08-18 were "so Rock 19.3.4 can migrate it without touching the
+        pr-* fleet".
+
+        That is true right up until the migration fails, which is the case worth
+        warning about and the case that actually happened. Rock migrates at
+        Application_Start and EF commits each migration separately, so a failure
+        part-way strands the catalog between two minors with no abort. Recovering
+        the shared catalog from that took an *instance-level* restore, because
+        Cloud SQL for SQL Server has no per-database one -- and that restore rolls
+        every catalog on the instance back, the pr-* fleet's included.
+
+        So the deploy staging is being cleared for is precisely the one whose
+        recovery path does touch the fleet. Say so, and say what makes it
+        survivable: an on-demand backup taken before the deploy, not after."""
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard("19.3.4", "passion-18.4.1", "RockStaging", layout)
+                self.assertEqual(code, 0, f"the escape hatch closed:\n{output}")
+                lowered = output.lower()
+                self.assertIn(
+                    "backup", lowered,
+                    "the all-clear does not tell the operator to take a backup first, "
+                    f"which is the only thing that makes the deploy reversible:\n{output}",
+                )
+                self.assertIn(
+                    "instance", lowered,
+                    "the all-clear does not say that recovering a stranded catalog "
+                    "restores the whole instance, so it still reads as though a failed "
+                    f"staging migration cannot reach the pr-* fleet:\n{output}",
+                )
+
     def test_an_unreadable_version_file_refuses_rather_than_waves_through(self):
         """A guard that cannot tell which minor it is deploying must not assume the
         safe answer. Renaming or reformatting AssemblySharedInfo.cs would otherwise
