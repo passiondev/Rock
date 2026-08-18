@@ -176,6 +176,32 @@ class FinderWorkflowTests(unittest.TestCase):
         )
 
 
+    def test_the_default_queue_is_the_one_the_vm_actually_polls(self):
+        """The dispatch box is pre-filled with this, so it is what an operator gets by
+        leaving the form alone -- and posting to a queue nothing watches does not fail,
+        it times out after an hour looking exactly like a broken VM.
+
+        Read from the agent rather than hardcoded. The agent's own default is the
+        definition of which prefix is polled; a test asserting the literal 'commands'
+        twice would keep passing if production's queue were ever renamed."""
+        agent_default = re.search(
+            r'\$QueueName\s*=\s*"([a-z][a-z0-9-]*)"', AGENT.read_text()
+        )
+        self.assertIsNotNone(agent_default, "the agent no longer declares a default QueueName")
+
+        block = re.search(r"\n      queue_name:\n(.*?)(?=\n      \w|\n\w)",
+                          WORKFLOW.read_text(), re.DOTALL)
+        self.assertIsNotNone(block, "the workflow does not declare a queue_name input")
+        workflow_default = re.search(r"default:\s*(\S+)", block.group(1))
+        self.assertIsNotNone(workflow_default, "queue_name declares no default")
+
+        self.assertEqual(
+            workflow_default.group(1),
+            agent_default.group(1),
+            "the finder would post where the agent is not looking",
+        )
+
+
 class FinderWorkflowInputsAreNotInterpolatedTests(unittest.TestCase):
     """The general rule -- no operator-typed input pasted into a script body -- lives in
     test_workflow_input_injection.py and covers every workflow at once. It did not
