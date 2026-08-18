@@ -101,7 +101,32 @@ jobs:
             Invoke-WebRequest -UseBasicParsing -Headers `$headers -Uri `$uri -OutFile `$DestinationPath
           }
           New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
+          # The floor: what the box cannot come up without. Kept literal on purpose, so a
+          # GCS listing that fails at boot still leaves a VM that can take commands.
           `$scripts = @('Deploy-PrEnvironment.ps1','Deploy-RockEnvironment.ps1','Destroy-PrEnvironment.ps1','Install-PrEnvironmentCommandQueueTask.ps1','Invoke-PrEnvironmentCleanup.ps1','Invoke-PrEnvironmentCommandQueue.ps1','Invoke-PrEnvironmentCertificateRenewal.ps1','Invoke-SandboxRefreshWithPrEnvironments.ps1','Set-PrEnvironmentRuntimeConfiguration.ps1','Stop-PrEnvironment.ps1')
+          # ...and then everything else the upload step actually published. The upload is a
+          # glob over two directories; this list was ten names typed by hand, and nothing
+          # tied them together. On 2026-08-18 the glob picked up Find-LegacyTextColumns.ps1,
+          # the list did not, and the agent failed the command it had just learned with
+          # "The term 'C:\RockDeploy\Find-LegacyTextColumns.ps1' is not recognized" -- on a
+          # bootstrap that had reported success.
+          #
+          # Single-quoted so the VM does not reparse it; `$bucketName is substituted here,
+          # by the here-string, before the script ever leaves the runner.
+          try {
+            `$listUri = 'https://storage.googleapis.com/storage/v1/b/$bucketName/o?prefix=pr-environments/bootstrap/latest/'
+            `$listHeaders = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
+            `$published = @((Invoke-RestMethod -Headers `$listHeaders -Uri `$listUri).items |
+              ForEach-Object { `$_.name } |
+              Where-Object { `$_ -like '*.ps1' } |
+              ForEach-Object { Split-Path `$_ -Leaf })
+            if (`$published.Count -gt 0) {
+              `$scripts = @(`$scripts + `$published | Select-Object -Unique)
+            }
+          }
+          catch {
+            Write-Host "Could not list the bootstrap prefix (`$(`$_.Exception.Message)). Falling back to the built-in list."
+          }
           foreach (`$script in `$scripts) {
             Copy-GcsObjectToFile -ObjectName "pr-environments/bootstrap/latest/`$script" -DestinationPath "C:\RockDeploy\`$script"
           }
