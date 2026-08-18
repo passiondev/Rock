@@ -80,6 +80,11 @@ if ([string]::IsNullOrWhiteSpace($resolvedConnectionString)) {
 
 Add-Type -AssemblyName System.Data | Out-Null
 
+# Duplicated in Convert-LegacyTextColumns.ps1 rather than shared through a module,
+# deliberately. The only claim this script makes is that it does not write, and that
+# claim is worth exactly as much as it is easy to check -- one file, read top to
+# bottom, with no dependency to go and audit as well, and in particular no file
+# shared with the script that does the writing.
 function Invoke-ReadQuery {
     param(
         [Parameter(Mandatory = $true)][System.Data.SqlClient.SqlConnection] $Connection,
@@ -197,7 +202,10 @@ SELECT DB_NAME() AS CatalogName, CONVERT(nvarchar(128), SERVERPROPERTY('ProductV
     }
     else {
         Write-Host "$($findings.Count) legacy column(s) found:"
-        $findings | Format-Table -AutoSize | Out-String | Write-Host
+        # -Width, because Out-String defaults to the console width and this table is
+        # nine columns wide. Truncated, the thing that gets pasted into the ticket is
+        # missing the collation and the row count.
+        $findings | Format-Table -AutoSize -Wrap | Out-String -Width 200 | Write-Host
 
         $fullText = @($findings | Where-Object { $_.HasFullTextIndex })
         if ($fullText.Count -gt 0) {
