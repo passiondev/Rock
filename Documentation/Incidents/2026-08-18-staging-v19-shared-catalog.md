@@ -114,7 +114,21 @@ recovery position here would have been considerably worse. See open item 22.
 - **Devops.** Provision a dedicated staging catalog and set the `STAGING_DB_NAME`
   repository variable. Until that exists, staging cannot go to v19 at all — which is now
   enforced rather than merely documented.
-- **Open.** Find the `text`-typed column behind the migration failure. It needs a query
-  against the restored catalog for columns of type `text`/`ntext`, which needs database
-  access this repository does not have. It will recur on the real v19 cutover, on every
+- **Done (this change).** `pr-test-deploy.yml` no longer reads `vars.STAGING_DB_NAME`; the
+  fleet has its own `vars.PR_TEST_DB_NAME`. Both are unset and both fall back to
+  `secrets.DB_NAME`, so nothing moves today — but setting staging's variable now moves
+  staging alone. That the two were one variable is the reason there was nowhere to try v19
+  before trying it here.
+- **Done (this change).** `Deployment/Database/Find-LegacyTextColumns.ps1` (read-only) and
+  `Convert-LegacyTextColumns.ps1` (`-Apply`-gated, explicit columns, generated rollback).
+  The finder also prints the `__MigrationHistory` high-water mark, which is what names the
+  last migration to commit on a stranded catalog.
+- **Open — needs a database.** Run the finder against the restored catalog and fix what it
+  reports. The repository has no route to a connection string (Secret Manager is not
+  enabled on `passioncitychurch-com`), so this is the first step of the v19 attempt rather
+  than something that can be closed from here. It will recur on the real cutover, on every
   catalog carrying the same drift — including production.
+- **Open — one line, blocked on PR #10.** `test_powershell_edition_compatibility.py` scans
+  `Deployment/PrTestEnvironments` for PowerShell 7-only syntax and now misses
+  `Deployment/Database`. Point it at both directories once that PR lands; duplicating its
+  table onto this branch would only create a merge conflict for the sake of it.
