@@ -425,8 +425,12 @@ storage. That means:
   environment.
 - Someone else's test data shows up in yours. A record that "appeared out of nowhere"
   probably came from a colleague.
-- The sandbox is refreshed daily, so **your test data disappears overnight.** Don't build
-  up a scenario over two days and expect it to survive.
+- The sandbox **is not** refreshed on a schedule, despite what this section said until
+  2026-08-17. Measured against GCP: it was seeded once on 2026-04-14 and has had no data
+  load since. Your test data persists — which sounds better than it is. Nothing resets it,
+  so it accumulates everyone's leftovers and every PR's migrations, and it drifts further
+  from production every week. Don't treat "it worked in a PR environment" as "it works
+  against production-like data."
 - It's sanitized, not fake-from-scratch — still treat it as sensitive. No screenshots of
   it in public places.
 
@@ -738,7 +742,7 @@ instructions do.
 | The page looks exactly the same as before my change | Very likely the page is drawn by a file this branch does not contain — the sign-in page, `/checkin`, and anything on the `CONNECT` theme all are ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Add a nonsense path to the test URL and look at the 404 page. It is the one page a signed-out visitor sees that comes from this branch, so it tells you whether your build actually deployed |
 | A plugin page looks wrong on a test site, or shows `Error Loading Block` | Plugin blocks are not in the repo; test sites borrow the server's copy through the overlay ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Not a bug in your PR, and your branch cannot fix it. Verify that page in production instead, and talk to DevOps |
 | Environment was working, now says `stopped` | Someone added `rock:stop`, or the PR was closed without merging — nothing stops it on a timer | Add `rock:start` again (full rebuild, ~30 min) |
-| Test data vanished | Nightly sandbox refresh ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Recreate it; don't build multi-day scenarios |
+| Test data vanished | Someone else's change, not a refresh -- the sandbox has no scheduled reset ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Ask in the channel before recreating it |
 | Data I didn't create | Shared sandbox DB ([Trap 2](#trap-2-the-database-is-shared-and-it-resets)) | Expected. Ask in team chat if it's blocking |
 | Email/text/payment didn't happen | Disabled by design ([Trap 4](#trap-4-no-email-no-texts-no-payments-no-jobs)) | Not a bug. Ask DevOps for a testing plan if that's the change |
 | Stuck on `deploying` for a long time | Stale Actions run | Ask DevOps: cancel the run, then re-add `rock:start` |

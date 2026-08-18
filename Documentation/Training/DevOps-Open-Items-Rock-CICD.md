@@ -266,10 +266,11 @@ PR closed more than a week ago.
 
 ### 7. Staging and every PR environment share one database catalog
 
-`env-deploy-command.yml:94` and `pr-test-deploy.yml:182` build their connection strings from
+`env-deploy-command.yml:121` and `pr-test-deploy.yml:193` build their connection strings from
 the same four secrets — `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — and
 neither deploy script derives a per-environment catalog. So `staging` and `pr-4` and every
-future `pr-*` all point at one catalog on the shared test Cloud SQL instance.
+future `pr-*` all point at one catalog on the shared test Cloud SQL instance. Both now accept an
+override, but until `STAGING_DB_NAME` is set they still resolve to that one catalog.
 
 That is one shared mutable dependency behind every isolated-looking test site. Rock runs EF
 and plugin migrations at `Application_Start`, writes global attributes such as
@@ -329,12 +330,18 @@ a new repo variable (`STAGING_DB_NAME`, say) and a real database to point it at:
 - Cheapest useful half-step: give `staging` its own catalog and leave the `pr-*` sites sharing
   one. Staging is the one that must be trustworthy during a demo.
 
-**Decided 2026-08-17: take the half-step, and exclude staging's catalog from the nightly prod
+**Decided 2026-08-17: take the half-step, and exclude staging's catalog from the prod
 restore.** Isolating staging without excluding it from the refresh would be nearly pointless —
 a prod restore puts prod's 18.x schema back, so a staging site on a newer Rock line would
-re-run its whole migration set against a fresh restore every night, or fail the way `pr-3`
-did. Not resetting nightly is what makes staging trustworthy and a version upgrade durable.
+re-run its whole migration set against every fresh restore, or fail the way `pr-3` did.
+Not being reset underneath is what makes staging trustworthy and a version upgrade durable.
 It also means staging's data drifts from prod over time, which is the accepted cost.
+
+That decision was taken believing the restore ran nightly. It does not run at all — see
+*The refresh mechanism* below, measured the same day. The decision stands anyway: a refresh
+that is dormant rather than deleted is still loaded, and the exclusion has to be in place
+before someone turns it back on. What changes is the price, which is zero rather than a
+day's freshness.
 
 Repo-side work is done and is a no-op until the catalog exists:
 
@@ -350,14 +357,94 @@ Repo-side work is done and is a no-op until the catalog exists:
   no `prNumber` — only `Deploy-PrEnvironment.ps1` writes one — so it has been logged as an
   invalid manifest on every refresh. Leaving `rock-staging` running is correct *once the catalog
   is separate*; while staging is still on the shared catalog, that catalog is being restored out
-  from under a live app pool.
+  from under a live app pool. Once the move below is done the `prNumber` test becomes the wrong
+  test rather than an incomplete one — see issue 09 for why a re-seed needs a different key.
 
-Remaining, and it is DevOps' call because it is where the change can be silently undone: decide
-whether the refresh imports a `.bak` into a named database or restores a Cloud SQL *backup*.
-A backup restore replaces **every database on the target instance**, so a staging catalog beside
-`RockConnectProd` on `connect-restore-test` would be destroyed nightly regardless of anything in
-this repo — that case needs a separate instance, not a separate catalog. Provisioning steps are
-in `Documentation/PR-Test-Environments-Operator-Runbook.md`.
+**Decided 2026-08-17: the `pr-*` sites follow staging** — same catalog, same Rock version. This
+supersedes the earlier half-step of isolating `staging` alone. `pr-test-deploy.yml` now reads
+`Initial Catalog=${{ vars.STAGING_DB_NAME || secrets.DB_NAME }}`, the same variable with the same
+falsy-empty-string fallback staging uses, so it is a no-op until the catalog exists.
+
+The reasoning is worth keeping, because it inverts what this item originally said. A shared
+catalog is not the defect; sharing one across two Rock *minors* is. Every `pr-*` site builds from
+a PR based on the branch staging deploys, so they are the same minor by construction — and
+`Tests/PrTestEnvironments/test_base_branch_config.py` now fails if `.github/pr-test-environments.json`
+and `staging-deploy.yml`'s push filter ever name different branches. GitHub Actions cannot read a
+JSON file to build `on: push: branches:`, so a test is the only thing that can hold that pin
+together. What the move buys is that no environment of ours is left on the catalog the prod
+restore owns. What it costs, on paper: `pr-*` sites stop getting fresh sanitized prod data from
+that restore, so they drift from production indefinitely and need an occasional deliberate
+re-seed. In practice the restore never runs, so the drift and the re-seed are both pre-existing
+conditions this decision inherits rather than creates.
+
+#### The refresh mechanism — measured 2026-08-17, and there is no nightly refresh
+
+This was the one step that could silently undo the change, so it was verified against GCP rather
+than assumed. Both answers came back, and the second one is the surprise.
+
+Everything lives in project **`passioncitychurch-com`** — the resources are all named `connect-*`,
+which is what makes the project easy to misremember. Confirmed by the CI bucket: `PR_TEST_GCS_BUCKET`
+is `connect-file-storage`, and that bucket is owned by this project alongside `connect-mssql-backups`
+and both SQL instances.
+
+**1. The mechanism is a per-database `.bak` import.** From `gcloud sql operations describe` on the
+last load:
+
+```
+operationType: IMPORT
+importContext:
+  database: RockConnectProd
+  fileType: BAK
+  bakImportOptions: { bakType: FULL, striped: true, noRecovery: true }
+  uri: gs://connect-mssql-backups/RockConnectProd/full/1775749763/
+```
+
+Preceded by a `DELETE_DATABASE`, so the procedure is drop-then-import, scoped to one named catalog.
+**A second catalog on `connect-restore-test` therefore survives it, and staging does not need its
+own instance.** No `RESTORE_VOLUME` operation has ever run on this instance, which also rules out
+the worry that `DB_USER` might be a production login surviving an instance-level restore.
+
+**2. There is no nightly refresh, and there never was.** The instance's *complete* operation
+history is 13 entries since it was created on 2026-04-13. The last data load of any kind was
+**2026-04-14**. Everything after that is `UPDATE` (configuration) and one `RESTART`. Corroborating:
+
+- `gs://connect-mssql-backups` holds exactly **one** backup set, dated **2026-05-12** (6 stripes,
+  ~127 GB). The April 14 import used a different set that is no longer there. So the one backup
+  that does exist was never imported.
+- The **Cloud Scheduler API has never been enabled** in the project, so no scheduler job drives it.
+- The only `cron:` in `.github/workflows/` is the weekly certificate renewal, and
+  `-RefreshCommand` on `Invoke-SandboxRefreshWithPrEnvironments.ps1` has no caller anywhere.
+
+Cloud SQL for SQL Server does not permit `RESTORE DATABASE` from a client — a load has to go
+through the import API — so the operations list is authoritative. **The sandbox catalog was seeded
+once from a 2026-04-09 production backup and has not been refreshed in four months.**
+
+What *is* running daily is `connect-prod`'s own automated Cloud SQL backup (`BACKUP_VOLUME` every
+night around 01:00–03:00, unbroken through 2026-08-17). Those are instance-level backups: useful,
+but restorable only onto a whole instance, which is why the April load went through a `.bak`
+export/import instead.
+
+##### What this changes
+
+- **The provisioning blocker is cleared.** Create `RockStaging` on `connect-restore-test`; no new
+  instance required.
+- **"Exclude it from the refresh" is a no-op today.** There is nothing to exclude. Keep the note
+  for whoever eventually builds the refresh.
+- **A Rock upgrade on the shared catalog would *not* be reverted overnight.** Earlier revisions of
+  this document said it would. That was inherited from the PRD's design intent, not measured, and
+  it is wrong. The ordering constraint it implied — provision the catalog *before* upgrading or
+  lose the upgrade — does not exist.
+- **The migration-collision risk is untouched and is the actual blocker.** It is what put `pr-3` on
+  a permanent 500, and it has nothing to do with refreshes.
+- **The stale-data cost of moving `pr-*` onto the staging catalog is not a cost.** There is no
+  nightly freshness to give up. The sandbox is already four months old and already accumulating
+  every PR's data and migrations with no reset.
+- **The refresh coordinator has never run.** Its acceptance criteria in issue 09 are checked
+  because the script implements them, not because the process exercises it.
+- One open sizing question for DevOps: `connect-restore-test` is `db-custom-2-8192` with a **418 GB
+  disk and `storageAutoResize` disabled**. A ~127 GB striped backup implies a restored database
+  well over 150 GB, so a second full copy beside it is marginal. Check used bytes before cloning;
+  seeding `RockStaging` may need a disk bump first.
 
 ### 8. `build-develop.yml` still deploys by rebooting a VM
 
@@ -543,6 +630,54 @@ because the VM needs rebooting. The difference is what the signal means. A non-e
 does not tell you an agent is *alive* (item 16's mistake), but it does tell you a command is
 either running or waiting — and either one is a bad thing to reboot on top of. Same list, sound
 inference this time.
+
+### 21. The N→E machine family move already happened, and it is not the risk it was raised as
+
+**The question was whether moving the Rock VMs from N-series to E-series breaks anything. It does
+not, and it is already done.** Measured against project `passioncitychurch-com` on 2026-08-17:
+
+| VM | Machine type | Role | Family history |
+|---|---|---|---|
+| `connect-srv-test` | `e2-highmem-4` — 4 vCPU, 32 GB | staging + every `pr-*` site | `n2-standard-4` on 2026-05-06, then `e2-highmem-4` on 2026-08-12 19:46 PDT |
+| `connect-srv-prod` | `e2-standard-8` — 8 vCPU, 32 GB | production Rock | created 2026-05-11 already on E2; **zero** operations since |
+| `intermediary-host` | `e2-small` | bastion | — |
+
+`gcloud logging read 'protoPayload.methodName:"setMachineType"' --freshness=400d` returns exactly
+two changes in the retained window, both on `connect-srv-test`, and the 2026-08-12 one was a clean
+stop → change → start inside six minutes. Production was never migrated because it was never on
+N-series to begin with. So there is no pending cutover to plan and no rollback to hold open.
+
+**It was an upgrade, not a sidegrade.** `n2-standard-4` is 4 vCPU / 16 GB; `e2-highmem-4` is 4 vCPU
+/ 32 GB. Same core count, double the memory, on the one host that runs staging and every `pr-*` app
+pool at once — which is the resource the IIS worker processes actually contend for. Windows Server
+licensing on GCE is billed per vCPU and is family-independent, so holding at 4 vCPU means the
+license cost did not move either.
+
+**What actually differs on E2, and whether Rock cares:**
+
+- **CPU platform is not pinnable.** E2 rejects `minCpuPlatform`, and the fleet is mixed — `connect-srv-prod` is on AMD Rome, `connect-srv-test` on Intel Broadwell — so the platform can change under a restart or a live migration. Irrelevant here: Rock is .NET Framework on CLR JIT with no AVX-512 or platform-specific path, and both machines already run different platforms without incident.
+- **Dynamic resource management.** E2 vCPUs are not pinned to physical cores the way N2's are. Steady-state throughput is fine; the exposure is burst latency, which lands on Rock's heaviest moment — `Application_Start`, where EF migrations, Lava, and block compilation all run at once. This does not create a new failure, but it plausibly makes **item 20** (sites going cold and reading as a broken deploy) a little worse. Treat any regression in cold-start time as an item 20 symptom, not a machine-family defect.
+- **Ceilings.** E2 tops out at 32 vCPU / 128 GB, and supports no local SSD, GPUs, sole tenancy, or nested virtualization. Nothing here is close to any of those; both VMs boot from 150 GB `pd-ssd`.
+- **Cloud SQL is unaffected.** `connect-prod` and `connect-restore-test` are Cloud SQL instances on their own `db-custom-*` tiers. GCE machine families do not apply to them, so nothing in item 7's catalog work interacts with this.
+
+Two incidental findings came out of the same investigation, and both outrank the question that
+prompted it:
+
+**`automaticRestart: false` on both Rock VMs, production included.** With
+`onHostMaintenance: MIGRATE` set, *planned* Google maintenance live-migrates and nothing restarts —
+that part is healthy. But on an unplanned host failure the instance stops and **stays stopped until
+a human starts it**. On the production Rock web server that is an unbounded outage waiting on
+someone noticing. This is almost certainly a leftover default from the AWS lift-and-shift: both
+boot disks still carry `vmmigration-license` and `vmmigration-aws-license`. Flipping it to `true`
+is a one-line change requiring a stop/start. **Recommend doing this on `connect-srv-prod` at the
+next maintenance window**, and on `connect-srv-test` whenever convenient.
+
+**Nothing has exercised the test VM with a real deploy since the family changed.** Between
+2026-08-12 and 2026-08-17 the only workflow runs touching it were a certificate renewal (succeeded,
+which does at least prove the command-queue transport still works post-change) and two v19 artifact
+builds, which run entirely on GitHub's Ubuntu runners and never touch the VM. So "nothing broke" is
+an argument from the absence of a plausible mechanism, not from observed traffic. The first staging
+deploy after the catalog work is the real test; it is expected to be uneventful.
 
 ---
 
@@ -868,7 +1003,10 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    `develop` can never be deployed, re-confirm production's assembly inventory, and plan the
    18.3.1 → 18.4.1 migration with a verified backup. This gates the first real production deploy
 4. Item 7 — decide the staging database question (a decision, then a restore)
-5. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window)
+5. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window).
+   Do item 21's `automaticRestart` flip on `connect-srv-prod` in the same window: it needs the
+   same stop/start, takes about a minute, and until it is done an unplanned host failure leaves
+   production off until a human notices and starts it
 6. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
    and both hosts were re-measured on real certificates *after* a subsequent deploy and a VM
    restart. Nothing left but to let the weekly schedule run. Read item 4 anyway before touching

@@ -108,6 +108,7 @@ async function updatePrTestStatus({ github, context, owner, repo, prNumber, stat
 }
 
 module.exports = {
+  STATE_LABELS,
   STICKY_MARKER,
   reconcilePrTestLabels,
   renderPrTestStatusComment,

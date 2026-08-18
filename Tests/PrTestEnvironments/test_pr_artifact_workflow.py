@@ -149,18 +149,12 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         self.assertIn("RockWeb\\packages.config", restore_step["run"])
         self.assertIn("-PackagesDirectory packages", restore_step["run"])
 
-    # Two pointers name a folder the restore does not create: packages.config pins
-    # OpenXMLSDK-MOT at "2.6.0" but the pointers were written against "2.6.0.0", and
-    # the packages folder is named for the version string exactly as declared. They
-    # resolve today only because a project build already puts both assemblies in
-    # RockWeb\bin, so the resolver counts them as already-built and never consults
-    # packages\ -- confirmed against run 31422321277, which listed neither among its
-    # unresolved pointers. Recorded rather than normalized away: if either assembly
-    # ever stops being emitted as build output, the pointer will not save it.
-    KNOWN_UNDECLARED_POINTERS = {
-        "DocumentFormat.OpenXml.dll.refresh",
-        "System.IO.Packaging.dll.refresh",
-    }
+    # Empty on Rock 19. On 18.4 this held two pointers: packages.config pinned
+    # OpenXMLSDK-MOT at "2.6.0" while the pointers were written against "2.6.0.0",
+    # and the packages folder is named for the version string exactly as declared.
+    # Rock 19 repins DocumentFormat.OpenXml at 3.3.0 -- declared and resolving --
+    # and drops System.IO.Packaging from RockWeb\Bin, so neither is needed.
+    KNOWN_UNDECLARED_POINTERS = set()
 
     def test_every_refresh_pointer_resolves_to_a_declared_package_version(self):
         """A pointer naming a version packages.config does not pin resolves to a
@@ -171,7 +165,7 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         self.assertGreater(len(declared), 0, "parsed no packages from packages.config")
 
         pointers = sorted(ROCKWEB_BIN.glob("*.dll.refresh"))
-        self.assertEqual(len(pointers), 84, "the pointer count changed; re-check the resolver step")
+        self.assertEqual(len(pointers), 158, "the pointer count changed; re-check the resolver step")
 
         package_style = 0
         undeclared = []
