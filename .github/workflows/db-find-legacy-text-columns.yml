@@ -78,6 +78,13 @@ jobs:
       # than producing a connection string with an empty Initial Catalog.
       CONNECTION_STRING: ${{ format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name || secrets.DB_NAME, secrets.DB_USER, secrets.DB_PASSWORD) }}
       DB_NAME_SOURCE: ${{ inputs.db_name && 'caller-supplied' || 'shared sandbox fallback (secrets.DB_NAME)' }}
+      # Through env: rather than interpolated into the poll step, for the reason
+      # env-deploy-command.yml gives beside DB_NAME_REQUESTED -- a value should not be
+      # able to change the shape of the script that reads it. That file interpolates
+      # its own poll count, but its inputs arrive over workflow_call from a workflow
+      # in this repository. These arrive from a human typing into a dispatch box, and
+      # the script they would be reshaping is the one holding a live connection string.
+      POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -91,6 +98,18 @@ jobs:
       # the one the log cannot show, because the connection string is redacted. A
       # findings list attributed to the wrong catalog is worse than no findings list:
       # it would clear staging on the strength of a scan of the shared sandbox.
+      # queue_name is concatenated into a GCS object path. The agent validates its own
+      # QueueName against exactly this pattern before it will poll a prefix; the
+      # workflow that writes into that prefix should not be laxer than the one reading
+      # it, or a dispatch could place a command outside the queue the VM watches --
+      # which fails as a silent timeout rather than an error.
+      - name: Validate the queue name
+        run: |
+          if ($env:QUEUE_NAME -notmatch '^[a-z][a-z0-9-]{1,30}$') {
+            Write-Host "::error::queue_name must be lowercase letters, digits and hyphens, starting with a letter: '$env:QUEUE_NAME'"
+            exit 1
+          }
+
       - name: Report which catalog will be scanned
         run: |
           Write-Host "Catalog source: $env:DB_NAME_SOURCE"
@@ -129,7 +148,13 @@ jobs:
       - name: Wait for the VM to report the findings
         run: |
           $resultUri = "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/results/$env:COMMAND_ID.json"
-          $attempts = ${{ inputs.poll_attempts }}
+          # Parsed, not pasted. A dispatch input is a string whatever its declared
+          # type, so this both keeps it out of the script body and turns a nonsense
+          # value into an immediate error rather than a loop that never runs.
+          $attempts = 0
+          if (-not [int]::TryParse($env:POLL_ATTEMPTS, [ref]$attempts) -or $attempts -lt 1) {
+            throw "poll_attempts must be a positive whole number; got '$env:POLL_ATTEMPTS'."
+          }
 
           function Show-CommandLog {
             param([string]$LogObject)

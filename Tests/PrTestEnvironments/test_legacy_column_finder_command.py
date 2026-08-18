@@ -176,6 +176,61 @@ class FinderWorkflowTests(unittest.TestCase):
         )
 
 
+class FinderWorkflowInputsAreNotInterpolatedTests(unittest.TestCase):
+    """env-deploy-command.yml states the rule beside DB_NAME_REQUESTED: "Carried as an
+    environment variable rather than interpolated into the step body below... a value
+    containing a quote should not be able to change the shape of the script that reads
+    it."
+
+    That file carries its own poll_attempts the other way, but its inputs arrive over
+    workflow_call from a caller workflow in this repository. This one's arrive from a
+    human typing into a dispatch box, which is strictly more exposed -- and the script
+    they would be reshaping is the one holding a production connection string."""
+
+    def test_no_dispatch_input_is_interpolated_into_a_script_body(self):
+        lines = WORKFLOW.read_text().splitlines()
+
+        # Everything from the first `steps:` onwards is script bodies and step
+        # metadata. The env: block above it is the sanctioned place for an expression.
+        first_step = next(i for i, line in enumerate(lines) if line.strip() == "steps:")
+
+        offenders = [
+            f"{i + 1}: {line.strip()}"
+            for i, line in enumerate(lines[first_step:], start=first_step)
+            if "${{ inputs." in line
+        ]
+
+        self.assertEqual(
+            offenders,
+            [],
+            "a dispatch input is interpolated into a step body; carry it through env: "
+            "instead so its value cannot reshape the script:\n  " + "\n  ".join(offenders),
+        )
+
+    def test_the_queue_name_is_validated_before_it_becomes_a_path(self):
+        """queue_name is concatenated into a GCS object path. The agent validates its
+        own QueueName against ^[a-z][a-z0-9-]{1,30}$ for the same reason; the workflow
+        that writes the object should not be laxer than the one that reads it."""
+        text = WORKFLOW.read_text()
+
+        self.assertTrue(
+            "a-z0-9-" in text,
+            "the workflow builds a bucket path from queue_name without validating it",
+        )
+
+    def test_the_poll_count_is_read_as_a_number_not_pasted_as_code(self):
+        text = WORKFLOW.read_text()
+
+        self.assertFalse(
+            "$attempts = ${{" in text,
+            "the poll count is pasted into the script body as code",
+        )
+        self.assertTrue(
+            "POLL_ATTEMPTS" in text,
+            "the poll count no longer arrives through env:",
+        )
+
+
 class FinderReachesTheVmTests(unittest.TestCase):
     def test_the_finder_is_published_to_the_location_the_agent_syncs_from(self):
         """Belt and braces on PR #14. The dispatch above is worthless if the script is
