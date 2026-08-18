@@ -133,11 +133,23 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+        output = completed.stdout + completed.stderr
         self.assertNotEqual(
             completed.returncode,
             0,
-            "the guard passed with no version file at all, so it would pass against "
-            f"a renamed one too:\n{completed.stdout}{completed.stderr}",
+            f"the guard passed with no version file at all, so it would pass against "
+            f"a renamed one too:\n{output}",
+        )
+        # Exit code alone does not pin this. Deleting the file check leaves sed to
+        # fail the script on its own, which still exits non-zero -- the mutation
+        # survives an exit-code-only assertion. What is lost is the annotation: the
+        # run fails with "sed: can't read ..." buried in the log instead of a
+        # GitHub error surfaced on the run.
+        self.assertIn(
+            "::error::",
+            output,
+            "the guard failed without a GitHub error annotation, so the reason is "
+            f"only visible to someone reading the raw log:\n{output}",
         )
 
     def test_an_unreadable_pin_refuses_rather_than_waves_through(self):
@@ -147,6 +159,21 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
         code, output = _run_guard("19.3.4", "", "")
         self.assertNotEqual(
             code, 0, f"the guard passed with no pinned branch to compare against:\n{output}"
+        )
+        # Also exit-code-invisible: drop the check and an empty pin falls into the
+        # mismatch branch, where "19" != "" refuses anyway -- but it refuses by
+        # reporting a version mismatch against a catalog minor it never read,
+        # telling whoever is on the deploy to go fix the wrong thing.
+        self.assertIn(
+            "pinned Rock minor",
+            output,
+            f"the guard did not say the pin was the unreadable part:\n{output}",
+        )
+        self.assertNotIn(
+            "would land on the sandbox catalog",
+            output,
+            "the guard reported a version mismatch it never established, because it "
+            f"compared against an empty pin:\n{output}",
         )
 
     def test_the_guard_reads_the_version_file_that_actually_exists(self):
