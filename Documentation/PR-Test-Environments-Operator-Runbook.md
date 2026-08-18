@@ -46,6 +46,97 @@ Run the refresh through `Invoke-SandboxRefreshWithPrEnvironments.ps1` on the Win
 
 The script writes maintenance state to `C:\RockTestEnvs\maintenance.json` and logs to `C:\RockDeploy\logs\sandbox-refresh-*.log`.
 
+Note that this script only *coordinates* the refresh -- `-RefreshCommand` is mandatory and the restore itself lives outside this repository.
+
+**Measured 2026-08-17: there is no refresh, so this script has never run.** The sandbox catalog was
+seeded once, on 2026-04-14, by a per-database `.bak` import from a 2026-04-09 production backup, and
+has had no data load since -- `gcloud sql operations list --instance=connect-restore-test` shows
+`UPDATE` and `RESTART` only after that date, and its whole history is 13 operations. The Cloud
+Scheduler API has never been enabled in the project, and the only `cron:` in `.github/workflows/` is
+certificate renewal. `connect-prod`'s own nightly Cloud SQL backups *do* run reliably, but those are
+instance-level and cannot be restored into a single catalog, which is why the one load that happened
+went through an export/import.
+
+Consequences worth knowing before you plan around this script:
+
+- The sandbox data is months old, not nightly-fresh, and it accumulates every environment's test
+  data and migrations indefinitely. Anything that assumes an overnight reset is wrong.
+- Building the refresh for real means producing a fresh `.bak` (the bucket holds exactly one set,
+  from 2026-05-12) and importing it per-database, then invoking this script around it.
+- Nothing here is a data-loss risk today. It is a staleness and drift problem.
+
+### Staging is deliberately out of scope
+
+The coordinator stops app pools only for manifests carrying a `prNumber`, which `Deploy-PrEnvironment.ps1` is the only writer to emit. `staging` is deployed by `Deploy-RockEnvironment.ps1` in `DedicatedSite` mode, so its manifest at `C:\RockTestEnvs\staging\env.json` has no PR number and the coordinator now logs `Leaving non-PR environment 'staging' running` and moves on. That message replaced a `Skipping invalid PR manifest` warning that read like a defect on every run.
+
+That is correct, and for a simpler reason than this section used to give: **no refresh runs at all**, so nothing is being replaced under any app pool. Earlier revisions warned that the nightly restore was overwriting the database beneath a live `rock-staging`; that was inherited from design intent and is not what the instance's operation history shows.
+
+`prNumber` is nonetheless the wrong key for the operation that *would* need coordination. Re-seeding the staging catalog on demand lands squarely under `staging`, so its pool would have to stop along with every `pr-*` pool -- the one case `prNumber` cannot express. Re-key the coordinator on "does this environment's catalog match the one being refreshed" before pointing it at a re-seed; see open item 7.
+
+## Provisioning the staging catalog
+
+Staging and every `pr-*` site currently share one catalog -- the prod-derived one a restore would target, if one ran -- so Rock's startup migrations from one environment rewrite the schema the others depend on. This is what put `pr-3` on a permanent HTTP 500 on 2026-08-11.
+
+**Decided 2026-08-17: staging and the `pr-*` sites move onto the staging catalog together.** This supersedes the earlier half-step of isolating `staging` alone. A shared catalog is not itself the defect -- sharing one *across two Rock minors* is, because Rock migrates the schema at `Application_Start`. Every `pr-*` site builds from a PR based on the branch staging deploys, so they are all the same minor by construction, and `Tests/PrTestEnvironments/test_base_branch_config.py` fails if the two pins drift apart. What this actually buys is that no environment of ours sits on the catalog the prod restore owns.
+
+The cost this looked like it carried turns out to be zero. It appeared to trade away nightly data freshness for the `pr-*` sites -- but as measured on 2026-08-17 there is no nightly refresh to give up (see below). The catalog is already months stale and already accumulating every environment's test data and migrations with no reset, so moving it does not make the data situation worse. Drift from production is a real problem; it is just a pre-existing one, and the fix for it is a deliberate re-seed, not this decision.
+
+Current shared setup, for reference:
+
+| | |
+|---|---|
+| Instance | `connect-restore-test` (`172.20.0.2`) -- *not* `connect-prod` (`172.20.0.8`) |
+| Catalog | `RockConnectProd` -- the name is an artifact of restoring a prod backup, not production data |
+| Consumed via | secrets `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` |
+
+To provision:
+
+1. ~~**Decide where the catalog lives, and check the refresh mechanism first.**~~ **Resolved 2026-08-17 — `RockStaging` on `connect-restore-test` is fine.** The refresh is a per-database `.bak` import (`IMPORT` with `database: RockConnectProd`, preceded by a `DELETE_DATABASE`), not an instance-level backup restore, so a second catalog beside it survives. No `RESTORE_VOLUME` has ever run on this instance. **Check the disk first, though:** the instance is `db-custom-2-8192` with a 418 GB disk and `storageAutoResize` **disabled**, and the production backup is ~127 GB striped, so a second full copy is marginal and may need a disk bump before step 2.
+2. **Create the catalog** and seed it from the current shared one so staging starts from the same sanitized data it has today.
+3. **Grant the existing `DB_USER`** access to it, so no new credential is introduced and `DB_USER` / `DB_PASSWORD` keep working unchanged.
+4. **Exclude it from the refresh** -- if one is ever built. This is a no-op today: there is no refresh to exclude it from (see below). Keep the requirement recorded, because staging not resetting is what makes a version upgrade durable and staging trustworthy during a demo.
+5. **Set the repository variable** `STAGING_DB_NAME` to the catalog name. A variable, not a secret: a catalog name is not a credential, and keeping it visible lets the deploy log state which database was used. Note the blast radius: this one variable moves **staging and every `pr-*` site**, since `pr-test-deploy.yml` reads it too. Existing sites do not move until each is redeployed, so expect a window where some sites are on the new catalog and some are still on the old one.
+
+Then redeploy staging and check the run's `Report which catalog this deploy will use` step. It prints `Catalog source: caller-supplied` when the variable resolved, and emits a warning naming the shared catalog when it did not. An unset or misspelled variable falls back silently to the shared catalog otherwise -- the deploy still succeeds, so this step is the only place that difference is visible. `pr-*` deploys have no equivalent step: they inline the connection string, so the only way to confirm one moved is to redeploy it and check the site works.
+
+## Trunk cutover (bumping the Rock version)
+
+Flipping the trunk branch -- `passion-18.4.1` to `passion-19.3.4`, say -- is the one routine operation that can break every environment at once, and it does it quietly. Read this before starting one.
+
+**Why it is dangerous.** Staging and every `pr-*` site share one catalog by design (above). The flip points staging at a new Rock minor, and the first request after that deploy runs the new minor's EF and plugin migrations against that shared catalog. Every `pr-*` site still serving the old minor's binaries is then old code against a newly-migrated schema -- which is precisely `pr-3` on 2026-08-11, reproduced once per live environment.
+
+**What closes the door is moving the default branch, not flipping the pins.** The deploy gate fetches `.github/pr-test-environments.json` with `ref: context.payload.repository.default_branch` (`pr-test-deploy.yml`), so every PR is judged against one config -- the trunk's -- no matter what it is based on. Move the default branch and the retired branch's PRs start failing the `pull.base.ref !== configuredBaseBranch` comparison on their own, with no per-branch cleanup.
+
+It used to read `ref: pull.base.ref`, and that is worth knowing because it is the failure people still expect: a PR based on `passion-18.4.1` read the config **from `passion-18.4.1`**, which still named itself, so the comparison passed and the retired fleet went on deploying indefinitely. Flipping the pins rejected nothing.
+
+The consequence of the fix is that **"move the default branch" is now a required cutover step** (step 3), not repository housekeeping to get to later. Miss it and the gate keeps reading the retired branch's config, exactly as before. It fails safe in the other direction, at least: move it before the pins are committed and *every* PR is refused until they land, which is loud rather than silent.
+
+**`pr-test-lifecycle.yml` still reads `ref: pull.base.ref`, deliberately.** It only runs `stop` and `destroy`, and those have to keep working on retired-branch PRs -- that is the teardown path. If lifecycle also read the trunk's config, moving the default branch would strand every old environment with no way to remove it. The asymmetry between the two workflows is load-bearing; `CutoverGateFailClosedTests` in `Tests/PrTestEnvironments/test_base_branch_config.py` pins both halves so neither gets "tidied up" into matching the other.
+
+**`rock:stop` is not enough** for the old fleet either; it leaves the files for someone to start later. Destroy them.
+
+**Order of operations:**
+
+0. **Protect the trunk**, once, before any of this: `./Deployment/Repository/set-trunk-protection.sh` (dry run) then `--apply`. It blocks force-pushes and deletion on whatever the default branch currently is, and nothing else -- no review requirement, so it cannot block the cutover commits below. The ruleset targets `~DEFAULT_BRANCH`, so it follows the trunk in step 3 rather than being left behind guarding the retired branch -- which also means it does not need running again after the cutover. To confirm it afterwards, read it back instead: `gh api repos/passiondev/Rock/rulesets`. Re-running with `--apply` would rewrite the ruleset to exactly the two rules it knows about, dropping anything added to it since.
+
+1. **Destroy every live `pr-*` environment.** Dispatch `.github/workflows/pr-test-destroy-all.yml` with the confirmation phrase and **apply** left unticked; it lists every open PR carrying a `rock:` state label, with each one's base branch so the retired fleet is distinguishable from current work. Read the list, then re-run with **apply** ticked.
+
+   The base-branch column is there to be read, not obeyed: **apply** destroys everything in the list. If some of those PRs are current work you want to keep, copy the retired ones' numbers into the `pr_numbers` input and it will act on those alone. It queues the ordinary `destroy` command once per PR, serially, and does not stop at the first failure.
+
+   The list is built from GitHub labels, and `C:\RockTestEnvs` on the VM is what is actually deployed. An environment whose PR was deleted, or whose label was cleared by a run that failed halfway, will not appear and will survive the teardown -- so list that directory afterwards. For anything left over: `rock:destroy` on the PR if it still has one, `Destroy-PrEnvironment.ps1 -PrNumber <n>` on the VM if it does not. Ordering against the other steps is not enforced by anything; the only thing making this step first is you doing it first.
+2. **Flip every pin in the same commit.** Bump `EXPECTED_BASE_BRANCH` in `Tests/PrTestEnvironments/test_base_branch_config.py` first and on its own -- that constant is the oracle the guard compares everything against, not a pin. Then run that one file. `BASE_BRANCH_PIN_SITES` enumerates the eight real pins, spread over seven other files, and the failure message names every one still on the old branch; work it until green. That list is the checklist -- do not rebuild it by hand. Nothing else will tell you: no build fails if you miss one. A missed `production-deploy.yml` keeps offering the retired branch as the default for a manual **production** deploy, and a missed `deployment-pipeline-tests.yml` stops running on pushes altogether, silently.
+3. **Move the default branch to the new trunk.** Settings > General > Default branch, or `gh api --method PATCH repos/passiondev/Rock -f default_branch=passion-19.3.4`. This is the step that actually stops the old fleet, and it is easy to skip because nothing prompts for it and nothing fails when it is missed. Do it *after* step 2's commit has landed on the new branch: the deploy gate reads the config from whatever the default branch is, so moving it first means every PR is refused until the pins arrive.
+
+   Once it moves, retired-branch PRs fail the gate automatically and stop deploying -- no per-branch edit, and nothing to remember to undo. Deleting the retired branch is still an option if you want its PRs closed outright, and nothing stands in the way: step 0's ruleset targets `~DEFAULT_BRANCH`, and that token has just followed the default onto the new trunk, so the retired branch is no longer the one being protected. **Leave the ruleset alone.** From this point it is the only thing standing between the branch everyone now works from and a force-push.
+
+   Check it took: open any PR still based on the retired branch, add `rock:start`, and confirm the deploy job resolves `should_deploy=false`. A skipped deploy is a `core.info` line, not a failure, so read the log rather than the PR's check marks.
+4. **Deploy staging and let the migrations finish.** Watch the run's `Report which catalog this deploy will use` step, then load the site once to trigger `Application_Start`. Migrations are irreversible; if the catalog is wrong, this is the last moment it is cheap to find out.
+5. **Rebase the open PRs onto the new trunk**, then re-add `rock:start` per PR. Each redeploys from an artifact built against the new minor.
+
+**If you migrate staging before clearing the fleet,** every live `pr-*` site is serving old binaries against the new schema, and each one keeps re-breaking itself on redeploy until its PR is rebased or its environment destroyed. Reverting the pins does not undo it: the catalog has already moved forward and the old minor cannot run against it.
+
+**Nothing in the pipeline reports any of this.** The gate skip is a `core.info` line and `should_deploy=false`, not a failure -- a skipped deploy and a healthy one look the same on the PR. Verify by loading the sites.
+
 ## Manual recovery
 
 - Stuck deploying: cancel stale GitHub Actions runs, then rerun with `rock:start`.

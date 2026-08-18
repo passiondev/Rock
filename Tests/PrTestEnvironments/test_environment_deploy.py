@@ -412,6 +412,62 @@ class CommandWorkflowTests(unittest.TestCase):
         text = COMMAND_WORKFLOW.read_text()
         self.assertIn("<redacted>", text)
 
+    def test_db_name_is_optional_so_an_environment_that_names_no_catalog_is_unchanged(self):
+        """Adding this input must not touch the pr-* sites. An unset caller variable
+        arrives as the empty string, which is falsy in a GitHub expression, so those
+        environments keep the exact behaviour they had before it existed -- which is
+        what makes it safe to merge before the staging catalog is provisioned."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        db_name = workflow["on"]["workflow_call"]["inputs"]["db_name"]
+
+        self.assertFalse(db_name["required"])
+        self.assertEqual(db_name["default"], "")
+        self.assertEqual(db_name["type"], "string")
+
+    def test_connection_string_prefers_the_caller_catalog_over_the_shared_secret(self):
+        """Operand order is the whole behaviour here and it is invisible at runtime:
+        reversed, every environment silently lands back on the shared sandbox catalog
+        while the deploy still reports success."""
+        text = COMMAND_WORKFLOW.read_text()
+
+        self.assertIn("inputs.db_name || secrets.DB_NAME", text)
+        self.assertNotIn("secrets.DB_NAME || inputs.db_name", text)
+
+    def test_the_catalog_source_is_reported_without_echoing_the_catalog(self):
+        """Which catalog an environment landed on is redacted everywhere else, so a
+        STAGING_DB_NAME that was never set -- or set under a slightly different name
+        -- looks exactly like a healthy deploy. Naming the source is safe; echoing
+        secrets.DB_NAME into a public log is not."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = workflow["jobs"]["deploy"]["steps"]
+        reporting = [s for s in steps if s.get("name") == "Report which catalog this deploy will use"]
+
+        self.assertEqual(len(reporting), 1)
+        step = reporting[0]
+
+        # Production passes write_connection_string: false and has no catalog here,
+        # so this step must not run at all on that path.
+        self.assertIn("inputs.write_connection_string", str(step["if"]))
+        self.assertNotIn("secrets.DB_NAME", step["run"])
+
+        # Read through the environment, not interpolated into the script body: a
+        # value containing a quote should not be able to change the shape of the
+        # script that reads it. Same reasoning as rebuilding the redaction key by
+        # key rather than regex-scrubbing it.
+        self.assertIn("$env:DB_NAME_REQUESTED", step["run"])
+        self.assertNotIn("${{ inputs.db_name }}", step["run"])
+
+    def test_falling_back_to_the_shared_catalog_is_a_warning_not_a_silent_default(self):
+        """One catalog behind N sites is only safe while every live environment sits
+        on the same Rock minor version. That condition failed on 2026-08-11 and put
+        pr-3 on a permanent 500; a fallback nobody is told about is how it failed."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = workflow["jobs"]["deploy"]["steps"]
+        step = next(s for s in steps if s.get("name") == "Report which catalog this deploy will use")
+
+        self.assertIn("::warning::", step["run"])
+        self.assertIn("shared sandbox catalog", step["run"])
+
 
 class StagingWorkflowTests(unittest.TestCase):
     def test_staging_tracks_the_trunk_branch(self):
@@ -428,6 +484,21 @@ class StagingWorkflowTests(unittest.TestCase):
         self.assertEqual(deploy["mode"], "DedicatedSite")
         self.assertEqual(deploy["queue_name"], "commands")
         self.assertTrue(deploy["write_connection_string"])
+
+    def test_staging_asks_for_its_own_catalog(self):
+        """Open item 7: staging names its own catalog rather than inheriting the
+        prod-derived one. Superseded 2026-08-17 in one respect -- the pr-* sites
+        now follow staging onto this same catalog instead of being left behind on
+        the shared one, so this variable moves the whole fleet, not just staging.
+        A repository variable rather than a secret -- a catalog name is not a
+        credential, and keeping it visible is what lets the deploy log state which
+        database staging used without redacting it."""
+        workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())
+
+        self.assertEqual(
+            workflow["jobs"]["deploy"]["with"]["db_name"],
+            "${{ vars.STAGING_DB_NAME }}",
+        )
 
     def test_dual_trigger_workflow_does_not_use_the_inputs_context(self):
         """The `inputs` context does not exist on a push event. Referencing it in a
@@ -544,16 +615,56 @@ class ProductionVersionGuardTests(unittest.TestCase):
     def test_the_expected_version_is_read_from_the_default_branch_not_hardcoded(self):
         """A hardcoded version would have to be edited during every Rock upgrade, and
         the upgrade is exactly when nobody is thinking about this file. Reading the
-        default branch means promoting the new trunk to default is enough."""
-        run = self._guard_step()["run"]
+        default branch means promoting the new trunk to default is enough.
 
-        self.assertIn("github.event.repository.default_branch", run)
-        self.assertIn("Rock.Version/AssemblySharedInfo.cs", run)
+        Look in the step as a whole, not only its `run:`. The expansion moved into
+        `env:` so that operator-typed input in the same script stops being pasted in
+        as source (see test_workflow_input_injection.py); the guard still reads the
+        default branch, it just reads it a line higher up."""
+        step = self._guard_step()
+
+        self.assertIn(
+            "github.event.repository.default_branch",
+            str(step.get("env", {})) + step["run"],
+            "the version guard no longer reads the trunk from the repository, so it "
+            "would compare against whatever branch name was hardcoded when it was written",
+        )
         self.assertNotRegex(
-            run,
+            step["run"],
             r'expected_version=["\']?1[0-9]\.[0-9]',
             "the expected Rock version is hardcoded; it must come from the default branch",
         )
+
+    def test_both_version_file_locations_are_consulted_oldest_first(self):
+        """Rock 19 deleted `Rock.Version/AssemblySharedInfo.cs` and moved the version
+        into `Directory.Build.props`. A guard that knows only one location cannot
+        compare an 18.x ref against a v19 default branch, and an unreadable version is
+        a hard refusal below -- so a single-location guard would block the very
+        upgrade it exists to make safe.
+
+        Order is the substantive part, not style: 18.x ships a `Directory.Build.props`
+        too, and it carries no `<Version>`. Probing the historical path first is what
+        keeps an 18.x ref answering 18.x."""
+        run = self._guard_step()["run"]
+
+        match = re.search(r'VERSION_FILES="([^"]+)"', run)
+        self.assertIsNotNone(match, "the guard does not declare its candidate version files")
+        self.assertEqual(
+            match.group(1).split(),
+            ["Rock.Version/AssemblySharedInfo.cs", "Directory.Build.props"],
+            "both version locations must be consulted, historical path first",
+        )
+
+    def test_a_missing_version_file_on_the_default_branch_is_not_fatal(self):
+        """During the upgrade the two sides of the comparison sit on different lines,
+        so exactly one of the two candidate paths 404s on the default branch. If that
+        404 propagated as a failure the guard would refuse every deploy mid-upgrade."""
+        run = self._guard_step()["run"]
+
+        self.assertIn("continue", run)
+        # `gh api` writes its own diagnostics to stderr on a 404; letting those
+        # through would make a normal, expected probe look like a broken workflow.
+        self.assertIn("2>/dev/null", run)
 
     def test_a_version_mismatch_fails_the_run(self):
         run = self._guard_step()["run"]
@@ -570,10 +681,11 @@ class ProductionVersionGuardTests(unittest.TestCase):
         self.assertFalse(ack.get("required", False))
 
     def test_the_guards_own_regex_reads_the_version_and_nothing_else(self):
-        """The whole control rests on one sed expression. AssemblyFileVersion,
-        AssemblyInformationalVersion, and the prose comment above them all contain
-        the word "version", so an over-broad pattern silently reads the wrong line
-        and the guard starts comparing garbage."""
+        """The whole control rests on one sed expression. In the 18.x format
+        AssemblyFileVersion, AssemblyInformationalVersion, and the prose comment above
+        them all contain the word "version"; in the v19 format `<FileVersion>` and
+        `<InformationalVersion>` do too. An over-broad pattern silently reads the wrong
+        line and the guard starts comparing garbage."""
         run = self._guard_step()["run"]
         match = re.search(r"""sed -n '([^']+)' "\$1\"""", run)
         self.assertIsNotNone(match, "could not find the version_of sed expression in the guard")
@@ -589,10 +701,36 @@ class ProductionVersionGuardTests(unittest.TestCase):
             )
             return result.stdout.split()
 
-        # The trunk's real file, so the fixtures below cannot drift from reality.
-        real = (REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs").read_text()
-        self.assertEqual(extract(real), ["18.4.1"])
+        # Whichever file THIS checkout declares its version in, so the fixtures below
+        # cannot drift from reality. Reading a fixed path would make this test a
+        # FileNotFoundError the moment the trunk moves to v19, where the .cs file is
+        # gone -- the suite would fail before the guard it checks was even wrong.
+        declarations = [
+            (REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs",
+             r'AssemblyVersion\( *"([^"]+)"'),
+            (REPO_ROOT / "Directory.Build.props",
+             r"<Version>([^<]+)</Version>"),
+        ]
+        for path, pattern in declarations:
+            if not path.exists():
+                continue
+            text = path.read_text()
+            declared = re.search(pattern, text)
+            if declared is None:
+                continue
+            self.assertEqual(
+                extract(text),
+                [declared.group(1)],
+                f"the guard reads a different version out of {path.name} than it declares",
+            )
+            break
+        else:
+            self.fail(
+                "no file in this checkout declares a Rock version; the guard has "
+                "nothing to read and every production deploy would be refused"
+            )
 
+        # The 18.x format.
         for version, informational in [("19.0.3", "19.0"), ("17.6.1", "17.6")]:
             fixture = (
                 "// The AssemblyVersion number should change only when we are\n"
@@ -600,6 +738,23 @@ class ProductionVersionGuardTests(unittest.TestCase):
                 f'[assembly: AssemblyVersion( "{version}" )]\n'
                 f'[assembly: AssemblyFileVersion( "{version}" )]\n'
                 f'[assembly: AssemblyInformationalVersion( "Rock McKinley {informational}" )]\n'
+            )
+            self.assertEqual(
+                extract(fixture),
+                [version],
+                f"expected exactly one match for {version}; the pattern is over-broad",
+            )
+
+        # The v19 format. `<FileVersion>` is a real line in Rock 19's props file and
+        # is the most likely thing an over-broad `<Version>` pattern would swallow.
+        for version, informational in [("19.3.4", "Rock McKinley 19.3"), ("19.0.3", "Rock McKinley 19.0")]:
+            fixture = (
+                "  <!-- Versioning information -->\n"
+                "  <PropertyGroup>\n"
+                f"    <Version>{version}</Version>\n"
+                f"    <InformationalVersion>{informational}</InformationalVersion>\n"
+                "    <FileVersion>$(Version)</FileVersion>\n"
+                "  </PropertyGroup>\n"
             )
             self.assertEqual(
                 extract(fixture),
@@ -673,6 +828,55 @@ class ReusableWorkflowPermissionTests(unittest.TestCase):
         # Guard against the walk silently finding nothing, which would make this
         # test pass forever without checking anything.
         self.assertGreaterEqual(edges, 3, "expected to find local reusable workflow calls")
+
+
+class PipelineTestTriggerTests(unittest.TestCase):
+    """This suite asserts on the source text of files it does not live beside, so
+    its trigger paths have to name every tree it reads. A file the suite tests but
+    the trigger does not list is worse than an untested file: the test exists,
+    passes on somebody's laptop, and never runs on the change that breaks it.
+
+    Two such gaps existed. `.github/scripts/**` holds `pr-test-status.js`, which
+    `test_status_comment_script.py` reads, and it is not covered by
+    `.github/workflows/**` -- `scripts` is a sibling of `workflows`, not a child.
+    `Deployment/**` was listed only as `Deployment/PrTestEnvironments/**`, so
+    `Deployment/Repository/set-trunk-protection.sh` and its tests were outside it.
+    Both are listed as whole trees rather than as the specific subdirectories, so
+    the next thing added under them cannot reopen the same hole."""
+
+    PIPELINE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
+
+    REQUIRED_PATHS = [
+        "Deployment/**",
+        "Tests/PrTestEnvironments/**",
+        ".github/workflows/**",
+        ".github/scripts/**",
+    ]
+
+    def test_every_tree_the_suite_reads_triggers_the_suite(self):
+        workflow = yaml.safe_load(self.PIPELINE_WORKFLOW.read_text())
+
+        for trigger in ["push", "pull_request"]:
+            configured = workflow["on"][trigger]["paths"]
+            missing = [path for path in self.REQUIRED_PATHS if path not in configured]
+            self.assertFalse(
+                missing,
+                f"deployment-pipeline-tests.yml {trigger} paths do not cover {missing}; "
+                f"edits there would not run the suite that tests them",
+            )
+
+    def test_the_two_path_lists_stay_identical(self):
+        """They are duplicated rather than shared through a YAML anchor -- GitHub
+        Actions rejects anchors, as the comment in the workflow records. Duplication
+        that nothing checks is duplication that drifts, and the failure mode is a
+        suite that runs on pull requests but not on the push that merges them."""
+        workflow = yaml.safe_load(self.PIPELINE_WORKFLOW.read_text())
+
+        self.assertEqual(
+            workflow["on"]["push"]["paths"],
+            workflow["on"]["pull_request"]["paths"],
+            "the push and pull_request path lists have drifted apart",
+        )
 
 
 if __name__ == "__main__":

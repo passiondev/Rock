@@ -75,6 +75,13 @@ jobs:
       - name: Resolve SHA and summarize the request
         id: resolve
         shell: bash
+        env:
+          # `ref` is free text an operator types. An Actions expansion is pasted into
+          # the script as source before bash parses it, so `${{ inputs.ref }}` inside
+          # a double-quoted echo would let a ref containing `$(...)` or a backtick run
+          # as a command in a job that holds production credentials. Through `env:`
+          # bash expands `$REF` at runtime and never reparses what it finds.
+          REF: ${{ inputs.ref }}
         run: |
           sha="$(git rev-parse HEAD)"
           short="$(git rev-parse --short HEAD)"
@@ -91,17 +98,97 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Ref | \`${{ inputs.ref }}\` |"
+            echo "| Ref | \`$REF\` |"
             echo "| Commit | \`$short\` |"
             echo "| Subject | $(git log -1 --pretty=%s) |"
             echo "| Mode | **$mode** |"
             echo "| Requested by | @${{ github.actor }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Refuse a ref that is not on the trunk
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Free text, read at runtime rather than pasted into the script. See the
+          # note on the resolve step above.
+          REF: ${{ inputs.ref }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # Production deploys the trunk. `develop` is the 19.0 line and `staging`
+          # is 17.6.1 -- these are different Rock majors, not points on one line.
+          # The last production *build* ran from `develop` on 2026-05-06 and the
+          # only reason no 19.x assembly is on the box is that the artifact was
+          # never installed. That was luck, not a control. This is the control.
+          #
+          # The version guard below is not a substitute: it can be switched off
+          # with `acknowledge_version_change`, and it has to be, because a real
+          # Rock upgrade is a real thing someone does. A checkbox that exists for
+          # a legitimate purpose cannot also be the thing holding `develop` back.
+          #
+          # Ancestry, not equality. The `ref` input's own description says to use
+          # the trunk "unless you are rolling back", so demanding ref == trunk
+          # would break the one exception the workflow already documents. The
+          # compare API answers this directly and needs no git history, which
+          # matters because this job checks out at fetch-depth 1 and a full clone
+          # of Rock is not cheap.
+          #
+          #   identical -- the ref IS the trunk tip
+          #   behind    -- the ref is an earlier trunk commit: a rollback
+          #   ahead     -- built on the trunk but carrying unmerged commits
+          #   diverged  -- another line entirely: develop, staging
+          #
+          # `ahead` is refused deliberately. Production ships what was reviewed
+          # and merged, not what is about to be.
+          default_branch="$DEFAULT_BRANCH"
+          sha='${{ steps.resolve.outputs.sha }}'
+
+          # Keep gh's stderr. A 404, a permissions problem and a rate limit all fail
+          # this call and all need different responses from whoever is reading the
+          # run; discarding the message leaves them with "could not compare" and no
+          # way to tell which of the three happened.
+          if ! status="$(gh api "repos/$REPOSITORY/compare/$default_branch...$sha" --jq '.status' 2>compare-error.txt)"; then
+            echo "::error::Could not compare '$REF' against the trunk ('$default_branch'). Refusing to deploy a ref whose relationship to the trunk cannot be established."
+            echo "::group::gh output"
+            cat compare-error.txt
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          echo "Ref '$REF' is '$status' relative to '$default_branch'."
+
+          case "$status" in
+            identical)
+              echo "| Trunk check | at the tip of \`$default_branch\` |" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            behind)
+              echo "::warning::Deploying an earlier commit on '$default_branch' -- this is a rollback. File contents roll back; database migrations already applied do not."
+              echo "| Trunk check | **rollback** -- an earlier commit on \`$default_branch\` |" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::Ref '$REF' is not on the trunk: it is '$status' relative to '$default_branch'. Production deploys the trunk, or an earlier commit on it for a rollback. Merge this into '$default_branch' first."
+              {
+                echo ""
+                echo "> **Refused.** \`$REF\` is \`$status\` relative to the trunk (\`$default_branch\`)."
+                echo "> Production deploys the trunk, or an earlier commit on it when rolling back."
+                echo "> There is no override for this one -- merge the change into \`$default_branch\`"
+                echo "> and deploy that."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
       - name: Refuse a ref from a different Rock version
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # Free text, read at runtime rather than pasted into the script. See the
+          # note on the resolve step above.
+          REF: ${{ inputs.ref }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           # Branch names in this repository do not tell you the Rock version, and
           # two of them are actively misleading: `develop` declares 19.0.3 and
@@ -117,23 +204,62 @@ jobs:
           # than hardcoded, so this needs no editing at upgrade time: promote the new
           # trunk to default and deploys of that line begin passing on their own.
           # Rolling back to an older commit on the same minor still passes.
+          #
+          # Rock declares its version in two different places depending on the line,
+          # and this guard has to span both -- it is least dispensable exactly during
+          # the upgrade, when one line is on each side of the comparison. Through
+          # 18.x it lives in Rock.Version/AssemblySharedInfo.cs as
+          #   [assembly: AssemblyVersion( "18.4.1" )]
+          # Rock 19 deleted that file and moved the version into
+          # Directory.Build.props as
+          #   <Version>19.3.4</Version>
+          # Reading only the old path would make every v19 ref unreadable, and an
+          # unreadable version is a hard refusal below -- the guard would block the
+          # upgrade it exists to make safe. Both candidate files are consulted in
+          # order and the first one that yields a version wins. 18.x ships a
+          # Directory.Build.props too, but it carries no <Version>, so probing the
+          # old path first is what keeps 18.x answering 18.x.
+          #
+          # `<Version>` is matched literally and cannot be confused with the
+          # neighbouring `<FileVersion>` or `<InformationalVersion>`: both contain
+          # "Version" but neither contains "<Version>".
+          VERSION_FILES="Rock.Version/AssemblySharedInfo.cs Directory.Build.props"
+
           version_of() {
-            sed -n 's/.*AssemblyVersion( *"\([^"]*\)".*/\1/p' "$1" | head -1
+            sed -n 's/.*AssemblyVersion( *"\([^"]*\)".*/\1/p; s/.*<Version>\([^<]*\)<\/Version>.*/\1/p' "$1" | head -1
           }
 
-          ref_version="$(version_of Rock.Version/AssemblySharedInfo.cs)"
+          for candidate in $VERSION_FILES; do
+            [ -f "$candidate" ] || continue
+            ref_version="$(version_of "$candidate")"
+            if [ -n "$ref_version" ]; then
+              echo "Read Rock $ref_version from $candidate."
+              break
+            fi
+          done
           if [ -z "$ref_version" ]; then
-            echo "::error::Could not read AssemblyVersion from the chosen ref. Refusing to deploy a ref whose Rock version cannot be established."
+            echo "::error::Could not read the Rock version from the chosen ref (looked in: $VERSION_FILES). Refusing to deploy a ref whose Rock version cannot be established."
             exit 1
           fi
 
-          default_branch='${{ github.event.repository.default_branch }}'
-          gh api "repos/${{ github.repository }}/contents/Rock.Version/AssemblySharedInfo.cs?ref=$default_branch" \
-            --jq '.content' | tr -d '\n' | base64 -d > default-shared-info.cs
-          expected_version="$(version_of default-shared-info.cs)"
-          rm -f default-shared-info.cs
+          default_branch="$DEFAULT_BRANCH"
+          for candidate in $VERSION_FILES; do
+            # A default branch on the other line simply will not have one of these
+            # paths, so a 404 here is an expected outcome and not a failure.
+            if ! gh api "repos/$REPOSITORY/contents/$candidate?ref=$default_branch" \
+                 --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > default-version-file 2>/dev/null; then
+              rm -f default-version-file
+              continue
+            fi
+            expected_version="$(version_of default-version-file)"
+            rm -f default-version-file
+            if [ -n "$expected_version" ]; then
+              echo "Read expected Rock $expected_version from $candidate on '$default_branch'."
+              break
+            fi
+          done
           if [ -z "$expected_version" ]; then
-            echo "::error::Could not read AssemblyVersion from the default branch ($default_branch)."
+            echo "::error::Could not read the Rock version from the default branch ($default_branch) (looked in: $VERSION_FILES)."
             exit 1
           fi
 
@@ -156,10 +282,10 @@ jobs:
             exit 0
           fi
 
-          echo "::error::Ref '${{ inputs.ref }}' declares Rock $ref_version, but production is expected to run $expected_minor (per the default branch '$default_branch'). Rock migrates the database on first request after a deploy and that is not reversible. If this is a deliberate upgrade, take a verified database backup and re-run with 'acknowledge_version_change' checked."
+          echo "::error::Ref '$REF' declares Rock $ref_version, but production is expected to run $expected_minor (per the default branch '$default_branch'). Rock migrates the database on first request after a deploy and that is not reversible. If this is a deliberate upgrade, take a verified database backup and re-run with 'acknowledge_version_change' checked."
           {
             echo ""
-            echo "> **Refused.** \`${{ inputs.ref }}\` is Rock \`$ref_version\`; production expects \`$expected_minor\`."
+            echo "> **Refused.** \`$REF\` is Rock \`$ref_version\`; production expects \`$expected_minor\`."
             echo "> Rock runs its migrations on the first request after a deploy, so this would change the"
             echo "> production database in a way a file rollback does not undo. If the version change is"
             echo "> intended, back up the database, verify the backup, then re-run with"

@@ -61,6 +61,25 @@ name: Rock Environment Deploy Command
         required: false
         default: true
         type: boolean
+      db_name:
+        description: >-
+          Catalog for this environment. Empty falls back to secrets.DB_NAME, the
+          shared sandbox catalog every pr-* site uses.
+
+          This exists because sharing one catalog is not a neutral default. Rock
+          runs EF and plugin migrations at Application_Start, so two sites on
+          different Rock versions against one catalog migrate the schema out from
+          under each other -- on 2026-08-11 that put pr-3 on an ASP.NET "Runtime
+          Error" 500 on every request, across recycles, while pr-4 and staging
+          answered 302 from the same box. Passing a catalog here is what makes an
+          environment actually isolated rather than isolated-looking.
+
+          It is an input rather than a `vars.STAGING_DB_NAME` read inside this
+          workflow because this file is shared with production; the caller knows
+          which environment it is, and this workflow should not have to.
+        required: false
+        default: ''
+        type: string
       poll_attempts:
         description: Result poll attempts, 15 seconds apart.
         required: false
@@ -91,7 +110,22 @@ jobs:
       APPLY: ${{ inputs.apply }}
       GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ inputs.artifact_gcs_object_path }}
-      CONNECTION_STRING: ${{ inputs.write_connection_string && format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, secrets.DB_NAME, secrets.DB_USER, secrets.DB_PASSWORD) || '' }}
+      # `inputs.db_name || secrets.DB_NAME`: an unset caller variable arrives here
+      # as the empty string, which is falsy in a GitHub expression, so an
+      # environment that names no catalog keeps the exact behaviour it had before
+      # this input existed. That fallback is deliberate -- it means this change
+      # cannot break the pr-* sites while the staging catalog is still being
+      # provisioned -- but it is also why a typo'd variable name fails silently by
+      # landing everything back on the shared catalog. The staging deploy asserts
+      # which catalog it got in its own summary step for that reason.
+      CONNECTION_STRING: ${{ inputs.write_connection_string && format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name || secrets.DB_NAME, secrets.DB_USER, secrets.DB_PASSWORD) || '' }}
+      DB_NAME_SOURCE: ${{ inputs.db_name && 'caller-supplied' || 'shared sandbox fallback (secrets.DB_NAME)' }}
+      # Carried as an environment variable rather than interpolated into the step
+      # body below. A repository variable is admin-set and not hostile, but the same
+      # reasoning applies as to rebuilding the redaction key by key instead of
+      # regex-scrubbing it: a value containing a quote should not be able to change
+      # the shape of the script that reads it.
+      DB_NAME_REQUESTED: ${{ inputs.db_name }}
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -112,6 +146,23 @@ jobs:
             exit 1
           }
           Write-Host "Artifact present: $env:ARTIFACT_GCS_PATH"
+
+      # Which catalog an environment landed on is invisible in every other log line
+      # here -- the connection string is redacted, and it has to be. So a
+      # STAGING_DB_NAME that was never set, or set under a slightly different name,
+      # looks exactly like a healthy deploy right up until two Rock versions start
+      # migrating one schema. Naming the *source* costs nothing and is safe to
+      # print: the catalog value itself is never echoed, only whether it came from
+      # the caller or from the shared fallback.
+      - name: Report which catalog this deploy will use
+        if: ${{ inputs.write_connection_string }}
+        run: |
+          Write-Host "Catalog source: $env:DB_NAME_SOURCE"
+          "| Catalog | $env:DB_NAME_SOURCE |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+          if ([string]::IsNullOrWhiteSpace($env:DB_NAME_REQUESTED)) {
+            Write-Host "::warning::$env:ENVIRONMENT_NAME is deploying against the shared sandbox catalog, which every pr-* site also uses. Rock migrates on startup, so this is only safe while every live environment sits on the same Rock minor version. If this environment is meant to have its own catalog, its db_name input resolved to empty -- check that the repository variable exists and is spelled as the caller expects."
+          }
 
       - name: Queue deploy-environment command
         run: |

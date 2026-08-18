@@ -5,8 +5,30 @@ name: Deploy Staging
 #
 #   https://staging.rock-dev.connect.passion.team
 #
-# It is its own IIS site on the test VM (connect-srv-test), pointed at the same
-# sandbox database the PR environments use. Nothing here can touch production.
+# It is its own IIS site on the test VM (connect-srv-test). Nothing here can touch
+# production.
+#
+# Its database depends on whether the repository variable STAGING_DB_NAME is set:
+#
+#   set    -- staging and every pr-* site move together onto that catalog, which is
+#             ours to keep. Intended state.
+#   unset  -- everything falls back to secrets.DB_NAME, the prod-derived sandbox
+#             catalog. How this ran until the staging catalog was provisioned.
+#
+# PR environments deliberately share this catalog rather than getting their own
+# (decided 2026-08-17): what makes a shared catalog dangerous is sharing it across
+# two Rock *versions*, not sharing it. Rock applies EF and plugin migrations at
+# Application_Start, so two minors on one schema migrate it out from under each
+# other -- that is what put pr-3 on a permanent HTTP 500 on 2026-08-11. Every pr-*
+# site builds from a PR based on the branch this workflow deploys, so they are the
+# same minor by construction, and test_base_branch_config.py fails if that drifts.
+#
+# The fallback is not a safe steady state, it is a migration path: the shared catalog
+# is the one the prod restore owns, and it is shared with anything else pointed at
+# secrets.DB_NAME. Note that no restore is actually running -- measured 2026-08-17,
+# the sandbox has had no data load since 2026-04-14 -- so the fallback does not eat a
+# Rock upgrade the way this comment used to claim. See open item 7 in
+# Documentation/Training/DevOps-Open-Items-Rock-CICD.md.
 
 "on":
   push:
@@ -99,4 +121,10 @@ jobs:
       mode: DedicatedSite
       queue_name: commands
       write_connection_string: true
+      # A repository variable rather than a secret: a catalog name is not a
+      # credential, and keeping it visible means the deploy log can say which
+      # database staging landed on without redacting the one detail you want to
+      # check. Unset resolves to the empty string and falls back to the shared
+      # sandbox catalog -- see the header.
+      db_name: ${{ vars.STAGING_DB_NAME }}
     secrets: inherit
