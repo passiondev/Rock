@@ -1,4 +1,5 @@
 import pathlib
+import re
 import unittest
 
 import yaml
@@ -92,3 +93,90 @@ class BootstrapPublishesEveryScriptDirectoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+STARTUP_STEP_NAME = "Install command queue scheduled task through VM startup script"
+BOOTSTRAP_PREFIX = "pr-environments/bootstrap/latest/"
+
+
+def _startup_script():
+    """The PowerShell the VM runs at boot, pulled out of the step that installs it as
+    windows-startup-script-ps1."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("name") == STARTUP_STEP_NAME:
+                return step["run"]
+    raise AssertionError(
+        f"no step named {STARTUP_STEP_NAME!r} in {WORKFLOW.name}; "
+        "the bootstrap no longer installs a startup script"
+    )
+
+
+class BootstrapDownloadsEveryScriptItUploadsTests(unittest.TestCase):
+    """The class above proves the bootstrap *uploads* both script directories. This is
+    the other half, and it is a separate half: the upload is a glob over the
+    directories, while the startup script that pulls them down was a list of ten file
+    names typed by hand. Nothing tied the two together, so the moment the glob matched
+    something the list did not name, the VM simply did not get it.
+
+    Measured on 2026-08-18. The bootstrap ran green, uploaded Find-LegacyTextColumns.ps1
+    at 19:07:22Z, and the agent came up knowing the find-legacy-text-columns command --
+    then failed it with "The term 'C:\\RockDeploy\\Find-LegacyTextColumns.ps1' is not
+    recognized", because the hand-written list did not mention it. Every assertion in
+    the class above passed while that was true.
+
+    The agent's own Sync-DeploymentScripts does glob the prefix, so in principle it
+    closes the gap a minute later. It is not a substitute: it writes its progress to the
+    scheduled task's local stdout and nothing uploads that, so when it does not do what
+    it is expected to do there is no evidence off the box. The bootstrap is the step that
+    is watched, so the bootstrap should land what it published."""
+
+    SCRIPT_DIRS = ["Deployment/PrTestEnvironments", "Deployment/Database"]
+
+    def _uploaded_script_names(self):
+        names = []
+        for directory in self.SCRIPT_DIRS:
+            names.extend(sorted(p.name for p in (REPO_ROOT / directory).glob("*.ps1")))
+        self.assertTrue(names, "no .ps1 files found to upload; the test is not testing anything")
+        return names
+
+    def test_every_uploaded_script_reaches_the_vm_at_bootstrap(self):
+        """Satisfied either way -- enumerate the prefix, or name every file. Enumerating
+        is preferred because it cannot drift, but a complete list is equally correct and
+        this should not fail a design it merely disagrees with."""
+        startup = _startup_script()
+
+        enumerates = BOOTSTRAP_PREFIX in startup and "?prefix=" in startup
+        if enumerates:
+            return
+
+        missing = [name for name in self._uploaded_script_names() if name not in startup]
+        self.assertFalse(
+            missing,
+            "the bootstrap uploads these but its startup script never downloads them, so "
+            f"they are absent from C:\\RockDeploy on a freshly bootstrapped VM: {missing}. "
+            "Either name them in the startup script or list the bootstrap prefix and take "
+            "whatever is published there.",
+        )
+
+    def test_a_hand_written_list_does_not_name_scripts_that_no_longer_exist(self):
+        """The mirror failure, and the quieter one. A renamed or deleted script leaves its
+        old name in the list, and the startup script's download of it 404s at boot -- on a
+        box where nobody reads the console."""
+        # Only the download array. The step's own `run:` also names the runner-temp file
+        # it writes the startup script to, and that one is not downloaded from anywhere.
+        array = re.search(r"\$scripts\s*=\s*@\((.*?)\)", _startup_script(), re.DOTALL)
+        if not array:
+            return
+        quoted = set(re.findall(r"'([A-Za-z0-9.-]+\.ps1)'", array.group(1)))
+        if not quoted:
+            return
+
+        real = set(self._uploaded_script_names())
+        stale = sorted(quoted - real)
+        self.assertFalse(
+            stale,
+            f"the startup script downloads {stale}, which no longer exist in "
+            f"{self.SCRIPT_DIRS}; the bootstrap would 404 on them at boot",
+        )

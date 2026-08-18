@@ -182,7 +182,14 @@ jobs:
           fi
 
           if [ -n "$staging_db_name" ]; then
-            echo "staging has its own catalog ($staging_db_name), so Rock $artifact_version can migrate it without touching the pr-* fleet."
+            # Cleared, but not silently. A minor change onto staging's own catalog is
+            # the supported path and stays allowed; it is also the one deploy whose
+            # *recovery* reaches the fleet, and the all-clear used to say the opposite
+            # ("without touching the pr-* fleet"). See open item 24.
+            if [ "$artifact_minor" != "$pinned_minor" ]; then
+              echo "::warning::Rock $artifact_version will migrate staging's own catalog ($staging_db_name) up from the ${pinned_minor}.x line, and that is a one-way door. Rock migrates at Application_Start and EF commits each migration separately, so a failure part-way leaves $staging_db_name stranded between two minors with no abort -- ${pinned_minor}.x will not start against it either. Cloud SQL for SQL Server restores per *instance*, not per database, so undoing it rolls every catalog on that instance back, the pr-* fleet's shared one included. Take an on-demand backup before this deploy reaches the site."
+            fi
+            echo "staging has its own catalog ($staging_db_name), so this deploy does not migrate the catalog the pr-* fleet shares."
             exit 0
           fi
 

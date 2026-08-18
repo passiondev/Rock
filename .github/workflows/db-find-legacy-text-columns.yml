@@ -36,9 +36,12 @@ name: DB - Find legacy text columns
         default: false
         type: boolean
       queue_name:
-        description: Command queue to post to.
+        description: >-
+          Command queue to post to. The default is the queue the test VM's agent
+          polls; production installs its own agent against a different one, so this
+          exists to reach that VM rather than to be changed casually.
         required: false
-        default: pr-test
+        default: commands
         type: string
       poll_attempts:
         description: >-
