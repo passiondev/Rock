@@ -487,10 +487,10 @@ class StagingWorkflowTests(unittest.TestCase):
 
     def test_staging_asks_for_its_own_catalog(self):
         """Open item 7: staging names its own catalog rather than inheriting the
-        prod-derived one. Superseded 2026-08-17 in one respect -- the pr-* sites
-        now follow staging onto this same catalog instead of being left behind on
-        the shared one, so this variable moves the whole fleet, not just staging.
-        A repository variable rather than a secret -- a catalog name is not a
+        prod-derived one. This variable moves staging and nothing else -- the pr-*
+        fleet reads vars.PR_TEST_DB_NAME, split out on 2026-08-18 after reading this
+        one meant staging could not change minor without dragging every pr-* site
+        along. A repository variable rather than a secret -- a catalog name is not a
         credential, and keeping it visible is what lets the deploy log state which
         database staging used without redacting it."""
         workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())

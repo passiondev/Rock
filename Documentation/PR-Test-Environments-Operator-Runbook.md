@@ -95,7 +95,9 @@ To provision:
 2. **Create the catalog** and seed it from the current shared one so staging starts from the same sanitized data it has today.
 3. **Grant the existing `DB_USER`** access to it, so no new credential is introduced and `DB_USER` / `DB_PASSWORD` keep working unchanged.
 4. **Exclude it from the refresh** -- if one is ever built. This is a no-op today: there is no refresh to exclude it from (see below). Keep the requirement recorded, because staging not resetting is what makes a version upgrade durable and staging trustworthy during a demo.
-5. **Set the repository variable** `STAGING_DB_NAME` to the catalog name. A variable, not a secret: a catalog name is not a credential, and keeping it visible lets the deploy log state which database was used. Note the blast radius: this one variable moves **staging and every `pr-*` site**, since `pr-test-deploy.yml` reads it too. Existing sites do not move until each is redeployed, so expect a window where some sites are on the new catalog and some are still on the old one.
+5. **Set the repository variable** `STAGING_DB_NAME` to the catalog name. A variable, not a secret: a catalog name is not a credential, and keeping it visible lets the deploy log state which database was used. This moves **staging only**. The `pr-*` fleet reads its own variable, `PR_TEST_DB_NAME`, and both fall back to the shared prod-derived catalog while unset -- so setting one leaves the other exactly where it is. Staging does not move until it is redeployed.
+
+   Until 2026-08-18 `pr-test-deploy.yml` read `STAGING_DB_NAME` as well, so this one variable moved staging and every `pr-*` site together. That is what made a staging-first version bump impossible, and it is why the split exists; see the [2026-08-18 incident record](Incidents/2026-08-18-staging-v19-shared-catalog.md).
 
 Then redeploy staging and check the run's `Report which catalog this deploy will use` step. It prints `Catalog source: caller-supplied` when the variable resolved, and emits a warning naming the shared catalog when it did not. An unset or misspelled variable falls back silently to the shared catalog otherwise -- the deploy still succeeds, so this step is the only place that difference is visible. `pr-*` deploys have no equivalent step: they inline the connection string, so the only way to confirm one moved is to redeploy it and check the site works.
 
@@ -103,7 +105,19 @@ Then redeploy staging and check the run's `Report which catalog this deploy will
 
 Flipping the trunk branch -- `passion-18.4.1` to `passion-19.3.4`, say -- is the one routine operation that can break every environment at once, and it does it quietly. Read this before starting one.
 
-**Why it is dangerous.** Staging and every `pr-*` site share one catalog by design (above). The flip points staging at a new Rock minor, and the first request after that deploy runs the new minor's EF and plugin migrations against that shared catalog. Every `pr-*` site still serving the old minor's binaries is then old code against a newly-migrated schema -- which is precisely `pr-3` on 2026-08-11, reproduced once per live environment.
+**Why it is dangerous.** Staging and every `pr-*` site share one catalog today (above -- they name separate variables, but neither is set, so both fall back to the same database). The flip points staging at a new Rock minor, and the first request after that deploy runs the new minor's EF and plugin migrations against that shared catalog. Every `pr-*` site still serving the old minor's binaries is then old code against a newly-migrated schema -- which is precisely `pr-3` on 2026-08-11, reproduced once per live environment.
+
+**Prove the new minor on staging first.** Everything below assumes the cutover is the moment you find out whether the new minor migrates cleanly. It does not have to be, and on 2026-08-18 finding out that way cost the whole fleet: the v19 migration set died part-way through on a legacy `text` column, and because staging was on the shared catalog it stranded that catalog mid-migration for every environment at once. EF's `DbMigrator` commits each migration separately, so a failure half way is not a rollback -- it is a database on neither version.
+
+Give staging its own catalog and the risk moves off the critical path:
+
+1. Provision `RockStaging` and set `STAGING_DB_NAME` (see *Staging catalog*, above). This moves staging alone; `PR_TEST_DB_NAME` stays unset and the fleet stays where it is.
+2. Run `Deployment/Database/Find-LegacyTextColumns.ps1` against the new catalog. It is read-only. `text`, `ntext` and `image` were removed in SQL Server 2016 and Rock's own schema uses `nvarchar` throughout, so anything it finds is local drift -- and a v19 migration that compares such a column with `=` fails with "The data types text and nvarchar are incompatible in the equal to operator". Remediate with `Convert-LegacyTextColumns.ps1` before deploying, not after.
+3. Deploy the new minor to staging **by `workflow_dispatch` with `ref:` set to the new branch** -- not by flipping the trunk. Staging's push trigger still names the old branch at this point, which is what you want: one environment moves, on demand, and the fleet is untouched.
+4. Load the site to trigger `Application_Start`, and watch it through. This is where a bad migration surfaces, now against a database only staging is using.
+5. Only once staging is serving the new minor, do the cutover below. Step 4 of it is then a formality rather than the experiment.
+
+The guard in `staging-deploy.yml` enforces the ordering: while `STAGING_DB_NAME` is unset it refuses any staging deploy whose Rock minor differs from the fleet's pin, dispatch included. So step 3 cannot be done before step 1, and the failure is a refused deploy naming the reason rather than a stranded catalog.
 
 **What closes the door is moving the default branch, not flipping the pins.** The deploy gate fetches `.github/pr-test-environments.json` with `ref: context.payload.repository.default_branch` (`pr-test-deploy.yml`), so every PR is judged against one config -- the trunk's -- no matter what it is based on. Move the default branch and the retired branch's PRs start failing the `pull.base.ref !== configuredBaseBranch` comparison on their own, with no per-branch cleanup.
 
