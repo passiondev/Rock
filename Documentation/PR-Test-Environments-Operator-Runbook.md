@@ -105,7 +105,19 @@ Then redeploy staging and check the run's `Report which catalog this deploy will
 
 Flipping the trunk branch -- `passion-18.4.1` to `passion-19.3.4`, say -- is the one routine operation that can break every environment at once, and it does it quietly. Read this before starting one.
 
-**Why it is dangerous.** Staging and every `pr-*` site share one catalog by design (above). The flip points staging at a new Rock minor, and the first request after that deploy runs the new minor's EF and plugin migrations against that shared catalog. Every `pr-*` site still serving the old minor's binaries is then old code against a newly-migrated schema -- which is precisely `pr-3` on 2026-08-11, reproduced once per live environment.
+**Why it is dangerous.** Staging and every `pr-*` site share one catalog today (above -- they name separate variables, but neither is set, so both fall back to the same database). The flip points staging at a new Rock minor, and the first request after that deploy runs the new minor's EF and plugin migrations against that shared catalog. Every `pr-*` site still serving the old minor's binaries is then old code against a newly-migrated schema -- which is precisely `pr-3` on 2026-08-11, reproduced once per live environment.
+
+**Prove the new minor on staging first.** Everything below assumes the cutover is the moment you find out whether the new minor migrates cleanly. It does not have to be, and on 2026-08-18 finding out that way cost the whole fleet: the v19 migration set died part-way through on a legacy `text` column, and because staging was on the shared catalog it stranded that catalog mid-migration for every environment at once. EF's `DbMigrator` commits each migration separately, so a failure half way is not a rollback -- it is a database on neither version.
+
+Give staging its own catalog and the risk moves off the critical path:
+
+1. Provision `RockStaging` and set `STAGING_DB_NAME` (see *Staging catalog*, above). This moves staging alone; `PR_TEST_DB_NAME` stays unset and the fleet stays where it is.
+2. Run `Deployment/Database/Find-LegacyTextColumns.ps1` against the new catalog. It is read-only. `text`, `ntext` and `image` were removed in SQL Server 2016 and Rock's own schema uses `nvarchar` throughout, so anything it finds is local drift -- and a v19 migration that compares such a column with `=` fails with "The data types text and nvarchar are incompatible in the equal to operator". Remediate with `Convert-LegacyTextColumns.ps1` before deploying, not after.
+3. Deploy the new minor to staging **by `workflow_dispatch` with `ref:` set to the new branch** -- not by flipping the trunk. Staging's push trigger still names the old branch at this point, which is what you want: one environment moves, on demand, and the fleet is untouched.
+4. Load the site to trigger `Application_Start`, and watch it through. This is where a bad migration surfaces, now against a database only staging is using.
+5. Only once staging is serving the new minor, do the cutover below. Step 4 of it is then a formality rather than the experiment.
+
+The guard in `staging-deploy.yml` enforces the ordering: while `STAGING_DB_NAME` is unset it refuses any staging deploy whose Rock minor differs from the fleet's pin, dispatch included. So step 3 cannot be done before step 1, and the failure is a refused deploy naming the reason rather than a stranded catalog.
 
 **What closes the door is moving the default branch, not flipping the pins.** The deploy gate fetches `.github/pr-test-environments.json` with `ref: context.payload.repository.default_branch` (`pr-test-deploy.yml`), so every PR is judged against one config -- the trunk's -- no matter what it is based on. Move the default branch and the retired branch's PRs start failing the `pull.base.ref !== configuredBaseBranch` comparison on their own, with no per-branch cleanup.
 
