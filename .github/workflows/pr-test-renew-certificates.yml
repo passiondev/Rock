@@ -21,6 +21,7 @@ jobs:
         with:
           sparse-checkout: |
             Deployment/PrTestEnvironments
+            Deployment/Database
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -33,7 +34,10 @@ jobs:
       - name: Upload latest deployment scripts
         shell: pwsh
         run: |
-          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 gs://$env:PR_TEST_GCS_BUCKET/pr-environments/bootstrap/latest/
+          # Both directories, matching pr-test-bootstrap-command-queue.yml. Publishing a
+          # subset here would mean the set of scripts on the VM depended on which workflow
+          # ran last.
+          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 Deployment/Database/*.ps1 gs://$env:PR_TEST_GCS_BUCKET/pr-environments/bootstrap/latest/
 
       - name: Resolve VM and temporarily allow ACME HTTP-01
         shell: pwsh
