@@ -351,6 +351,13 @@ export type FormGeneral = {
      * can begin filling it out.
      */
     isLoginRequired?: boolean;
+
+    /**
+     * The image to show at the top of the user facing form. The value holds the
+     * BinaryFile unique identifier. This is stored in the workflow type's
+     * HeaderImage attribute so it can be referenced from Lava on the entry page.
+     */
+    headerImage?: ListItemBag | null;
 };
 
 /**

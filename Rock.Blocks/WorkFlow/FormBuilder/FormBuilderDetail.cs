@@ -89,6 +89,12 @@ namespace Rock.Blocks.Workflow.FormBuilder
             public const string DefaultPreviewPage = "DefaultPreviewPage";
         }
 
+        /// <summary>
+        /// The key of the entity attribute on <see cref="WorkflowType"/> that holds
+        /// the image shown at the top of the user facing form.
+        /// </summary>
+        private const string HeaderImageAttributeKey = "HeaderImage";
+
         #region Methods
 
         /// <inheritdoc/>
@@ -481,7 +487,7 @@ namespace Rock.Blocks.Workflow.FormBuilder
             {
                 HeaderContent = actionForm.Header,
                 FooterContent = actionForm.Footer,
-                General = GetFormGeneralViewModel( workflowType ),
+                General = GetFormGeneralViewModel( workflowType, rockContext ),
                 Sections = GetFormSectionViewModels( actionForm ),
                 ConfirmationEmail = settings?.ConfirmationEmail.ToViewModel( rockContext ),
                 NotificationEmail = settings?.NotificationEmail.ToViewModel( rockContext ),
@@ -530,8 +536,9 @@ namespace Rock.Blocks.Workflow.FormBuilder
         /// standard detail page.
         /// </summary>
         /// <param name="workflowType">The <see cref="WorkflowType"/> that will be represented.</param>
+        /// <param name="rockContext">The database context to use for data lookups.</param>
         /// <returns>A view model that represents the general settings of the form.</returns>
-        private static FormGeneralViewModel GetFormGeneralViewModel( WorkflowType workflowType )
+        private static FormGeneralViewModel GetFormGeneralViewModel( WorkflowType workflowType, RockContext rockContext )
         {
             var viewModel = new FormGeneralViewModel
             {
@@ -541,7 +548,8 @@ namespace Rock.Blocks.Workflow.FormBuilder
                 IsLoginRequired = workflowType.IsLoginRequired,
                 Name = workflowType.Name,
                 Template = workflowType.FormBuilderTemplate?.Guid,
-                Slug = workflowType.Slug
+                Slug = workflowType.Slug,
+                HeaderImage = GetHeaderImageViewModel( workflowType, rockContext )
             };
 
             if ( workflowType.Category != null )
@@ -554,6 +562,84 @@ namespace Rock.Blocks.Workflow.FormBuilder
             }
 
             return viewModel;
+        }
+
+        /// <summary>
+        /// Gets the currently selected header image of the form. The image is
+        /// stored in an entity attribute on the <see cref="WorkflowType"/> rather
+        /// than a column so that it can be referenced from Lava on the entry page.
+        /// </summary>
+        /// <param name="workflowType">The <see cref="WorkflowType"/> whose header image is wanted.</param>
+        /// <param name="rockContext">The database context to use for data lookups.</param>
+        /// <returns>A bag describing the selected image, or <c>null</c> if none is set.</returns>
+        private static ListItemBag GetHeaderImageViewModel( WorkflowType workflowType, RockContext rockContext )
+        {
+            if ( workflowType.Attributes == null )
+            {
+                workflowType.LoadAttributes( rockContext );
+            }
+
+            if ( !workflowType.Attributes.ContainsKey( HeaderImageAttributeKey ) )
+            {
+                return null;
+            }
+
+            var binaryFileGuid = workflowType.GetAttributeValue( HeaderImageAttributeKey ).AsGuidOrNull();
+
+            if ( !binaryFileGuid.HasValue )
+            {
+                return null;
+            }
+
+            var guid = binaryFileGuid.Value;
+            var binaryFile = new BinaryFileService( rockContext ).Queryable()
+                .Where( bf => bf.Guid == guid )
+                .Select( bf => new
+                {
+                    bf.Guid,
+                    bf.FileName
+                } )
+                .FirstOrDefault();
+
+            if ( binaryFile == null )
+            {
+                return null;
+            }
+
+            return new ListItemBag
+            {
+                Value = binaryFile.Guid.ToString(),
+                Text = binaryFile.FileName
+            };
+        }
+
+        /// <summary>
+        /// Stores the selected header image in the workflow type's header image
+        /// attribute. The value is written through the attribute (rather than as a
+        /// direct row update) because that is what marks the newly uploaded binary
+        /// file as permanent and releases the file it replaced.
+        /// </summary>
+        /// <param name="workflowType">The <see cref="WorkflowType"/> being updated.</param>
+        /// <param name="general">The general settings that contain the selection.</param>
+        /// <param name="rockContext">The database context to operate in.</param>
+        private static void SaveHeaderImageAttributeValue( WorkflowType workflowType, FormGeneralViewModel general, RockContext rockContext )
+        {
+            if ( workflowType.Attributes == null )
+            {
+                workflowType.LoadAttributes( rockContext );
+            }
+
+            // The attribute is provisioned outside this block. If the installation
+            // does not have it there is nothing to store.
+            if ( !workflowType.Attributes.ContainsKey( HeaderImageAttributeKey ) )
+            {
+                return;
+            }
+
+            var binaryFileGuid = general?.HeaderImage?.Value.AsGuidOrNull();
+
+            workflowType.SetAttributeValue( HeaderImageAttributeKey, binaryFileGuid?.ToString() ?? string.Empty );
+            workflowType.SaveAttributeValues( rockContext );
         }
 
         /// <summary>
@@ -854,6 +940,10 @@ namespace Rock.Blocks.Workflow.FormBuilder
             UpdateWorkflowType( formSettings, actionForm.WorkflowForm, workflowType, RockContext );
 
             RockContext.SaveChanges();
+
+            // Attribute values are saved after SaveChanges() so that a newly
+            // created workflow type has an identifier to attach them to.
+            SaveHeaderImageAttributeValue( workflowType, formSettings.General, RockContext );
 
             // Update the link-to-form options.
             var linkToFormOptions = GetLinkToFormOptions( this.RockContext, workflowType.Slug );
