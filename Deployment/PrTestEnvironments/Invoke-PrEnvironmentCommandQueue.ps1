@@ -208,6 +208,12 @@ $CommandTimeoutsSeconds = @{
     'stop'               = 300
     'destroy'            = 300
     'renew-certificate'  = 720
+    # Metadata-only by default and quick, but -MeasureSizes full-scans every table
+    # that has a legacy column, and the catalog this is aimed at is 115 GB. The
+    # fallback of 600s would kill a real scan part-way and report it as a failure,
+    # which on a read-only diagnostic is the worst kind of wrong answer: it looks
+    # like the catalog is unreadable rather than merely large.
+    'find-legacy-text-columns' = 1800
 }
 $FallbackCommandTimeoutSeconds = 600
 
@@ -258,6 +264,28 @@ $CommandRunner = {
         }
         "renew-certificate" {
             & (Join-Path $DeployRoot "Invoke-PrEnvironmentCertificateRenewal.ps1") -DeployRoot $DeployRoot
+        }
+        "find-legacy-text-columns" {
+            # Read-only, and deliberately the only Deployment/Database script this
+            # agent can reach. Convert-LegacyTextColumns.ps1 is -Apply-gated and
+            # rewrites column types; it stays a by-hand script with a human reading
+            # the finder's output first, so there is no branch for it here.
+            #
+            # This exists because the finder had nowhere to run. The catalog is behind
+            # a PSC endpoint with no public IP, and Cloud SQL refuses any login but the
+            # owning `sqlserver` account into the database it owns -- so neither a
+            # runner nor a workstation nor a hand-made diagnostic login can open it.
+            # The VM already holds a working connection string on every deploy. Rather
+            # than issue a second credential, the finder runs where that one already is.
+            if (-not ($Command.PSObject.Properties.Name -contains 'connectionString')) {
+                throw "find-legacy-text-columns requires a connectionString."
+            }
+            $arguments = @{ ConnectionString = [string]$Command.connectionString }
+            if (($Command.PSObject.Properties.Name -contains 'measureSizes') -and $Command.measureSizes) {
+                $arguments['MeasureSizes'] = $true
+            }
+
+            & (Join-Path $DeployRoot "Find-LegacyTextColumns.ps1") @arguments
         }
         default { throw "Unknown command: $($Command.command)" }
     }
