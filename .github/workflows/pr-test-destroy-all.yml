@@ -1,0 +1,267 @@
+name: PR Test Environment Destroy All
+
+# After the trunk cutover the PR environments built against the retired branch are
+# stranded. The deploy gate reads its config from the default branch, so it refuses
+# them, and the nightly refresh does not touch them -- but their IIS sites, app pools
+# and files stay on the VM holding disk until something removes them. Doing that by
+# hand is a `rock:destroy` label per PR, one at a time, and the ones nobody remembers
+# stay forever.
+#
+# This queues the `destroy` the VM agent already understands, once per pull request.
+# It deliberately does not introduce a new command verb: the agent runs whatever copy
+# of itself was installed at bootstrap and has no self-update path, so an unrecognised
+# verb would sit in the queue doing nothing until somebody re-bootstraps the VM.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type exactly: destroy all pr environments"
+        required: true
+        type: string
+      apply:
+        description: Queue the destroy commands. Leave unticked to list what would be removed.
+        required: false
+        type: boolean
+        default: false
+      pr_numbers:
+        description: Optional. Space- or comma-separated PR numbers, instead of enumerating by label.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: pr-test-destroy-all
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: List the environments in scope
+    runs-on: ubuntu-latest
+    outputs:
+      pr_numbers: ${{ steps.plan.outputs.pr_numbers }}
+      count: ${{ steps.plan.outputs.count }}
+      environment_domain: ${{ steps.plan.outputs.environment_domain }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts/pr-test-status.js
+            .github/pr-test-environments.json
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve the teardown list
+        id: plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            // The label list belongs to the module that writes it. A second copy here
+            // would drift the first time a state is added, and the symptom would be
+            // environments quietly left behind rather than an error.
+            const { STATE_LABELS } = require('./.github/scripts/pr-test-status.js');
+
+            // Read the confirmation through the payload rather than through an Actions
+            // expansion. An expansion is pasted into this file as text before node ever
+            // sees it, so operator-typed input would arrive as part of the program --
+            // including from inside a comment, where a newline in the value just ends
+            // the comment and carries on as code.
+            const confirm = (context.payload.inputs.confirm || '').trim().toLowerCase();
+            if (confirm !== 'destroy all pr environments') {
+              core.setFailed(
+                "The confirmation did not match. Type exactly: destroy all pr environments"
+              );
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const config = JSON.parse(fs.readFileSync('.github/pr-test-environments.json', 'utf8'));
+            core.setOutput('environment_domain', config.environmentDomain || 'rock-dev.connect.passion.team');
+
+            const explicit = (context.payload.inputs.pr_numbers || '').trim();
+            let selected = [];
+
+            if (explicit) {
+              // The label read is a best effort. When it misses one, or catches one it
+              // should not, naming the PRs directly beats fighting the labels.
+              const parsed = explicit.split(/[\s,]+/).filter(Boolean);
+              const bad = parsed.filter((value) => !/^\d+$/.test(value) || Number(value) <= 0);
+              if (bad.length) {
+                core.setFailed(`pr_numbers must be positive integers; could not read: ${bad.join(', ')}`);
+                return;
+              }
+              // Deduplicate: the command id is built from the PR number and the run id,
+              // so the same PR listed twice would queue two commands to one object path
+              // and both matrix legs would read the same result.
+              const unique = [...new Set(parsed.map(Number))];
+              selected = unique.map((value) => ({ number: value, base: '(not checked)', labels: '(named explicitly)' }));
+            } else {
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: 'open',
+                per_page: 100
+              });
+              for (const pull of pulls) {
+                const held = pull.labels.map((label) => label.name).filter((name) => STATE_LABELS.includes(name));
+                if (held.length) {
+                  selected.push({ number: pull.number, base: pull.base.ref, labels: held.join(', ') });
+                }
+              }
+            }
+
+            selected.sort((a, b) => a.number - b.number);
+
+            // A matrix caps at 256 legs. Past that the run fails on the matrix itself
+            // with nothing said about why, so say it here and point at the way through.
+            if (selected.length > 256) {
+              core.setFailed(
+                `${selected.length} environments are in scope, and a job matrix holds 256. ` +
+                'Tear these down in batches using the pr_numbers input.'
+              );
+              return;
+            }
+
+            core.setOutput('pr_numbers', JSON.stringify(selected.map((item) => String(item.number))));
+            core.setOutput('count', String(selected.length));
+
+            const applying = context.payload.inputs.apply === 'true' || context.payload.inputs.apply === true;
+            const lines = [];
+            lines.push(applying ? '## Tearing down PR test environments' : '## Dry run - nothing will be removed');
+            lines.push('');
+            if (!selected.length) {
+              lines.push('No open pull request carries a PR-environment state label.');
+            } else {
+              lines.push(`${selected.length} environment(s) in scope. Base branch is shown so the retired-trunk fleet is distinguishable from current work.`);
+              lines.push('');
+              lines.push('| PR | Base branch | State label |');
+              lines.push('| --- | --- | --- |');
+              for (const item of selected) {
+                lines.push(`| #${item.number} | \`${item.base}\` | ${item.labels} |`);
+              }
+            }
+            lines.push('');
+            lines.push('### What this list cannot see');
+            lines.push('');
+            lines.push('This is built from GitHub labels. The environments themselves live in `C:\\RockTestEnvs` on the test VM, and that directory is the real source of truth.');
+            lines.push('An environment whose pull request was deleted, or whose label was cleared by a run that failed halfway, does not appear above and will survive this teardown.');
+            lines.push('After this finishes, list `C:\\RockTestEnvs` on the VM and remove whatever is left over by hand.');
+            if (!applying) {
+              lines.push('');
+              lines.push('### What apply will also write');
+              lines.push('');
+              // The teardown is not the only change an apply run makes, and a preview
+              // that hides the rest is not a preview. Each leg rewrites its PR's sticky
+              // status comment and state label -- otherwise a destroyed environment goes
+              // on advertising a hostname that no longer answers.
+              lines.push('Beyond the teardown itself, each pull request above has its sticky status comment and `rock:` state label rewritten to reflect the result.');
+              lines.push('');
+              lines.push('Re-run with **apply** ticked to queue the destroy commands.');
+            }
+            await core.summary.addRaw(lines.join('\n')).write();
+
+  destroy:
+    name: Destroy PR ${{ matrix.pr_number }}
+    needs: plan
+    if: ${{ inputs.apply && needs.plan.outputs.count != '0' }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One VM, one agent, and IIS teardown is not something to run concurrently
+      # against itself. Serialising costs wall clock on a button pressed once per
+      # cutover, which is the cheaper side of that trade.
+      max-parallel: 1
+      # Half a teardown is the worst outcome: the operator reads a green run as an
+      # empty VM while the remainder keeps holding disk. Every PR gets its attempt.
+      fail-fast: false
+      matrix:
+        pr_number: ${{ fromJson(needs.plan.outputs.pr_numbers) }}
+    env:
+      COMMAND_ID: destroy-all-${{ matrix.pr_number }}-${{ github.run_id }}
+      PR_NUMBER: ${{ matrix.pr_number }}
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts/pr-test-status.js
+          sparse-checkout-cone-mode: false
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Queue PR environment destroy command
+        shell: pwsh
+        run: |
+          $command = [ordered]@{
+            commandId = $env:COMMAND_ID
+            command = "destroy"
+            prNumber = [int]$env:PR_NUMBER
+            requestedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
+          gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
+
+      - name: Poll PR environment command result
+        shell: pwsh
+        run: |
+          $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
+          for ($i = 0; $i -lt 60; $i++) {
+            gsutil -q cp $resultUri result.json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $result = Get-Content result.json -Raw | ConvertFrom-Json
+              $result | ConvertTo-Json -Depth 10
+
+              # fail-fast is off, so a failure here is triaged after the whole fleet
+              # has been through. Print the VM's own log now: by the time anybody
+              # reads this run, the only record of why one teardown failed is what
+              # this step captured.
+              $logObject = $null
+              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
+              if (![string]::IsNullOrWhiteSpace($logObject)) {
+                gsutil -q cp "gs://$env:PR_TEST_GCS_BUCKET/$logObject" command-output.log 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "::group::Teardown output from the VM"
+                  Get-Content command-output.log -Raw | Write-Host
+                  Write-Host "::endgroup::"
+                }
+              }
+
+              if ($result.status -eq "succeeded") { exit 0 }
+              Write-Host "::error::Teardown of PR #$env:PR_NUMBER failed on the VM: $($result.error). The other environments continue; re-run this workflow with pr_numbers set to whatever is left."
+              exit 1
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw "Timed out waiting for PR environment command result: $resultUri"
+
+      - name: Update sticky PR status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { updatePrTestStatus } = require('./.github/scripts/pr-test-status.js');
+            const succeeded = '${{ job.status }}' === 'success';
+            const logsUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            await updatePrTestStatus({
+              github,
+              context,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              prNumber: '${{ matrix.pr_number }}',
+              status: succeeded ? 'destroyed' : 'failed',
+              hostName: succeeded ? '' : `pr-${{ matrix.pr_number }}.${{ needs.plan.outputs.environment_domain }}`,
+              sha: '',
+              artifactGcsPath: '',
+              logsUrl
+            });

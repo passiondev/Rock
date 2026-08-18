@@ -79,11 +79,30 @@ jobs:
               }
             }
 
+            // Read the config from the *default branch*, not from pull.base.ref.
+            // This is what makes a trunk cutover shut the old fleet off. Reading
+            // the PR's own base branch means a PR on a retired branch reads that
+            // branch's copy of this file, which still names itself, so the
+            // comparison below always passes and the site keeps redeploying
+            // old-minor artifacts onto a catalog staging has already migrated --
+            // pr-3 again, once per live environment. Read from the default branch
+            // and the same flip rejects it on the next deploy attempt.
+            //
+            // The default branch is the trunk by convention here, and
+            // production-deploy.yml already treats it as the version oracle for
+            // the same reason. That makes "move the default branch" a required
+            // cutover step; if it is missed, PRs on the new trunk are refused
+            // rather than wrongly accepted, which is the safe direction to fail.
+            //
+            // pr-test-lifecycle.yml deliberately still reads pull.base.ref. It
+            // only runs stop/destroy, and those have to keep working on retired
+            // PRs -- that is how the old fleet gets torn down after a flip.
+            // CutoverGateFailClosedTests guards both halves of the asymmetry.
             const configResponse = await github.rest.repos.getContent({
               owner,
               repo,
               path: '.github/pr-test-environments.json',
-              ref: pull.base.ref
+              ref: context.payload.repository.default_branch
             });
             const config = JSON.parse(Buffer.from(configResponse.data.content, 'base64').toString('utf8'));
             const configuredBaseBranch = config.baseBranch || 'passion-18.4.1';
@@ -179,7 +198,18 @@ jobs:
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ needs.build.outputs.artifact_gcs_object_path }}
       PR_TEST_DB_DATA_SOURCE: ${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }}
-      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
+      # PR environments follow staging: same catalog, same Rock version. The version
+      # half is what makes the catalog half safe -- a shared catalog is only
+      # dangerous across *different* Rock minors, because Rock migrates the schema at
+      # Application_Start. Every pr-* site builds from a PR based on the branch named
+      # in .github/pr-test-environments.json, and that branch is the one staging
+      # tracks, so everything pointed at this catalog is the same minor by
+      # construction. StagingAndPrEnvironmentCouplingTests guards both halves.
+      #
+      # STAGING_DB_NAME unset resolves to the empty string and falls back to the
+      # prod-derived shared sandbox catalog, which is where every pr-* site sits
+      # today, so this is a no-op until the staging catalog is provisioned.
+      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ vars.STAGING_DB_NAME || secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2

@@ -19,6 +19,8 @@ Each PR will get an isolated IIS site and app pool keyed by PR number, for examp
 
 All PR environments will share one sanitized, non-production sandbox Rock database and shared sandbox file storage. The sandbox DB will be refreshed from production on a daily cadence through an existing sanitization/sync process. PR environments isolate code/runtime, not data.
 
+> **Status note, 2026-08-17: the daily cadence is not implemented, and the "existing sanitization/sync process" this requirement assumed does not exist.** Verified against GCP: `connect-restore-test` was seeded once on 2026-04-14 by a per-database `.bak` import and has had no data load since; no Cloud Scheduler job exists in the project; nothing invokes `Invoke-SandboxRefreshWithPrEnvironments.ps1`. This sentence is the origin of every "refreshed daily" claim that had propagated into the runbooks and training material, all of which have now been corrected. Left in place as the requirement it is, rather than rewritten to match reality. See open item 7 in `Documentation/Training/DevOps-Open-Items-Rock-CICD.md`.
+
 ## User Stories
 
 1. As a developer, I want to request a Rock test environment from a PR label, so that I can test changes without running Rock locally on macOS.

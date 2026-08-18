@@ -71,5 +71,14 @@ namespace Rock.ViewModels.Blocks.WorkFlow.FormBuilder
         /// they can begin filling it out.
         /// </summary>
         public bool IsLoginRequired { get; set; }
+
+        /// <summary>
+        /// The image to show at the top of the user facing form. The
+        /// <see cref="ListItemBag.Value"/> holds the unique identifier of the
+        /// binary file. This is stored in the workflow type's <c>HeaderImage</c>
+        /// attribute rather than a column so it can be referenced from Lava on
+        /// the entry page.
+        /// </summary>
+        public ListItemBag HeaderImage { get; set; }
     }
 }

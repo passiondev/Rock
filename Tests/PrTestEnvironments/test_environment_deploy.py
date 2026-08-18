@@ -486,11 +486,13 @@ class StagingWorkflowTests(unittest.TestCase):
         self.assertTrue(deploy["write_connection_string"])
 
     def test_staging_asks_for_its_own_catalog(self):
-        """Open item 7's chosen half-step: isolate staging, leave the pr-* sites
-        sharing one catalog, because staging is the environment that has to be
-        trustworthy during a demo. A repository variable rather than a secret -- a
-        catalog name is not a credential, and keeping it visible is what lets the
-        deploy log state which database staging used without redacting it."""
+        """Open item 7: staging names its own catalog rather than inheriting the
+        prod-derived one. Superseded 2026-08-17 in one respect -- the pr-* sites
+        now follow staging onto this same catalog instead of being left behind on
+        the shared one, so this variable moves the whole fleet, not just staging.
+        A repository variable rather than a secret -- a catalog name is not a
+        credential, and keeping it visible is what lets the deploy log state which
+        database staging used without redacting it."""
         workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())
 
         self.assertEqual(
@@ -613,12 +615,22 @@ class ProductionVersionGuardTests(unittest.TestCase):
     def test_the_expected_version_is_read_from_the_default_branch_not_hardcoded(self):
         """A hardcoded version would have to be edited during every Rock upgrade, and
         the upgrade is exactly when nobody is thinking about this file. Reading the
-        default branch means promoting the new trunk to default is enough."""
-        run = self._guard_step()["run"]
+        default branch means promoting the new trunk to default is enough.
 
-        self.assertIn("github.event.repository.default_branch", run)
+        Look in the step as a whole, not only its `run:`. The expansion moved into
+        `env:` so that operator-typed input in the same script stops being pasted in
+        as source (see test_workflow_input_injection.py); the guard still reads the
+        default branch, it just reads it a line higher up."""
+        step = self._guard_step()
+
+        self.assertIn(
+            "github.event.repository.default_branch",
+            str(step.get("env", {})) + step["run"],
+            "the version guard no longer reads the trunk from the repository, so it "
+            "would compare against whatever branch name was hardcoded when it was written",
+        )
         self.assertNotRegex(
-            run,
+            step["run"],
             r'expected_version=["\']?1[0-9]\.[0-9]',
             "the expected Rock version is hardcoded; it must come from the default branch",
         )
@@ -816,6 +828,55 @@ class ReusableWorkflowPermissionTests(unittest.TestCase):
         # Guard against the walk silently finding nothing, which would make this
         # test pass forever without checking anything.
         self.assertGreaterEqual(edges, 3, "expected to find local reusable workflow calls")
+
+
+class PipelineTestTriggerTests(unittest.TestCase):
+    """This suite asserts on the source text of files it does not live beside, so
+    its trigger paths have to name every tree it reads. A file the suite tests but
+    the trigger does not list is worse than an untested file: the test exists,
+    passes on somebody's laptop, and never runs on the change that breaks it.
+
+    Two such gaps existed. `.github/scripts/**` holds `pr-test-status.js`, which
+    `test_status_comment_script.py` reads, and it is not covered by
+    `.github/workflows/**` -- `scripts` is a sibling of `workflows`, not a child.
+    `Deployment/**` was listed only as `Deployment/PrTestEnvironments/**`, so
+    `Deployment/Repository/set-trunk-protection.sh` and its tests were outside it.
+    Both are listed as whole trees rather than as the specific subdirectories, so
+    the next thing added under them cannot reopen the same hole."""
+
+    PIPELINE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
+
+    REQUIRED_PATHS = [
+        "Deployment/**",
+        "Tests/PrTestEnvironments/**",
+        ".github/workflows/**",
+        ".github/scripts/**",
+    ]
+
+    def test_every_tree_the_suite_reads_triggers_the_suite(self):
+        workflow = yaml.safe_load(self.PIPELINE_WORKFLOW.read_text())
+
+        for trigger in ["push", "pull_request"]:
+            configured = workflow["on"][trigger]["paths"]
+            missing = [path for path in self.REQUIRED_PATHS if path not in configured]
+            self.assertFalse(
+                missing,
+                f"deployment-pipeline-tests.yml {trigger} paths do not cover {missing}; "
+                f"edits there would not run the suite that tests them",
+            )
+
+    def test_the_two_path_lists_stay_identical(self):
+        """They are duplicated rather than shared through a YAML anchor -- GitHub
+        Actions rejects anchors, as the comment in the workflow records. Duplication
+        that nothing checks is duplication that drifts, and the failure mode is a
+        suite that runs on pull requests but not on the push that merges them."""
+        workflow = yaml.safe_load(self.PIPELINE_WORKFLOW.read_text())
+
+        self.assertEqual(
+            workflow["on"]["push"]["paths"],
+            workflow["on"]["pull_request"]["paths"],
+            "the push and pull_request path lists have drifted apart",
+        )
 
 
 if __name__ == "__main__":

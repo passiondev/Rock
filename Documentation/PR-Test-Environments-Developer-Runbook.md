@@ -30,7 +30,7 @@ The bot maintains state labels such as `rock:queued`, `rock:building`, `rock:dep
 
 ## Data model
 
-PR environments isolate code/runtime only. They share one shared sanitized sandbox database and shared sandbox file storage. The sandbox DB/file state is refreshed daily, so data can change underneath a PR environment.
+PR environments isolate code/runtime only. They share one shared sanitized sandbox database and shared sandbox file storage, so data can change underneath a PR environment at any time -- another environment's activity is the usual cause. The sandbox is **not** refreshed on a schedule: measured 2026-08-17, it was seeded once on 2026-04-14 and has had no data load since, so nothing resets what accumulates there.
 
 ## Status comment
 
