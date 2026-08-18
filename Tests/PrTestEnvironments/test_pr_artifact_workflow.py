@@ -123,10 +123,21 @@ ROCKWEB_PACKAGES_CONFIG = REPO_ROOT / "RockWeb" / "packages.config"
 
 def _read_refresh_pointer(path):
     """.refresh files are written with mixed encodings across the repo -- some
-    UTF-16LE, some UTF-8 with a BOM. Drop NULs so a BOM-less UTF-16 file read as
-    single bytes still yields the path, then strip the BOM character itself."""
-    raw = path.read_bytes().replace(b"\x00", b"")
-    return raw.decode("utf-8-sig", errors="replace").strip().strip("﻿")
+    UTF-16 with a BOM, some UTF-8 with a BOM, some plain.
+
+    A UTF-16 BOM has to be decoded, not stripped of NULs: 0xFF and 0xFE are not NUL,
+    so they survive the NUL pass and are then invalid UTF-8, which `errors="replace"`
+    turns into replacement characters at the front of the path. That is silent -- the
+    caller gets a string back, just not one any pattern matches. Over half the
+    pointers in the repo are written this way."""
+    raw = path.read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
+        # A BOM-less UTF-16LE file is ASCII interleaved with NULs; dropping them
+        # recovers the path where there is no BOM to key off.
+        text = raw.replace(b"\x00", b"").decode("utf-8-sig", errors="replace")
+    return text.strip().strip("﻿")
 
 
 class RefreshPointerResolutionTests(unittest.TestCase):
@@ -156,6 +167,31 @@ class RefreshPointerResolutionTests(unittest.TestCase):
     # and drops System.IO.Packaging from RockWeb\Bin, so neither is needed.
     KNOWN_UNDECLARED_POINTERS = set()
 
+    def test_every_refresh_pointer_is_parseable(self):
+        """The resolution test skips any pointer it cannot parse (`if not match:
+        continue`), so a pointer the reader mangles is never checked -- it is
+        silently excused. That is the exact failure mode this class exists to catch,
+        so the skip has to be an asserted invariant rather than a quiet branch.
+
+        It was not. 47 of the 84 pointers on 18.4 are UTF-16 with a BOM, which the
+        reader turned into replacement characters, and the regex then declined every
+        one of them -- so the check examined 37 of 84 while reporting success.
+        Google.Protobuf, the package whose absence returned a 500 on every request
+        and took staging down, was among the pointers being skipped."""
+        pointers = sorted(ROCKWEB_BIN.glob("*.dll.refresh"))
+        self.assertGreater(len(pointers), 0, "found no refresh pointers at all")
+        unparseable = [
+            f"{pointer.name} -> {_read_refresh_pointer(pointer)!r}"
+            for pointer in pointers
+            if not re.match(r"^\.\.\\packages\\(.+?)\.(\d+\.\d.*?)\\", _read_refresh_pointer(pointer))
+        ]
+        self.assertEqual(
+            unparseable,
+            [],
+            "pointers the reader cannot parse are skipped by the resolution check "
+            "rather than verified:\n  " + "\n  ".join(unparseable),
+        )
+
     def test_every_refresh_pointer_resolves_to_a_declared_package_version(self):
         """A pointer naming a version packages.config does not pin resolves to a
         folder the restore never creates, so the assembly drops out of the
@@ -184,22 +220,26 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         self.assertGreater(package_style, 0, "no pointers used the ..\\packages\\ convention")
         self.assertEqual(undeclared, [], "pointers name package versions RockWeb/packages.config does not pin")
 
-    def test_the_known_undeclared_pointers_are_still_the_only_exceptions(self):
-        """Keeps the allowlist honest: if one of the two gets fixed upstream, or its
-        version drifts again, this fails and the comment above gets revisited."""
+    def test_the_allowlist_matches_the_pointers_that_actually_need_it(self):
+        """Asserted in both directions so it stays meaningful while the allowlist is
+        empty. The one-directional form -- iterate the allowlist, check each entry --
+        passes vacuously on an empty set, which is exactly the state a Rock upgrade
+        leaves it in, and would let a newly-undeclared pointer go unreported."""
         config = ROCKWEB_PACKAGES_CONFIG.read_text()
         declared = set(re.findall(r'id="([^"]+)"\s+version="([^"]+)"', config))
 
-        for name in self.KNOWN_UNDECLARED_POINTERS:
-            pointer = ROCKWEB_BIN / name
-            self.assertTrue(pointer.exists(), f"{name} is gone; drop it from the allowlist")
+        actually_undeclared = set()
+        for pointer in sorted(ROCKWEB_BIN.glob("*.dll.refresh")):
             match = re.match(r"^\.\.\\packages\\(.+?)\.(\d+\.\d.*?)\\", _read_refresh_pointer(pointer))
-            self.assertIsNotNone(match)
-            self.assertNotIn(
-                (match.group(1), match.group(2)),
-                declared,
-                f"{name} now matches packages.config; drop it from the allowlist",
-            )
+            if match and (match.group(1), match.group(2)) not in declared:
+                actually_undeclared.add(pointer.name)
+
+        self.assertEqual(
+            self.KNOWN_UNDECLARED_POINTERS,
+            actually_undeclared,
+            "the allowlist and the tree disagree; a pointer either started or stopped "
+            "naming a package version RockWeb/packages.config does not pin",
+        )
 
     def test_roslyn_pointers_are_satisfied_by_committed_binaries(self):
         """The resolver step is deliberately non-recursive. That is only safe while
