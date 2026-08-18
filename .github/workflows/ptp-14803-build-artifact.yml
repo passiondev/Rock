@@ -208,7 +208,7 @@ jobs:
       # prod's UNPATCHED Rock.Blocks.dll already contains the literal
       # "HeaderImage", and its UNPATCHED Rock.ViewModels.dll already contains
       # HeaderImage/get_HeaderImage from an unrelated view model. The
-      # authoritative check reads .NET metadata (see scratchpad/verify-artifact.sh,
+      # authoritative check reads .NET metadata (see Deployment/Repository/verify-artifact.sh,
       # which asserts Rock.Blocks has GetHeaderImageViewModel and that
       # FormGeneralViewModel actually gained a HeaderImage property) and is run
       # against the downloaded artifact before anything is deployed.
@@ -241,7 +241,7 @@ jobs:
           # Sanity only, NOT discriminating: an unrelated view model already
           # contributes HeaderImage/get_HeaderImage to this assembly, so this
           # passes even unpatched. Proving FormGeneralViewModel actually gained
-          # the property needs metadata parsing, which scratchpad/verify-artifact.sh
+          # the property needs metadata parsing, which Deployment/Repository/verify-artifact.sh
           # does with ikdasm against the downloaded artifact before deployment.
           if (-not (Test-Marker $env:VIEWMODELS_DLL 'HeaderImage')) {
             $failed += "Rock.ViewModels.dll is missing HeaderImage entirely - build is broken"
