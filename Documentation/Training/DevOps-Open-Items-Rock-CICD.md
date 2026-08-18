@@ -441,10 +441,21 @@ export/import instead.
   every PR's data and migrations with no reset.
 - **The refresh coordinator has never run.** Its acceptance criteria in issue 09 are checked
   because the script implements them, not because the process exercises it.
-- One open sizing question for DevOps: `connect-restore-test` is `db-custom-2-8192` with a **418 GB
-  disk and `storageAutoResize` disabled**. A ~127 GB striped backup implies a restored database
-  well over 150 GB, so a second full copy beside it is marginal. Check used bytes before cloning;
-  seeding `RockStaging` may need a disk bump first.
+- ~~One open sizing question for DevOps~~ **Sized 2026-08-18, and it fits.** `connect-restore-test`
+  has 410.4 GiB of quota with **120.0 GiB used**, so 290.4 GiB is free. A second catalog seeded
+  from current prod costs ~160 GiB, leaving ~130 GiB. Two things outrank the disk, though:
+  `storageAutoResize` is **disabled** on this instance *and* on `connect-prod`, and the tier is
+  `db-custom-2-8192` (2 vCPU / 8 GB) against prod's `db-custom-8-32768`. Enable autoresize before
+  seeding — a major-version migration generating log against a full disk with no resize is the
+  failure this whole section exists to avoid.
+- Two things the same measurement turned up, neither of them about staging:
+  - It corroborates "there is no refresh" from the instrumentation side. `connect-restore-test`
+    sat at 120.0 GiB for the whole 30-day window with no jump above 5 GiB, and reported only 185
+    of a possible 720 hourly points — so it is stopped most of the time and has not been reloaded.
+  - **`connect-prod` has `storageAutoResize` disabled too**, and grew 136.7 → 161.6 GiB over the
+    same 30 days. At that rate its 250 GiB of headroom is roughly ten months. Treat the rate as an
+    upper bound — the hourly series has +6 and +10 GiB steps that look like log growth rather than
+    data — but the disabled autoresize is not rate-dependent and nothing is watching it.
 
 ### 8. `build-develop.yml` still deploys by rebooting a VM
 
