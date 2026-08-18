@@ -91,9 +91,22 @@ jobs:
               return;
             }
 
+            // Clearing the command label is housekeeping, and it runs before anything is
+            // queued -- so anything rethrown here cancels the teardown it was tidying up
+            // after. 404 means the label was not set. 403 means this repository has
+            // Issues disabled (`has_issues: false`), which makes the token's
+            // `issues: write` scope inert against the issues API that PR labels live on;
+            // it comes back as "Resource not accessible by integration". That is a
+            // permanent property of the repository, not a transient error, and it broke
+            // every stop and destroy -- by label and by workflow_dispatch alike -- while
+            // looking like the labels were editable, because a user PAT can still remove
+            // them. Neither case is a reason to abandon the teardown.
             for (const label of commandLabels) {
               try { await github.rest.issues.removeLabel({ owner, repo, issue_number: pull.number, name: label }); }
-              catch (error) { if (error.status !== 404) throw error; }
+              catch (error) {
+                if (error.status !== 404 && error.status !== 403) throw error;
+                core.info(`Could not remove label ${label} (${error.status}); continuing with the ${command}.`);
+              }
             }
 
             core.setOutput('should_run', 'true');
