@@ -274,12 +274,17 @@ class RollbackTests(unittest.TestCase):
         written after the forward conversion that the original collation cannot
         represent is lost by the rollback, silently. A rollback file that does not say
         so invites someone to treat it as a free undo."""
-        body = CONVERTER.read_text()
+        # Comments stripped, because the caveat has to be in the file the operator
+        # opens -- the generated .sql -- and not only in the script's own help text.
+        # Read whole, this passed with the generated header reworded to "Reverses the
+        # conversion" and the warning surviving in .DESCRIPTION, where nobody running
+        # the rollback would see it.
+        body = _strip_comments(CONVERTER.read_text())
 
         # The caveat itself, not a word near it. Matched as `loss|code page` this
-        # survived the header being reworded to "Reverses the conversion", because
-        # the sentence explaining the mechanism still said "code page" -- so the file
-        # described the lossy conversion in detail while presenting it as an undo.
+        # survived that same rewording, because the sentence explaining the mechanism
+        # still said "code page" -- a file describing the lossy conversion in full
+        # while presenting itself as an undo.
         self.assertRegex(
             body,
             r"(?i)not lossless",
