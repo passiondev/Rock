@@ -707,7 +707,32 @@ unrecoverable), isolates failures per file, and never blocks the queue on a GCS 
 That does not retire the reboot problem described below, which is about the bootstrap workflow
 itself. What it retires is the *reason* to run the bootstrap for an ordinary script change —
 which is most of them. It needs one manual re-bootstrap to install, because it is itself one of
-the scripts that only arrives that way; after that, script fixes land on their own.
+the scripts that only arrives that way.
+
+**Measured 2026-08-18, and it is now installed: it works for every script except the one that
+matters most.** A new command arm was added to `Invoke-PrEnvironmentCommandQueue.ps1` and
+published to `bootstrap/latest/` — confirmed present in the bucket. Two dispatches six minutes
+apart, each landing on a fresh once-a-minute agent process, both came back
+`Unknown command: find-legacy-text-columns`. The scheduled task runs
+`$DeployRoot\Invoke-PrEnvironmentCommandQueue.ps1` and the sync writes to that same
+`$DeployRoot`, so this is not a path mismatch. The agent's copy on disk was not replaced.
+
+The likely cause is the one the function's own comment anticipates: the file is being executed
+while `Move-Item -Force` tries to replace it, the move throws, the per-file `catch` turns it into
+a warning, and the warning goes to a stream nothing captures — the per-command log does not exist
+yet at sync time. That last part is why this looked like a working self-update for as long as it
+did. **Not proven**, only strongly indicated; proving it needs the agent's own stdout captured
+somewhere, which is itself worth doing.
+
+So the rule to work by: **a change to any script other than the agent lands on its own; a change
+to the agent still needs a bootstrap.** That is a much smaller win than "script fixes land on
+their own", and it is the reverse of the useful case — the agent is the file whose bugs strand
+the fleet, and it is the one file that cannot self-heal.
+
+The shape of a real fix is a small launcher the scheduled task calls instead: it renames a staged
+`.pending` copy over the agent *before* loading it, then invokes it. The launcher changes almost
+never, so it can be the one file that only a bootstrap updates. Not built — it needs a bootstrap
+to install either way, so it should go in with the next one.
 
 How this went unnoticed is the part worth keeping: three separate teardown bugs sat fixed in the
 repository and broken on the VM at the same time, and nothing about the repository state showed
