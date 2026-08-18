@@ -15,6 +15,7 @@ jobs:
         with:
           sparse-checkout: |
             Deployment/PrTestEnvironments
+            Deployment/Database
 
       - name: Check the deployment scripts parse
         shell: pwsh
@@ -24,7 +25,7 @@ jobs:
           # scheduled task that dies silently on a box nobody is watching. Parse
           # them here, where the failure is loud and nothing has shipped yet.
           $failed = $false
-          foreach ($file in Get-ChildItem Deployment/PrTestEnvironments/*.ps1) {
+          foreach ($file in Get-ChildItem Deployment/PrTestEnvironments/*.ps1, Deployment/Database/*.ps1) {
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors) | Out-Null
             if ($errors -and $errors.Count -gt 0) {
@@ -60,7 +61,15 @@ jobs:
         shell: pwsh
         run: |
           $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
-          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 gs://$bucketName/pr-environments/bootstrap/latest/
+          # Deployment/Database goes to the same prefix on purpose. The agent's
+          # Sync-DeploymentScripts globs *.ps1 out of bootstrap/latest and parse-checks
+          # each one, so anything published here reaches C:\RockDeploy within the minute
+          # -- no second sync path to write, and no second one to forget to run.
+          #
+          # Until this line included them, the legacy-column scripts existed only in the
+          # repository. The operator runbook says to run Find-LegacyTextColumns.ps1 on the
+          # VM before a v19 cutover, and nothing had ever put it there.
+          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 Deployment/Database/*.ps1 gs://$bucketName/pr-environments/bootstrap/latest/
 
       - name: Install command queue scheduled task through VM startup script
         shell: pwsh
