@@ -177,35 +177,14 @@ class FinderWorkflowTests(unittest.TestCase):
 
 
 class FinderWorkflowInputsAreNotInterpolatedTests(unittest.TestCase):
-    """env-deploy-command.yml states the rule beside DB_NAME_REQUESTED: "Carried as an
-    environment variable rather than interpolated into the step body below... a value
-    containing a quote should not be able to change the shape of the script that reads
-    it."
+    """The general rule -- no operator-typed input pasted into a script body -- lives in
+    test_workflow_input_injection.py and covers every workflow at once. It did not
+    catch this one, because it treated `number` as a constrained type; that scan has
+    since been widened, and the duplicate copy of the rule that briefly lived here has
+    been removed in favour of it.
 
-    That file carries its own poll_attempts the other way, but its inputs arrive over
-    workflow_call from a caller workflow in this repository. This one's arrive from a
-    human typing into a dispatch box, which is strictly more exposed -- and the script
-    they would be reshaping is the one holding a production connection string."""
-
-    def test_no_dispatch_input_is_interpolated_into_a_script_body(self):
-        lines = WORKFLOW.read_text().splitlines()
-
-        # Everything from the first `steps:` onwards is script bodies and step
-        # metadata. The env: block above it is the sanctioned place for an expression.
-        first_step = next(i for i, line in enumerate(lines) if line.strip() == "steps:")
-
-        offenders = [
-            f"{i + 1}: {line.strip()}"
-            for i, line in enumerate(lines[first_step:], start=first_step)
-            if "${{ inputs." in line
-        ]
-
-        self.assertEqual(
-            offenders,
-            [],
-            "a dispatch input is interpolated into a step body; carry it through env: "
-            "instead so its value cannot reshape the script:\n  " + "\n  ".join(offenders),
-        )
+    What stays here is what the repo-wide scan cannot know: the two specific shapes
+    this workflow needs, and why."""
 
     def test_the_queue_name_is_validated_before_it_becomes_a_path(self):
         """queue_name is concatenated into a GCS object path. The agent validates its

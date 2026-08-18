@@ -8,10 +8,20 @@ import yaml
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
-# GitHub constrains `boolean` to true/false, `number` to digits, and `choice` to the
-# options declared beside it. `string` is the only one where the operator types
-# whatever they like -- and an omitted type defaults to string.
-FREE_TEXT = "string"
+# GitHub constrains `boolean` to true/false and `choice` to the options declared
+# beside it. `string` is the free-text case, and an omitted type defaults to string.
+#
+# `number` is in this list too, and that is a correction rather than caution. The type
+# renders a plain text box and is not enforced on the way in -- the REST dispatch
+# endpoint takes inputs as strings and hands them straight through, so `number` buys a
+# hint to the operator and nothing else. Treating it as constrained is what let
+# `$attempts = ${{ inputs.poll_attempts }}` into db-find-legacy-text-columns.yml and
+# past this very scan on 2026-08-18.
+#
+# The cost of including it is nil: the only number-typed dispatch input in the
+# repository reads its value from env: already. The cost of leaving it out was a
+# workflow holding a live database password reparsing operator text as code.
+FREE_TEXT_TYPES = frozenset({"string", "number"})
 
 
 def _triggers(workflow):
@@ -29,7 +39,7 @@ def _free_text_inputs(workflow):
     return [
         name
         for name, spec in inputs.items()
-        if (spec or {}).get("type", FREE_TEXT) == FREE_TEXT
+        if (spec or {}).get("type", "string") in FREE_TEXT_TYPES
     ]
 
 
@@ -124,7 +134,9 @@ class WorkflowInputInjectionTests(unittest.TestCase):
                 "workflow_dispatch": {
                     "inputs": {
                         "apply": {"type": "boolean"},
+                        "mode": {"type": "choice", "options": ["a", "b"]},
                         "ref": {"type": "string"},
+                        "attempts": {"type": "number"},
                         "untyped": {"description": "no type key at all"},
                     }
                 }
@@ -132,7 +144,13 @@ class WorkflowInputInjectionTests(unittest.TestCase):
             "jobs": {},
         }
 
-        self.assertEqual(sorted(_free_text_inputs(workflow)), ["ref", "untyped"])
+        self.assertEqual(
+            sorted(_free_text_inputs(workflow)),
+            ["attempts", "ref", "untyped"],
+            "boolean and choice are enforced by GitHub and must not be flagged -- a "
+            "scan that cries wolf gets widened until it matches nothing. number must "
+            "be flagged: it is a text box with a label, not a constraint.",
+        )
 
 
 if __name__ == "__main__":
