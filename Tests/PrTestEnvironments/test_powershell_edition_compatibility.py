@@ -4,14 +4,22 @@ import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SCRIPT_DIR = REPO_ROOT / "Deployment" / "PrTestEnvironments"
 
-# Every script in Deployment/PrTestEnvironments runs on the test VM under the command
-# queue scheduled task, which is Windows PowerShell 5.1 -- the edition that ships with
-# Windows Server. It is not PowerShell 7 and there is no pwsh on the box. A 6+ only
-# construct therefore does not fail review, does not fail CI, and does not fail at
-# install: it fails at the moment an operator runs the verb, with a parameter-binding
-# error that reads like a typo.
+# Both directories hold scripts that run on the test VM under Windows PowerShell 5.1 --
+# the edition that ships with Windows Server. It is not PowerShell 7 and there is no
+# pwsh on the box. A 6+ only construct therefore does not fail review, does not fail
+# CI, and does not fail at install: it fails at the moment someone runs it, with a
+# parameter-binding error that reads like a typo.
+#
+# They get there by different routes, and both routes are unforgiving. PrTestEnvironments
+# runs unattended under the command queue scheduled task, so a failure surfaces as a PR
+# environment that never comes up. Database is run by hand by an operator, mid-upgrade,
+# against a catalog that a half-finished migration has already stranded -- the worst
+# possible moment to discover that the script cannot parse.
+SCRIPT_DIRS = [
+    REPO_ROOT / "Deployment" / "PrTestEnvironments",
+    REPO_ROOT / "Deployment" / "Database",
+]
 #
 # Each entry is (pattern, what to write instead). Deliberately a short curated list
 # rather than a general "is this 7-only" analysis -- a scan that guesses produces false
@@ -68,12 +76,13 @@ class PowerShellEditionCompatibilityTests(unittest.TestCase):
     def test_deployment_scripts_avoid_powershell_7_only_constructs(self):
         offenders = []
 
-        for script in sorted(SCRIPT_DIR.glob("*.ps1")):
+        for script in sorted(s for d in SCRIPT_DIRS for s in d.glob("*.ps1")):
             body = _strip_comments(script.read_text())
             for lineno, line in enumerate(body.splitlines(), start=1):
                 for pattern, remedy in SEVEN_ONLY:
                     if pattern.search(line):
-                        offenders.append(f"{script.name}:{lineno}: {remedy}")
+                        rel = script.relative_to(REPO_ROOT)
+                        offenders.append(f"{rel}:{lineno}: {remedy}")
 
         self.assertEqual(
             offenders,
@@ -93,9 +102,19 @@ class PowerShellEditionCompatibilityTests(unittest.TestCase):
         self.assertIn("-AsHashtable is 6+", hits[0])
 
     def test_the_scan_reads_real_files(self):
-        """A glob that matches nothing makes the main test vacuously green."""
-        scripts = list(SCRIPT_DIR.glob("*.ps1"))
-        self.assertGreaterEqual(len(scripts), 8, f"only found {len(scripts)} scripts to scan")
+        """A glob that matches nothing makes the main test vacuously green.
+
+        Asserted per directory rather than on the total. A single count is satisfied by
+        one directory alone, so Deployment/Database could be renamed, moved, or dropped
+        from SCRIPT_DIRS and the scan would stay green on the strength of the other --
+        which is exactly the coverage this test was added to hold."""
+        for directory in SCRIPT_DIRS:
+            self.assertTrue(directory.is_dir(), f"{directory} is not a directory")
+            scripts = list(directory.glob("*.ps1"))
+            self.assertTrue(
+                scripts,
+                f"no .ps1 files under {directory.relative_to(REPO_ROOT)}; the scan covers nothing there",
+            )
 
     def test_comments_may_name_the_construct_they_replaced(self):
         """The remedy for each of these bugs is worth explaining in place, and the
