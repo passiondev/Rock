@@ -271,6 +271,27 @@ jobs:
           }
           throw "Timed out waiting for PR environment command result: $resultUri"
 
+      # The verification lives in a composite action so the staging/production path and
+      # the pr-* fleet ask the identical question -- see .github/actions/verify-public-url,
+      # which carries the reasoning behind every branch of it. A sparse checkout because
+      # this job otherwise needs no working tree.
+      - name: Check out the verification action
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions/verify-public-url
+          sparse-checkout-cone-mode: false
+
+      # Until now nothing asked whether a pr-* site was reachable from outside the VM.
+      # The VM's own loopback probe cannot answer that, so a site could be reported
+      # deployed and healthy while DNS, the load balancer, the host binding or the
+      # certificate left it unreachable to an actual reviewer -- which is the only thing
+      # a PR environment exists for.
+      - name: Verify the public URL from the internet
+        uses: ./.github/actions/verify-public-url
+        with:
+          host_name: ${{ needs.prepare.outputs.host_name }}
+
   finalize:
     name: Reconcile final PR state
     needs: [prepare, build, deploy]

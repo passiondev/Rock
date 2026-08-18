@@ -1,7 +1,7 @@
 # Rock CI/CD — open items for DevOps
 
 **Audience:** DevOps engineer + Global Engineering. Not part of the training handout.
-**As of:** 2026-08-11 · **Repo:** `passiondev/Rock` (public) · **Trunk:** `passion-18.4.1`
+**As of:** 2026-08-18 · **Repo:** `passiondev/Rock` (public) · **Trunk:** `passion-18.4.1`
 
 The pull-request path is working and proven end to end. This is the list of what is *not*
 done, ordered by what it blocks. Most of these were found by auditing the pipeline this week;
@@ -33,6 +33,9 @@ out waiting for a server that isn't listening.
   **installed on the VM** (`Invoke-PrEnvironmentCommandQueue.ps1:189`), and it has no
   self-update path. Whatever ref the last bootstrap ran from is the script that runs, however
   old. The bootstrap workflow is the only way to change it.
+
+  A fix for this is in review — see item 18. It does not change the rule yet, and the one
+  re-bootstrap that installs it is the last one this should ever need.
 
   That is a correctness requirement here, not just hygiene. Production is the one environment
   that deploys with `write_connection_string: false` — deliberately, so CI never holds the
@@ -623,6 +626,22 @@ delivers the change by uploading the scripts to GCS and then **stopping and star
 `connect-srv-test`**, because the Windows startup script is what re-downloads them and
 reinstalls the scheduled task.
 
+**A fix for the self-update half is in review.** `Sync-DeploymentScripts` pulls
+`pr-environments/bootstrap/latest/*.ps1` into `$DeployRoot` at the top of each poll, before the
+queue is drained — the upload half already existed, and both the bootstrap and the
+certificate-renewal workflows already publish there. It parses each download before replacing
+anything (the agent is overwriting the scripts it runs, so an unparseable file would be
+unrecoverable), isolates failures per file, and never blocks the queue on a GCS error.
+
+That does not retire the reboot problem described below, which is about the bootstrap workflow
+itself. What it retires is the *reason* to run the bootstrap for an ordinary script change —
+which is most of them. It needs one manual re-bootstrap to install, because it is itself one of
+the scripts that only arrives that way; after that, script fixes land on their own.
+
+How this went unnoticed is the part worth keeping: three separate teardown bugs sat fixed in the
+repository and broken on the VM at the same time, and nothing about the repository state showed
+it. The scripts looked deployed.
+
 That means a bootstrap is not a deploy-a-script operation, it is a reboot. Everything on that
 VM goes down with it: staging, every live PR environment, and any deploy currently mid-flight.
 Nothing in the workflow checks whether a deploy is running before it pulls the floor out.
@@ -691,6 +710,77 @@ an argument from the absence of a plausible mechanism, not from observed traffic
 deploy after the catalog work is the real test; it is expected to be uneventful.
 
 ---
+
+### 22. `connect-restore-test` has no automated backups — and prod does
+
+Checked on 2026-08-18, because it is worth stating which half of this is fine:
+
+| | `connect-prod` | `connect-restore-test` |
+|---|---|---|
+| Automated backups | **on** — nightly 01:00 UTC, most recent `1787014800000` succeeded 2026-08-18 | **off** |
+| Point-in-time recovery | **on**, 7-day transaction log retention | **off** |
+| Retained backups | 7 | — |
+| `storageAutoResize` | off, 418 GB disk | off, 418 GB disk |
+
+**Production is protected.** An earlier reading of this suggested otherwise; it was wrong, and
+the table above is the verified state.
+
+The gap is `connect-restore-test`, and it is not a spare box. It holds the shared sandbox
+catalog that staging and every `pr-*` site run against — item 7 is the same instance seen from
+the isolation angle. Until 10:04 UTC on 2026-08-18 it had **zero** backups of any kind, and the
+only restore point in existence was a striped `.bak` from 2026-05-12. It now has exactly one:
+`1787047442610`, taken by hand immediately before the v19 staging migration, precisely because
+there was nothing else to fall back to.
+
+One manual backup is not a backup policy. Rock runs its EF and plugin migrations at
+`Application_Start`, so the first request after any deploy rewrites the schema irreversibly — the
+failure mode this protects against is not an operator typo, it is a routine deploy of a build
+whose migrations do something unexpected. That is the same mechanism that gave `pr-3` a permanent
+HTTP 500 on 2026-08-11.
+
+Enable automated backups and PITR on `connect-restore-test`, matching prod's 7-day retention.
+
+**Timing matters, and this is the one caveat.** Turning PITR on can force an instance restart.
+Do not do it while a migration is in flight — a restart part-way through a schema migration is
+how you get a half-applied catalog, which is strictly worse than the missing backup. Apply it in
+a quiet window, with no deploy running and the queue empty.
+
+```
+gcloud sql instances patch connect-restore-test \
+  --project=passioncitychurch-com \
+  --backup-start-time=03:00 \
+  --retained-backups-count=7 \
+  --enable-point-in-time-recovery \
+  --retained-transaction-log-days=7
+```
+
+`03:00` UTC deliberately: prod backs up at 01:00, and staggering them keeps two large backup jobs
+off the same window.
+
+Both instances also have `storageAutoResize` **disabled** on a 418 GB disk, which is the sizing
+question already raised at the end of item 7. Enabling it is a no-downtime change and removes a
+failure mode — a full disk stops the instance — that no alert currently covers:
+
+```
+gcloud sql instances patch connect-prod --project=passioncitychurch-com --storage-auto-increase
+gcloud sql instances patch connect-restore-test --project=passioncitychurch-com --storage-auto-increase
+```
+
+### 23. The v19 cutover has two repo-side steps that are easy to miss
+
+Both are cheap to do in advance and expensive to discover live.
+
+**`.github/pr-test-environments.json` pins `baseBranch` to `passion-18.4.1`.**
+`pr-test-lifecycle.yml` compares `pull.base.ref` against it and quietly sets `should_run=false`
+on a mismatch — it logs and exits successfully. So the morning PRs start targeting the v19
+branch, every stop and destroy silently stops working and nothing reports an error. The same
+value gates the deploy path. Flip it in the same change that moves the trunk.
+
+**Anything merged to `passion-18.4.1` after the v19 branch was cut is lost unless it is carried
+over.** That currently includes the teardown fixes and the agent self-update. They are based on
+`passion-18.4.1` deliberately — `workflow_dispatch` runs the workflow file from the *default*
+branch, so a fix that only exists on the v19 branch fixes nothing until the cutover — but that is
+exactly what makes them easy to leave behind.
 
 ## P2 — hygiene
 
@@ -1035,6 +1125,12 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     safe to prune yet
 11. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
+12. Item 22 — enable automated backups and PITR on `connect-restore-test` (~5 min of clicking,
+    but read the timing caveat: not while a migration is in flight). Production is already
+    covered; this is the instance staging and every `pr-*` site actually run against, and it has
+    exactly one backup, taken by hand. Do the `storage-auto-increase` flip on both instances in
+    the same pass — it is no-downtime and closes a failure mode nothing alerts on
+13. Item 23 — the two v19 cutover steps. Do them *before* the cutover, not during it
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
