@@ -272,8 +272,9 @@ PR closed more than a week ago.
 `env-deploy-command.yml:121` and `pr-test-deploy.yml:193` build their connection strings from
 the same four secrets — `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — and
 neither deploy script derives a per-environment catalog. So `staging` and `pr-4` and every
-future `pr-*` all point at one catalog on the shared test Cloud SQL instance. Both now accept an
-override, but until `STAGING_DB_NAME` is set they still resolve to that one catalog.
+future `pr-*` all point at one catalog on the shared test Cloud SQL instance. Each side now
+accepts its own override — `STAGING_DB_NAME` for staging, `PR_TEST_DB_NAME` for the fleet — but
+neither is set, so both still resolve to that one catalog.
 
 That is one shared mutable dependency behind every isolated-looking test site. Rock runs EF
 and plugin migrations at `Application_Start`, writes global attributes such as
@@ -364,9 +365,9 @@ Repo-side work is done and is a no-op until the catalog exists:
   test rather than an incomplete one — see issue 09 for why a re-seed needs a different key.
 
 **Decided 2026-08-17: the `pr-*` sites follow staging** — same catalog, same Rock version. This
-supersedes the earlier half-step of isolating `staging` alone. `pr-test-deploy.yml` now reads
+supersedes the earlier half-step of isolating `staging` alone. `pr-test-deploy.yml` was pointed at
 `Initial Catalog=${{ vars.STAGING_DB_NAME || secrets.DB_NAME }}`, the same variable with the same
-falsy-empty-string fallback staging uses, so it is a no-op until the catalog exists.
+falsy-empty-string fallback staging uses, so it was a no-op until the catalog exists.
 
 The reasoning is worth keeping, because it inverts what this item originally said. A shared
 catalog is not the defect; sharing one across two Rock *minors* is. Every `pr-*` site builds from
@@ -379,6 +380,22 @@ restore owns. What it costs, on paper: `pr-*` sites stop getting fresh sanitized
 that restore, so they drift from production indefinitely and need an occasional deliberate
 re-seed. In practice the restore never runs, so the drift and the re-seed are both pre-existing
 conditions this decision inherits rather than creates.
+
+**Amended 2026-08-18 after the v19 staging deploy: same *minor*, not necessarily same catalog.**
+The paragraph above is right about what the danger is and wrong about what follows from it. Making
+`pr-test-deploy.yml` read `vars.STAGING_DB_NAME` did not just express the coupling, it enforced it:
+the variable documented as staging's could not be set without moving every `pr-*` site in the same
+act. Staging is the environment a version bump is meant to be tried on first, so that left nowhere
+to try one — and on 2026-08-18 a v19 artifact was deployed to staging against the shared catalog,
+which stranded it part-way through the v19 migration set and took the whole fleet down with it
+(`Documentation/Incidents/2026-08-18-staging-v19-shared-catalog.md`).
+
+`pr-test-deploy.yml` now reads its own `vars.PR_TEST_DB_NAME`. Both variables are unset and both
+fall back to `secrets.DB_NAME`, so today's arrangement is unchanged to the byte; what changes is
+that setting one moves one environment. The invariant the 2026-08-17 decision was protecting is
+kept by the guard in `staging-deploy.yml`, which refuses a staging deploy whose Rock minor differs
+from the fleet's pin while `STAGING_DB_NAME` is unset. That is the same rule, checked against the
+variable as it actually is at deploy time rather than assumed from the wiring.
 
 #### The refresh mechanism — measured 2026-08-17, and there is no nightly refresh
 
