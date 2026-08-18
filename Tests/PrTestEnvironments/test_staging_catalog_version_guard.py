@@ -30,7 +30,13 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STAGING_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "staging-deploy.yml"
-VERSION_FILE = REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs"
+# Both places Rock has declared its version across this upgrade. 18.4.1 uses the
+# assembly attribute; 19.3.4 deleted that file and moved to <Version> in
+# Directory.Build.props. The guard has to read whichever the branch it is deploying
+# actually has -- the cutover it protects is the same commit that moves this.
+BUILD_PROPS = REPO_ROOT / "Directory.Build.props"
+ASSEMBLY_INFO = REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs"
+LAYOUTS = ("props", "assemblyinfo")
 
 GUARD_STEP_NAME = "Refuse a Rock minor change on the shared catalog"
 
@@ -50,18 +56,44 @@ def _guard_script():
     )
 
 
-def _run_guard(version, pinned_branch, staging_db_name):
-    """Run the guard against a throwaway version file. Returns (exit code, output)."""
-    script = _guard_script()
+def _write_version(workdir, version, layout):
+    """Lay out a throwaway tree the way the named branch really looks.
 
-    with tempfile.TemporaryDirectory() as workdir:
-        version_path = pathlib.Path(workdir) / "Rock.Version" / "AssemblySharedInfo.cs"
+    The `props` case writes the 18.4.1-shaped Directory.Build.props alongside it --
+    that file exists on 18.4.1 too, it just carries no <Version>. Reproducing that
+    is the point: it is what makes "props first, attribute second" resolve both
+    branches instead of one."""
+    root = pathlib.Path(workdir)
+    if layout == "props":
+        (root / "Directory.Build.props").write_text(
+            "<Project>\n  <PropertyGroup>\n"
+            f"    <Version>{version}</Version>\n"
+            "    <FileVersion>$(Version)</FileVersion>\n"
+            "  </PropertyGroup>\n</Project>\n"
+        )
+    elif layout == "assemblyinfo":
+        (root / "Directory.Build.props").write_text(
+            "<Project>\n  <PropertyGroup>\n"
+            "    <LangVersion>latest</LangVersion>\n"
+            "  </PropertyGroup>\n</Project>\n"
+        )
+        version_path = root / "Rock.Version" / "AssemblySharedInfo.cs"
         version_path.parent.mkdir(parents=True)
         version_path.write_text(
             "using System.Reflection;\n"
             f'[assembly: AssemblyVersion( "{version}" )]\n'
             f'[assembly: AssemblyFileVersion( "{version}" )]\n'
         )
+    else:
+        raise AssertionError(f"unknown layout {layout!r}")
+
+
+def _run_guard(version, pinned_branch, staging_db_name, layout="assemblyinfo"):
+    """Run the guard against a throwaway version file. Returns (exit code, output)."""
+    script = _guard_script()
+
+    with tempfile.TemporaryDirectory() as workdir:
+        _write_version(workdir, version, layout)
 
         env = dict(os.environ)
         env["PINNED_BASE_BRANCH"] = pinned_branch
@@ -82,39 +114,47 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
     def test_same_minor_on_the_shared_catalog_is_allowed(self):
         """The steady state. Everything on the shared catalog is one minor, which is
         what makes sharing it safe at all."""
-        code, output = _run_guard("18.4.1", "passion-18.4.1", "")
-        self.assertEqual(code, 0, f"a same-minor staging deploy was refused:\n{output}")
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard("18.4.1", "passion-18.4.1", "", layout)
+                self.assertEqual(code, 0, f"a same-minor staging deploy was refused:\n{output}")
 
     def test_a_patch_bump_within_the_pinned_minor_is_allowed(self):
         """18.4.1 -> 18.5.0 does not cross a minor, so it does not migrate the
         catalog onto a version the pr-* fleet cannot read. Blocking this would make
         the guard a blanket freeze on staging, and a guard that stops ordinary work
         gets switched off."""
-        code, output = _run_guard("18.5.0", "passion-18.4.1", "")
-        self.assertEqual(code, 0, f"an in-minor staging deploy was refused:\n{output}")
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard("18.5.0", "passion-18.4.1", "", layout)
+                self.assertEqual(code, 0, f"an in-minor staging deploy was refused:\n{output}")
 
     def test_a_minor_change_on_the_shared_catalog_is_refused(self):
         """The 2026-08-18 deploy, exactly. This is the case the guard exists for."""
-        code, output = _run_guard("19.3.4", "passion-18.4.1", "")
-        self.assertNotEqual(
-            code,
-            0,
-            "a 19.x artifact was allowed onto the shared 18.x catalog -- this is the "
-            f"deploy that stranded the sandbox catalog between two minors:\n{output}",
-        )
-        self.assertIn("19", output)
-        self.assertIn("18", output)
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard("19.3.4", "passion-18.4.1", "", layout)
+                self.assertNotEqual(
+                    code,
+                    0,
+                    "a 19.x artifact was allowed onto the shared 18.x catalog -- this is "
+                    f"the deploy that stranded the sandbox catalog between two minors:\n{output}",
+                )
+                self.assertIn("19", output)
+                self.assertIn("18", output)
 
     def test_a_minor_change_is_allowed_once_staging_owns_its_catalog(self):
         """The escape hatch, and the whole point of failing in this direction: the
         way past the guard is to give staging its own database, which is the
         documented migration path off the shared catalog rather than a bypass."""
-        code, output = _run_guard("19.3.4", "passion-18.4.1", "RockStaging19")
-        self.assertEqual(
-            code,
-            0,
-            f"staging was refused a v19 deploy onto its own dedicated catalog:\n{output}",
-        )
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard("19.3.4", "passion-18.4.1", "RockStaging19", layout)
+                self.assertEqual(
+                    code,
+                    0,
+                    f"staging was refused a v19 deploy onto its own dedicated catalog:\n{output}",
+                )
 
     def test_an_unreadable_version_file_refuses_rather_than_waves_through(self):
         """A guard that cannot tell which minor it is deploying must not assume the
@@ -176,20 +216,75 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
             f"compared against an empty pin:\n{output}",
         )
 
-    def test_the_guard_reads_the_version_file_that_actually_exists(self):
-        """_run_guard fabricates AssemblySharedInfo.cs, so every test above would
-        still pass if the real file moved. Pin the path and the format the guard
-        parses to the file the repository really ships."""
-        self.assertTrue(VERSION_FILE.exists(), f"{VERSION_FILE} is gone; the guard parses it by path")
-        self.assertRegex(
-            VERSION_FILE.read_text(),
-            r'AssemblyVersion\(\s*"\d+\.\d+\.\d+"\s*\)',
-            "AssemblySharedInfo.cs no longer declares AssemblyVersion in the form the guard parses",
+    def test_the_guard_reads_a_version_this_repository_actually_declares(self):
+        """_run_guard fabricates the version file, so every test above would still
+        pass if the real one moved -- which is exactly what happened between 18.4.1
+        and 19.3.4. Run the guard against the real tree and require it to agree with
+        the version this branch really declares."""
+        declared = None
+        if BUILD_PROPS.exists():
+            match = re.search(r"<Version>\s*([0-9][0-9.]*)\s*</Version>", BUILD_PROPS.read_text())
+            if match:
+                declared = match.group(1)
+        if declared is None and ASSEMBLY_INFO.exists():
+            match = re.search(r'AssemblyVersion\(\s*"([0-9][0-9.]*)"\s*\)', ASSEMBLY_INFO.read_text())
+            if match:
+                declared = match.group(1)
+
+        self.assertIsNotNone(
+            declared,
+            f"neither {BUILD_PROPS.name} nor {ASSEMBLY_INFO} declares a Rock version in a "
+            "form the guard can parse; the guard would refuse every staging deploy",
         )
-        self.assertIn(
-            "Rock.Version/AssemblySharedInfo.cs",
-            _guard_script(),
-            "the guard no longer names the version file this test pins",
+
+        script = _guard_script()
+        env = dict(os.environ)
+        env["PINNED_BASE_BRANCH"] = f"passion-{declared}"
+        env["STAGING_DB_NAME"] = ""
+        env["GITHUB_OUTPUT"] = os.devnull
+        completed = subprocess.run(
+            ["bash", "-eo", "pipefail", "-c", script],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        output = completed.stdout + completed.stderr
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"the guard could not read the version this branch declares ({declared}):\n{output}",
+        )
+        self.assertIn(declared, output, f"the guard reported a version other than {declared}:\n{output}")
+
+    def test_a_props_version_wins_over_a_stale_assembly_attribute(self):
+        """Both files can coexist mid-cutover. Directory.Build.props is the newer
+        declaration, so a leftover attribute must not out-vote it -- reading the
+        stale one would let a 19.x artifact look like 18.x and walk straight past
+        the guard, which is the failure this whole change exists to stop."""
+        script = _guard_script()
+        with tempfile.TemporaryDirectory() as workdir:
+            _write_version(workdir, "19.3.4", "props")
+            stale = pathlib.Path(workdir) / "Rock.Version" / "AssemblySharedInfo.cs"
+            stale.parent.mkdir(parents=True)
+            stale.write_text('[assembly: AssemblyVersion( "18.4.1" )]\n')
+
+            env = dict(os.environ)
+            env["PINNED_BASE_BRANCH"] = "passion-18.4.1"
+            env["STAGING_DB_NAME"] = ""
+            env["GITHUB_OUTPUT"] = str(pathlib.Path(workdir) / "github_output")
+            completed = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script],
+                cwd=workdir,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        output = completed.stdout + completed.stderr
+        self.assertNotEqual(
+            completed.returncode,
+            0,
+            f"a stale 18.4.1 attribute masked the real 19.3.4 version in props:\n{output}",
         )
 
     def test_the_guard_runs_before_anything_is_built_or_deployed(self):

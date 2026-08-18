@@ -140,21 +140,32 @@ jobs:
           PINNED_BASE_BRANCH: ${{ steps.pin.outputs.base_branch }}
           STAGING_DB_NAME: ${{ vars.STAGING_DB_NAME }}
         run: |
-          version_file="Rock.Version/AssemblySharedInfo.cs"
           staging_db_name="${STAGING_DB_NAME:-}"
           pinned_branch="${PINNED_BASE_BRANCH:-}"
 
-          # Check the file before parsing it. Letting sed fail into an empty
+          # Two layouts, because the cutover this guard protects is also the
+          # commit that moves the version. 18.4.1 declares it as an attribute in
+          # Rock.Version/AssemblySharedInfo.cs; 19.3.4 deleted that file and put
+          # <Version> in Directory.Build.props. Reading only one of them makes the
+          # guard fail closed on every deploy of the other branch -- safe, but it
+          # refuses everything, which is how a guard gets deleted.
+          #
+          # Props first: 18.4.1 ships a Directory.Build.props with no <Version> in
+          # it, so it falls through to the attribute, while v19 answers from props
+          # and never consults a file it no longer has.
+          #
+          # Test each file before parsing it. Letting sed fail into an empty
           # version would read as "no minor change" on a guard whose whole job is
           # to refuse when it cannot tell.
-          if [ ! -f "$version_file" ]; then
-            echo "::error::Cannot read the Rock version: $version_file does not exist. Refusing rather than guessing which minor this artifact is."
-            exit 1
+          artifact_version=""
+          if [ -f "Directory.Build.props" ]; then
+            artifact_version="$(sed -n 's:.*<Version>[[:space:]]*\([0-9][0-9.]*\)[[:space:]]*</Version>.*:\1:p' Directory.Build.props | head -1)"
           fi
-
-          artifact_version="$(sed -n 's/.*AssemblyVersion([[:space:]]*"\([0-9][0-9.]*\)"[[:space:]]*).*/\1/p' "$version_file" | head -1)"
+          if [ -z "$artifact_version" ] && [ -f "Rock.Version/AssemblySharedInfo.cs" ]; then
+            artifact_version="$(sed -n 's/.*AssemblyVersion([[:space:]]*"\([0-9][0-9.]*\)"[[:space:]]*).*/\1/p' Rock.Version/AssemblySharedInfo.cs | head -1)"
+          fi
           if [ -z "$artifact_version" ]; then
-            echo "::error::Found $version_file but no AssemblyVersion in it. Refusing rather than guessing which minor this artifact is."
+            echo "::error::Could not read the Rock version from Directory.Build.props (<Version>) or Rock.Version/AssemblySharedInfo.cs (AssemblyVersion). Refusing rather than guessing which minor this artifact is."
             exit 1
           fi
           artifact_minor="${artifact_version%%.*}"
