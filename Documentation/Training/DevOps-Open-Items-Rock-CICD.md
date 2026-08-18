@@ -10,6 +10,10 @@ the last section records what has already been fixed so nobody re-diagnoses it.
 Read item 7 first if you only read one. It is the shared dependency underneath every
 "isolated" test site, and it is the most likely cause of two sites failing at once.
 
+If you are here to plan the v19 cutover, read item 24 before anything else. It is the newest
+item and it changes the shape of that plan: a failed migration does not roll back, and the
+catalog it half-migrated will no longer run the old version either.
+
 ---
 
 ## P0 — blocks the production path
@@ -47,6 +51,56 @@ out waiting for a server that isn't listening.
   a 300-second health-check timeout. (Production runs `InPlace`, whose robocopy `/XF`
   exclusions were always correct — so this is the belt for the day someone reaches for
   `DedicatedSite`, plus the diagnostic.)
+
+### 24. A failed v19 migration is a one-way door — the catalog cannot go back to 18.4.1
+
+Proven on staging on 2026-08-18, not theorised. This is the one to read before scheduling the
+cutover.
+
+Rock runs its EF and plugin migrations at `Application_Start`, and EF's `DbMigrator` commits
+each migration separately. When the v19 deploy died part-way — on the legacy `text` column
+described in item 7's neighbourhood — it did not roll back. It stopped, leaving the schema
+between the two minors.
+
+The cost is not "v19 did not deploy". It is that **18.4.1 could no longer start against that
+catalog either**:
+
+```
+Invalid column name 'ScheduleReminderSystemEmailId'
+Invalid column name 'ScheduleConfirmationSystemEmailId'
+   at Rock.Security.Authorization.LoadAuthorizations()
+```
+
+v19 got far enough to rename those two `GroupType` columns before it died; 18.4.1's model still
+asks for the old names. The Windows event log shows the handover exactly — `incompatible in the
+equal to operator` while the v19 binaries were on the site, then `Invalid column name` from the
+moment 18.4.1 was redeployed over them. Staging sat on HTTP 500 through both.
+
+Three things follow, and the third is the expensive one.
+
+**There is no "try it and see".** Deploying v19 to a catalog is not a test whose failure costs
+nothing. Failure costs that catalog, for both versions.
+
+**Recovery is a restore, and it is instance-level.**
+`gcloud sql backups restore <id> --restore-instance=connect-restore-test
+--backup-instance=connect-restore-test` takes *every* database on the instance back to that
+point, not just the one that broke. It worked here because an on-demand backup happened to exist
+from 26 minutes before the deploy. **Take one deliberately before any future attempt** —
+`gcloud sql backups create --instance=connect-restore-test`. Item 22 turned automated backups on,
+which is what makes this recoverable at all; before 2026-08-18 there would have been nothing to
+restore from.
+
+**For production, the same failure has no cheap undo.** `connect-prod` is 418 GB and live. An
+instance-level restore is a full outage of Rock, not a sandbox inconvenience. So the production
+cutover cannot be a deploy-and-watch: the legacy columns have to be found and converted *first*,
+on a restored copy, and the migration rehearsed there until it completes clean. The tooling for
+the finding half is `Deployment/Database/Find-LegacyTextColumns.ps1`, reachable through the
+`DB - Find legacy text columns` workflow.
+
+Note also that the version guard added to `staging-deploy.yml` treats a set `STAGING_DB_NAME` as
+making a minor change safe. That is true of the *fleet* — it stops one catalog being migrated out
+from under the other sites — but it is not true of staging's own catalog, which the paragraphs
+above show is destroyed just the same. The guard prevents collateral damage, not the one-way door.
 
 ### 2. The `production` gate exists now, but it rests on one person
 
@@ -1148,6 +1202,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     exactly one backup, taken by hand. Do the `storage-auto-increase` flip on both instances in
     the same pass — it is no-downtime and closes a failure mode nothing alerts on
 13. Item 23 — the two v19 cutover steps. Do them *before* the cutover, not during it
+14. Item 24 — not a task so much as a constraint on how the cutover is scheduled. Its one
+    concrete action is small and worth doing the moment it is read: take an on-demand backup
+    before any v19 attempt, on whichever instance the attempt will touch
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
