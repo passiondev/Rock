@@ -1,0 +1,179 @@
+name: DB - Find legacy text columns
+
+# Runs Deployment/Database/Find-LegacyTextColumns.ps1 against a catalog and prints
+# what it found. Read-only: it reports columns still typed text/ntext/image and the
+# __MigrationHistory high-water mark, and changes nothing.
+#
+# Why it goes through the deploy VM rather than connecting from this runner:
+# the Cloud SQL instance is Private Service Connect only (`ipv4Enabled: false`), so
+# a GitHub-hosted runner has no route to it. Cloud SQL also scopes a database to its
+# owner -- `RockConnectProd` is owned by the `sqlserver` login, and a member of
+# CustomerDbRootRole that does not own it gets error 916, "not able to access the
+# database under the current security context". So a purpose-made diagnostic login
+# is not a way around the routing problem either.
+#
+# The VM is inside the VPC and is handed a working connection string on every
+# deploy. Running the finder there reuses that credential instead of minting a
+# second one, and reuses the queue agent's redaction on the way back out -- which
+# matters, because this repository is public and the log is uploaded to it.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      db_name:
+        description: >-
+          Catalog to scan. Leave empty to use the shared sandbox catalog
+          (secrets.DB_NAME). Set this to scan staging's own catalog instead.
+        required: false
+        type: string
+      measure_sizes:
+        description: >-
+          Also report the largest value in each column found. This full-scans every
+          affected table; on a prod-derived catalog it is slow. The sizes are
+          informational -- every legacy type converts to a max type of the same 2 GB
+          capacity, so no value can be too large to convert.
+        required: false
+        default: false
+        type: boolean
+      queue_name:
+        description: Command queue to post to.
+        required: false
+        default: pr-test
+        type: string
+      poll_attempts:
+        description: >-
+          Ten-second polls to wait for a result. The default outlasts the agent's own
+          1800s timeout on this command, so a slow scan comes back as the agent's
+          verdict rather than as a workflow timeout.
+        required: false
+        default: 240
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialised with itself but not with deploys. Two concurrent scans would be
+  # harmless -- the script only reads -- but they would interleave in the queue and
+  # make the logs hard to attribute.
+  group: db-find-legacy-text-columns
+  cancel-in-progress: false
+
+jobs:
+  find:
+    name: Scan for legacy text columns
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      COMMAND_ID: find-legacy-${{ github.run_id }}-${{ github.run_attempt }}
+      QUEUE_NAME: ${{ inputs.queue_name }}
+      MEASURE_SIZES: ${{ inputs.measure_sizes }}
+      GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      # Built exactly as env-deploy-command.yml builds it, from the same secrets, so
+      # a catalog the deploy can write is a catalog this can read. `inputs.db_name ||
+      # secrets.DB_NAME` keeps an unset input on the shared sandbox catalog rather
+      # than producing a connection string with an empty Initial Catalog.
+      CONNECTION_STRING: ${{ format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name || secrets.DB_NAME, secrets.DB_USER, secrets.DB_PASSWORD) }}
+      DB_NAME_SOURCE: ${{ inputs.db_name && 'caller-supplied' || 'shared sandbox fallback (secrets.DB_NAME)' }}
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Which catalog was scanned is the single most important fact in the output and
+      # the one the log cannot show, because the connection string is redacted. A
+      # findings list attributed to the wrong catalog is worse than no findings list:
+      # it would clear staging on the strength of a scan of the shared sandbox.
+      - name: Report which catalog will be scanned
+        run: |
+          Write-Host "Catalog source: $env:DB_NAME_SOURCE"
+          "### Legacy column scan" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Catalog | $env:DB_NAME_SOURCE |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Sized scan | $env:MEASURE_SIZES |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Queue find-legacy-text-columns command
+        run: |
+          $command = [ordered]@{
+            commandId        = $env:COMMAND_ID
+            command          = "find-legacy-text-columns"
+            connectionString = $env:CONNECTION_STRING
+            requestedAtUtc   = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          if ($env:MEASURE_SIZES -eq 'true') {
+            $command.measureSizes = $true
+          }
+
+          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
+
+          # Rebuilt key by key rather than regex-scrubbed, so a password containing a
+          # quote cannot leak a fragment past the substitution.
+          $redacted = [ordered]@{}
+          foreach ($key in $command.Keys) {
+            if ($key -eq 'connectionString') { $redacted[$key] = '<redacted>' }
+            else { $redacted[$key] = $command[$key] }
+          }
+          $redacted | ConvertTo-Json -Depth 10
+
+          gsutil cp command.json "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/pending/$env:COMMAND_ID.json"
+
+      - name: Wait for the VM to report the findings
+        run: |
+          $resultUri = "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/results/$env:COMMAND_ID.json"
+          $attempts = ${{ inputs.poll_attempts }}
+
+          function Show-CommandLog {
+            param([string]$LogObject)
+
+            if ([string]::IsNullOrWhiteSpace($LogObject)) {
+              Write-Host "The VM reported no output log. Re-run the bootstrap workflow so the VM picks up the current queue agent."
+              return
+            }
+
+            $logUri = "gs://$env:GCS_BUCKET/$LogObject"
+            gsutil -q cp $logUri command-output.log 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Could not download the command output from $logUri."
+              return
+            }
+
+            # The findings ARE the output, so unlike a deploy this goes in the summary
+            # whole rather than as a 60-line tail -- truncating it would cut off the
+            # columns an operator has to act on. The agent redacts before uploading.
+            $logText = Get-Content command-output.log -Raw
+            Write-Host "::group::Findings from the VM"
+            Write-Host $logText
+            Write-Host "::endgroup::"
+
+            "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            $logText | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+          for ($i = 0; $i -lt $attempts; $i++) {
+            gsutil -q cp $resultUri result.json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $result = Get-Content result.json -Raw | ConvertFrom-Json
+
+              $logObject = $null
+              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
+              Show-CommandLog -LogObject $logObject
+
+              if ($result.status -eq "succeeded") { exit 0 }
+
+              Write-Host "::error::The scan failed on the VM: $($result.error)"
+              exit 1
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw "Timed out waiting for a result at $resultUri."
