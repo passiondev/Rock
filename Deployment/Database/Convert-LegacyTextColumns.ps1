@@ -122,6 +122,9 @@ function ConvertTo-ColumnReference {
     }
 }
 
+# The read helper is a near-copy of the finder's, on purpose -- see the note above
+# its twin there. The difference is this one binds parameters: the converter looks
+# up columns by name, and those names come from the command line.
 function Invoke-ReadQuery {
     param(
         [Parameter(Mandatory = $true)][System.Data.SqlClient.SqlConnection] $Connection,
@@ -132,6 +135,8 @@ function Invoke-ReadQuery {
     $command = $Connection.CreateCommand()
     try {
         $command.CommandText = $Query
+        # Fixed, not -CommandTimeoutSeconds: these are single-row sys.columns
+        # lookups. That parameter exists for the ALTER, which needs no timeout at all.
         $command.CommandTimeout = 120
         foreach ($key in $Parameters.Keys) {
             [void]$command.Parameters.AddWithValue($key, $Parameters[$key])
@@ -162,7 +167,7 @@ try {
     # rewrite of a table nobody meant to touch.
     $plan = @()
     foreach ($reference in $references) {
-        $row = Invoke-ReadQuery -Connection $connection -Parameters @{
+        $metadata = Invoke-ReadQuery -Connection $connection -Parameters @{
             '@schema' = $reference.Schema
             '@table'  = $reference.Table
             '@column' = $reference.Column
@@ -181,21 +186,21 @@ FROM sys.columns c
 WHERE s.name = @schema AND t.name = @table AND c.name = @column;
 "@
 
-        if ($row.Rows.Count -eq 0) {
+        if ($metadata.Rows.Count -eq 0) {
             throw "Column $($reference.Reference) does not exist in $catalogName."
         }
 
-        $dataType = [string]$row.Rows[0].DataType
+        $dataType = [string]$metadata.Rows[0].DataType
         if (-not $LegacyTypeMap.ContainsKey($dataType)) {
             throw "Column $($reference.Reference) is a $dataType column, which is not a legacy type this script converts. Refusing rather than rewriting a table that does not need it."
         }
 
-        if ([bool]$row.Rows[0].HasFullTextIndex) {
+        if ([bool]$metadata.Rows[0].HasFullTextIndex) {
             throw "Column $($reference.Reference) is covered by a full-text index. ALTER COLUMN will not run while it is, and dropping and recreating that index is a bigger change than this script should make on its own."
         }
 
-        $isNullable = [bool]$row.Rows[0].IsNullable
-        $collation = [string]$row.Rows[0].CollationName
+        $isNullable = [bool]$metadata.Rows[0].IsNullable
+        $collation = [string]$metadata.Rows[0].CollationName
         $collateClause = ""
         if (-not [string]::IsNullOrWhiteSpace($collation)) {
             $collateClause = " COLLATE $collation"
