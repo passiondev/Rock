@@ -20,6 +20,7 @@ if ($QueueName -notmatch '^[a-z][a-z0-9-]{1,30}$') {
 $PendingPrefix = "pr-environments/$QueueName/pending/"
 $ProcessingPrefix = "pr-environments/$QueueName/processing/"
 $ResultsPrefix = "pr-environments/$QueueName/results/"
+$BootstrapPrefix = "pr-environments/bootstrap/latest/"
 $LocalQueue = Join-Path $DeployRoot "queue"
 New-Item -ItemType Directory -Path $LocalQueue -Force | Out-Null
 
@@ -131,6 +132,67 @@ function Remove-GcsObject {
     try { Invoke-GcsRequest -Uri $uri -Method DELETE | Out-Null } catch { Write-Warning $_.Exception.Message }
 }
 
+function Sync-DeploymentScripts {
+    # The agent runs whatever copy of Deployment/PrTestEnvironments was on disk when the
+    # VM was last bootstrapped, and until now nothing refreshed it. A fix merged to the
+    # repository therefore sat deployed-looking and inert until somebody re-ran the
+    # bootstrap by hand -- which is how three separate teardown bugs stayed live on this
+    # VM after they were fixed in the repository. Nothing about the repo state showed it.
+    #
+    # The bootstrap and certificate-renewal workflows both already publish this directory
+    # to bootstrap/latest/, so the upload half exists; this is only the pull half.
+    # Commands are dispatched as `& (Join-Path $DeployRoot "X.ps1")` and resolved at call
+    # time, so refreshing before the queue is drained means a fix applies to the very
+    # command that is about to run.
+    param(
+        [Parameter(Mandatory = $true)][string]$Prefix,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $objects = Get-GcsObjectList -Prefix $Prefix | Where-Object { $_ -like '*.ps1' }
+    foreach ($object in $objects) {
+        $name = Split-Path $object -Leaf
+
+        # Isolated per file, and that matters more than it looks. This script is itself in
+        # the list, and Windows may hold its file while it is executing -- so replacing it
+        # can fail. Without this try/catch that failure would abort the whole sync, and
+        # because the names are processed in listing order, Invoke-PrEnvironmentCommandQueue
+        # sorts *before* Stop-PrEnvironment: the one file guaranteed to be skipped would be
+        # one of the files most likely to need fixing.
+        try {
+            $text = Read-GcsObjectText -ObjectName $object
+
+            # Parse before replacing anything. The agent is overwriting the scripts it runs,
+            # so writing a file that does not parse would fail every subsequent command with
+            # no way back -- the next sync would fetch the same broken file again. The
+            # bootstrap workflow parses these before uploading; this is the same check on the
+            # receiving end, where the consequence of being wrong is unattended.
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$parseErrors) | Out-Null
+            if ($null -ne $parseErrors -and $parseErrors.Count -gt 0) {
+                Write-Warning "Skipped $name from ${Prefix}: it does not parse ($($parseErrors[0].Message)). Keeping the copy already on disk."
+                continue
+            }
+
+            $localPath = Join-Path $Destination $name
+            if (Test-Path $localPath) {
+                if ((Get-Content $localPath -Raw) -eq $text) { continue }
+            }
+
+            # Staged and moved rather than written in place: a write interrupted partway
+            # leaves a truncated script, which is the same brick the parse check exists to
+            # avoid.
+            $stagingPath = "$localPath.sync"
+            [System.IO.File]::WriteAllText($stagingPath, $text, (New-Object System.Text.UTF8Encoding($false)))
+            Move-Item -LiteralPath $stagingPath -Destination $localPath -Force
+            Write-Host "Refreshed $name from $Prefix."
+        }
+        catch {
+            Write-Warning "Could not refresh ${name}: $($_.Exception.Message). Keeping the copy already on disk."
+        }
+    }
+}
+
 # Commands run inside a background job with a per-command timeout. Without this,
 # a command that hangs (for example a certificate renewal blocked on win-acme)
 # never returns, so this once-per-minute task -- which Windows will not start a
@@ -201,6 +263,17 @@ $CommandRunner = {
     }
 
     if (-not $?) { throw "Command script reported failure." }
+}
+
+# Refreshing is an improvement to the agent, not a precondition for it: a GCS blip must
+# not stop the queue draining, because that would turn a transient network error into a
+# fleet that will not respond to stop or destroy at all -- strictly worse than the stale
+# scripts this exists to avoid.
+try {
+    Sync-DeploymentScripts -Prefix $BootstrapPrefix -Destination $DeployRoot
+}
+catch {
+    Write-Warning "Could not refresh deployment scripts from ${BootstrapPrefix}: $($_.Exception.Message). Continuing with the copies already on disk."
 }
 
 $commands = Get-GcsObjectList -Prefix $PendingPrefix | Where-Object { $_ -like '*.json' }
