@@ -198,18 +198,20 @@ jobs:
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ needs.build.outputs.artifact_gcs_object_path }}
       PR_TEST_DB_DATA_SOURCE: ${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }}
-      # PR environments follow staging: same catalog, same Rock version. The version
-      # half is what makes the catalog half safe -- a shared catalog is only
-      # dangerous across *different* Rock minors, because Rock migrates the schema at
-      # Application_Start. Every pr-* site builds from a PR based on the branch named
-      # in .github/pr-test-environments.json, and that branch is the one staging
-      # tracks, so everything pointed at this catalog is the same minor by
-      # construction. StagingAndPrEnvironmentCouplingTests guards both halves.
+      # The fleet's catalog. Every pr-* site shares one database, which is safe only
+      # while every site on it is the same Rock minor -- Rock applies EF and plugin
+      # migrations at Application_Start, so two minors on one catalog migrate it out
+      # from under each other, which is what put pr-3 on a permanent 500 on
+      # 2026-08-11. That holds by construction: every pr-* site builds from a PR
+      # based on the branch named in .github/pr-test-environments.json.
       #
-      # STAGING_DB_NAME unset resolves to the empty string and falls back to the
-      # prod-derived shared sandbox catalog, which is where every pr-* site sits
-      # today, so this is a no-op until the staging catalog is provisioned.
-      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ vars.STAGING_DB_NAME || secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
+      # Staging names its own variable. Until 2026-08-18 this line read
+      # vars.STAGING_DB_NAME, so the variable documented as staging's actually moved
+      # the whole fleet -- and staging is the environment a minor is meant to be
+      # tried on first, which left nowhere to try it. Both variables are unset today
+      # and both sides fall back to the prod-derived sandbox catalog, so the fleet
+      # and staging still share one database until someone sets one of them.
+      SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ vars.PR_TEST_DB_NAME || secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -270,6 +272,27 @@ jobs:
             Start-Sleep -Seconds 15
           }
           throw "Timed out waiting for PR environment command result: $resultUri"
+
+      # The verification lives in a composite action so the staging/production path and
+      # the pr-* fleet ask the identical question -- see .github/actions/verify-public-url,
+      # which carries the reasoning behind every branch of it. A sparse checkout because
+      # this job otherwise needs no working tree.
+      - name: Check out the verification action
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions/verify-public-url
+          sparse-checkout-cone-mode: false
+
+      # Until now nothing asked whether a pr-* site was reachable from outside the VM.
+      # The VM's own loopback probe cannot answer that, so a site could be reported
+      # deployed and healthy while DNS, the load balancer, the host binding or the
+      # certificate left it unreachable to an actual reviewer -- which is the only thing
+      # a PR environment exists for.
+      - name: Verify the public URL from the internet
+        uses: ./.github/actions/verify-public-url
+        with:
+          host_name: ${{ needs.prepare.outputs.host_name }}
 
   finalize:
     name: Reconcile final PR state

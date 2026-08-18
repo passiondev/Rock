@@ -99,6 +99,95 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Deploying $sha to staging."
 
+      # Read the pin from the *default branch*, not from the ref being deployed.
+      # The shared catalog's minor is whatever the fleet is built from, and the
+      # trunk is what defines that -- pr-test-deploy.yml uses the same oracle for
+      # the same reason. Reading the deployed ref's own copy would let a v19
+      # branch that had already bumped its config authorise its own deploy.
+      - name: Read the fleet's pinned Rock minor
+        id: pin
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const response = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: '.github/pr-test-environments.json',
+              ref: context.payload.repository.default_branch
+            });
+            const config = JSON.parse(Buffer.from(response.data.content, 'base64').toString('utf8'));
+            core.setOutput('base_branch', config.baseBranch || '');
+
+      # staging shared the sandbox catalog with every pr-* site, and on 2026-08-18
+      # a 19.3.4 artifact was deployed onto it while it was still an 18.4.1 catalog.
+      # Rock migrates at Application_Start, so the migration began on the first
+      # request. A core EF migration then failed on "The data types text and
+      # nvarchar are incompatible in the equal to operator", which rolled back that
+      # one migration and left every migration before it committed -- the shared
+      # catalog stranded between two minors, with no automated backup on the
+      # instance holding it.
+      #
+      # env-deploy-command.yml already warns when db_name resolves empty. It warned
+      # on that run. A warning does not stop a deploy, and by the time it is read
+      # the migration has run.
+      #
+      # Failing here rather than blanket-freezing staging: the way past this guard
+      # is to give staging its own catalog, which is the documented migration path
+      # off the shared one rather than a bypass.
+      - name: Refuse a Rock minor change on the shared catalog
+        shell: bash
+        env:
+          PINNED_BASE_BRANCH: ${{ steps.pin.outputs.base_branch }}
+          STAGING_DB_NAME: ${{ vars.STAGING_DB_NAME }}
+        run: |
+          staging_db_name="${STAGING_DB_NAME:-}"
+          pinned_branch="${PINNED_BASE_BRANCH:-}"
+
+          # Two layouts, because the cutover this guard protects is also the
+          # commit that moves the version. 18.4.1 declares it as an attribute in
+          # Rock.Version/AssemblySharedInfo.cs; 19.3.4 deleted that file and put
+          # <Version> in Directory.Build.props. Reading only one of them makes the
+          # guard fail closed on every deploy of the other branch -- safe, but it
+          # refuses everything, which is how a guard gets deleted.
+          #
+          # Props first: 18.4.1 ships a Directory.Build.props with no <Version> in
+          # it, so it falls through to the attribute, while v19 answers from props
+          # and never consults a file it no longer has.
+          #
+          # Test each file before parsing it. Letting sed fail into an empty
+          # version would read as "no minor change" on a guard whose whole job is
+          # to refuse when it cannot tell.
+          artifact_version=""
+          if [ -f "Directory.Build.props" ]; then
+            artifact_version="$(sed -n 's:.*<Version>[[:space:]]*\([0-9][0-9.]*\)[[:space:]]*</Version>.*:\1:p' Directory.Build.props | head -1)"
+          fi
+          if [ -z "$artifact_version" ] && [ -f "Rock.Version/AssemblySharedInfo.cs" ]; then
+            artifact_version="$(sed -n 's/.*AssemblyVersion([[:space:]]*"\([0-9][0-9.]*\)"[[:space:]]*).*/\1/p' Rock.Version/AssemblySharedInfo.cs | head -1)"
+          fi
+          if [ -z "$artifact_version" ]; then
+            echo "::error::Could not read the Rock version from Directory.Build.props (<Version>) or Rock.Version/AssemblySharedInfo.cs (AssemblyVersion). Refusing rather than guessing which minor this artifact is."
+            exit 1
+          fi
+          artifact_minor="${artifact_version%%.*}"
+
+          pinned_minor="$(printf '%s\n' "$pinned_branch" | sed -n 's/^passion-\([0-9][0-9]*\)\..*$/\1/p')"
+          if [ -z "$pinned_minor" ]; then
+            echo "::error::Could not read the fleet's pinned Rock minor from '$pinned_branch'. Refusing rather than assuming it matches."
+            exit 1
+          fi
+
+          if [ -n "$staging_db_name" ]; then
+            echo "staging has its own catalog ($staging_db_name), so Rock $artifact_version can migrate it without touching the pr-* fleet."
+            exit 0
+          fi
+
+          if [ "$artifact_minor" != "$pinned_minor" ]; then
+            echo "::error::Refusing to deploy Rock $artifact_version to staging. STAGING_DB_NAME is unset, so this deploy would land on the sandbox catalog shared with every pr-* site, and that catalog is on the ${pinned_minor}.x line (pinned to $pinned_branch). Rock migrates on startup, so a ${artifact_minor}.x artifact would begin migrating a ${pinned_minor}.x catalog on the first request. Give staging its own database and set the STAGING_DB_NAME repository variable first."
+            exit 1
+          fi
+
+          echo "Rock $artifact_version is on the pinned ${pinned_minor}.x line; the shared catalog stays consistent."
+
   build:
     name: Build staging artifact
     needs: resolve
