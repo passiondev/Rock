@@ -334,3 +334,54 @@ class TypeMappingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DataTableSurvivesTheReturnTests(unittest.TestCase):
+    """PowerShell unrolls an enumerable on the way out of a function, and a DataTable
+    enumerates as its Rows. So `return $table` hands the caller DataRows -- or, for an
+    empty result, nothing at all -- and every `.Rows` on the other side is then a
+    property that does not exist. Under `Set-StrictMode -Version Latest`, which both
+    scripts set, that is a throw rather than a silent $null.
+
+    The comma operator is the fix: `return , $table` returns a one-element array whose
+    single element is the table, and the unrolling spends itself on the wrapper.
+
+    Not hypothetical, and not caught by anything else here. Every other test in this
+    file passed while the finder could not complete a single run against a real
+    catalog: 2026-08-18, "The property 'Rows' cannot be found on this object", thrown
+    on the first query of a scan that an operator would have started mid-upgrade
+    against a stranded catalog. CI has no PowerShell, so a static check is the only
+    place this can be caught before the box."""
+
+    def test_a_returned_datatable_is_protected_from_unrolling(self):
+        for script in (FINDER, CONVERTER):
+            with self.subTest(script=script.name):
+                text = script.read_text()
+
+                creates = re.search(r"\$(\w+)\s*=\s*New-Object\s+System\.Data\.DataTable", text)
+                self.assertIsNotNone(
+                    creates, f"{script.name} no longer builds a DataTable; retarget this test")
+                variable = creates.group(1)
+
+                returns = re.findall(rf"return\s+(,?)\s*\${variable}\b", _strip_comments(text))
+                self.assertTrue(
+                    returns, f"{script.name} builds ${variable} but never returns it")
+                for comma in returns:
+                    self.assertEqual(
+                        comma, ",",
+                        f"{script.name} does `return ${variable}` without the comma operator. "
+                        "PowerShell will unroll the DataTable into DataRows and the caller's "
+                        f"${variable}.Rows will throw. Write `return , ${variable}`.",
+                    )
+
+    def test_the_callers_really_do_depend_on_getting_a_table_back(self):
+        """The guard above is only worth having while the callers reach for .Rows. If
+        they ever stop, this test says so rather than leaving a rule nobody needs."""
+        for script in (FINDER, CONVERTER):
+            with self.subTest(script=script.name):
+                body = _strip_comments(script.read_text())
+                self.assertRegex(
+                    body, r"\.Rows\b",
+                    f"{script.name} no longer reads .Rows; the comma-operator rule above "
+                    "may no longer be needed",
+                )

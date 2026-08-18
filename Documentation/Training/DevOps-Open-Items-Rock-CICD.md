@@ -724,10 +724,34 @@ yet at sync time. That last part is why this looked like a working self-update f
 did. **Not proven**, only strongly indicated; proving it needs the agent's own stdout captured
 somewhere, which is itself worth doing.
 
-So the rule to work by: **a change to any script other than the agent lands on its own; a change
-to the agent still needs a bootstrap.** That is a much smaller win than "script fixes land on
-their own", and it is the reverse of the useful case — the agent is the file whose bugs strand
-the fleet, and it is the one file that cannot self-heal.
+**Later the same day that rule turned out to be too generous, and it was written here before it
+was tested.** The bootstrap published `Find-LegacyTextColumns.ps1` and
+`Convert-LegacyTextColumns.ps1` to `bootstrap/latest/` at 19:07:22Z — two files that are not the
+agent, and that were not on the VM in any version. The agent then failed the command at 19:14:41Z
+and again at 19:20:39Z with `The term 'C:\RockDeploy\Find-LegacyTextColumns.ps1' is not
+recognized`: about thirteen minutes and thirteen once-a-minute poll opportunities in which the
+sync had every chance to fetch a file it could not have been holding open.
+
+So the evidence does not support "everything except the agent lands on its own" either. What is
+established is narrower and less comforting: **two files that were published did not arrive, and
+one of them was not the agent.** Why is not established — the reason it is not established is the
+same reason as before, that `Sync-DeploymentScripts` reports to the scheduled task's local stdout
+and nothing uploads it. Until that output is captured, the sync should be treated as an
+optimisation that may or may not have run, not as a delivery mechanism.
+
+There was a second, separate bug in the same delivery path, and it is worth keeping the two
+apart. The bootstrap *uploads* `Deployment/PrTestEnvironments/*.ps1` and
+`Deployment/Database/*.ps1` by glob, but the Windows startup script it installs downloaded ten
+file names typed by hand — so the two Database scripts were never fetched at boot either. That
+one is fixed: the startup script now lists the prefix and takes what is published there, keeping
+the ten literal names as a floor for when the listing itself fails.
+
+But it only explains why the files were missing *at boot*. It does not explain the thirteen
+subsequent syncs, which had nothing to do with the startup script. Fixing it removed the reason
+the files were absent; it did not restore any confidence in the sync.
+
+The working rule, then: **verify the receiving end.** A script is on the VM when something on the
+VM has used it, not when a workflow reports having published it.
 
 The shape of a real fix is a small launcher the scheduled task calls instead: it renames a staged
 `.pending` copy over the agent *before* loading it, then invokes it. The launcher changes almost

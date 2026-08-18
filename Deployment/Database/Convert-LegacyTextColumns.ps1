@@ -145,7 +145,11 @@ function Invoke-ReadQuery {
         $table = New-Object System.Data.DataTable
         $reader = $command.ExecuteReader()
         try { $table.Load($reader) } finally { $reader.Dispose() }
-        return $table
+        # Comma operator, not decoration. PowerShell unrolls an enumerable on the way
+        # out of a function and a DataTable enumerates as its Rows, so a bare
+        # `return $table` hands back DataRows -- or nothing at all when the result is
+        # empty -- and every $x.Rows at the call site throws under Set-StrictMode.
+        return , $table
     }
     finally {
         $command.Dispose()
