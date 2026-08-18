@@ -97,8 +97,15 @@ class FinderIsReadOnlyTests(unittest.TestCase):
         healthy one until you read __MigrationHistory. That is the single most useful
         fact when a deploy has failed and nobody knows how far it got, and it is a
         read -- so it belongs in the script anyone is allowed to run."""
+        # The query, not the label above it. `assertIn("__MigrationHistory")` passed
+        # against a finder whose FROM clause had been pointed at a different table,
+        # because the Write-Host line announcing the section still named the right one.
         body = _strip_comments(FINDER.read_text())
-        self.assertIn("__MigrationHistory", body)
+        self.assertRegex(
+            body,
+            r"FROM\s+dbo\.__MigrationHistory",
+            "the finder no longer reads dbo.__MigrationHistory",
+        )
 
 
 class ConnectionStringHandlingTests(unittest.TestCase):
@@ -208,9 +215,13 @@ class ConverterIsGatedTests(unittest.TestCase):
         size-of-data ALTER on a table nobody meant to touch."""
         body = _strip_comments(CONVERTER.read_text())
 
+        # Anchored to the refusal itself. Written as `is a `, this matched the
+        # unrelated full-text throw two lines below -- "dropping and recreating that
+        # index is a bigger change" -- so the test passed against a script that had
+        # downgraded this refusal to a warning and carried on.
         self.assertRegex(
             body,
-            r"throw\s+\"[^\"]*(not a legacy|is a )",
+            r"throw\s+\"[^\"]*not a legacy type",
             "nothing refuses a column whose current type is not text, ntext or image",
         )
         self.assertIn("sys.columns", body, "the converter never reads the column's actual type")
@@ -264,10 +275,20 @@ class RollbackTests(unittest.TestCase):
         represent is lost by the rollback, silently. A rollback file that does not say
         so invites someone to treat it as a free undo."""
         body = CONVERTER.read_text()
+
+        # The caveat itself, not a word near it. Matched as `loss|code page` this
+        # survived the header being reworded to "Reverses the conversion", because
+        # the sentence explaining the mechanism still said "code page" -- so the file
+        # described the lossy conversion in detail while presenting it as an undo.
         self.assertRegex(
             body,
-            r"(?i)loss|code page",
-            "the generated rollback makes no mention of where it loses data",
+            r"(?i)not lossless",
+            "the generated rollback no longer states that it is not lossless",
+        )
+        self.assertRegex(
+            body,
+            r"(?i)code page",
+            "the rollback says it is lossy without saying what is lost",
         )
 
 

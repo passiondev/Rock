@@ -353,12 +353,23 @@ class StagingAndPrEnvironmentCouplingTests(unittest.TestCase):
         enough to talk someone out of the move this change exists to make safe."""
         runbook = OP_RUNBOOK.read_text()
 
-        self.assertIn("PR_TEST_DB_NAME", runbook, "the fleet's own variable is undocumented")
         self.assertNotIn(
             "moves **staging and every `pr-*` site**",
             runbook,
             "the runbook still describes the pre-split blast radius",
         )
+
+        # Anchored to the step that carried the wrong claim, not to the document.
+        # `assertIn("PR_TEST_DB_NAME", runbook)` is satisfied by any passing mention
+        # elsewhere, which leaves the one paragraph an operator actually reads before
+        # setting the variable free to go on saying nothing about the other one.
+        step = next(
+            (line for line in runbook.splitlines() if "**Set the repository variable**" in line),
+            None,
+        )
+        self.assertIsNotNone(step, "the provisioning step that sets the catalog variable is gone")
+        self.assertIn("PR_TEST_DB_NAME", step, "the step that sets STAGING_DB_NAME does not say what it does not move")
+        self.assertIn("staging only", step, "the step does not state the blast radius at all")
 
 
 if __name__ == "__main__":
