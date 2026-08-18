@@ -30,6 +30,7 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 STAGING_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "staging-deploy.yml"
+PR_TEST_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-deploy.yml"
 # Both places Rock has declared its version across this upgrade. 18.4.1 uses the
 # assembly attribute; 19.3.4 deleted that file and moved to <Version> in
 # Directory.Build.props. The guard has to read whichever the branch it is deploying
@@ -312,6 +313,67 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
                 needs_of(downstream),
                 f"the {downstream} job does not wait on {guard_job}, so the guard cannot stop it",
             )
+
+
+class CatalogVariablesStayDecoupledTests(unittest.TestCase):
+    """Before 2026-08-18 one variable moved both: pr-test-deploy.yml read
+    vars.STAGING_DB_NAME, so the variable documented as staging's actually moved the
+    whole pr-* fleet -- and staging is where a new Rock minor is supposed to be tried
+    first, which left nowhere to try it. PR #13 split them.
+
+    The split is the thing that makes a staging-first v19 rehearsal possible at all, so
+    it is worth more than a comment. These pin each side to its own variable."""
+
+    def test_staging_passes_its_own_variable(self):
+        text = STAGING_WORKFLOW.read_text()
+
+        self.assertIn("db_name: ${{ vars.STAGING_DB_NAME }}", text)
+
+        # Comments stripped for the same reason as below, and here it is not
+        # hypothetical: the header names PR_TEST_DB_NAME on purpose, because an
+        # operator reading it needs to know which variable moves the other side.
+        code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+        self.assertNotIn(
+            "PR_TEST_DB_NAME",
+            code,
+            "staging reads the fleet's catalog variable",
+        )
+
+    def test_the_pr_fleet_passes_its_own_variable(self):
+        text = PR_TEST_WORKFLOW.read_text()
+
+        self.assertIn("vars.PR_TEST_DB_NAME", text)
+
+        # Comments are stripped: pr-test-deploy.yml explains the 2026-08-18 split in
+        # prose that has to name the variable it stopped reading.
+        code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+        self.assertNotIn(
+            "vars.STAGING_DB_NAME",
+            code,
+            "the pr-* fleet reads staging's catalog variable again; setting "
+            "STAGING_DB_NAME would move the whole fleet with it",
+        )
+
+    def test_the_staging_header_does_not_still_describe_the_coupling(self):
+        """The header block is where an operator looks before setting the variable. It
+        described the pre-split behaviour -- "staging and every pr-* site move together
+        onto that catalog" -- for as long as the split existed. Getting that backwards
+        during a version rehearsal is how two Rock minors end up on one catalog, which
+        is the exact failure the split exists to prevent.
+
+        Pinned as "the header must name both variables" rather than as an exact
+        sentence, so it survives rewording but not a return to describing one variable
+        as moving everything."""
+        header = STAGING_WORKFLOW.read_text().split('"on":', 1)[0]
+
+        self.assertIn("STAGING_DB_NAME", header)
+        self.assertIn(
+            "PR_TEST_DB_NAME",
+            header,
+            "the header explains which catalog staging lands on without mentioning "
+            "the variable that moves the pr-* fleet, so it reads as though one "
+            "variable still moves both",
+        )
 
 
 if __name__ == "__main__":
