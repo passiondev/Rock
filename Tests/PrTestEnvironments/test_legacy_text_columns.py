@@ -399,6 +399,37 @@ class TheFinderCanActuallyBeRunTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", workflow["on"])
         self.assertIn(FINDER_COMMAND, FINDER_WORKFLOW.read_text())
 
+    def test_every_workflow_the_runbook_says_to_dispatch_exists_and_is_dispatchable(self):
+        """The runbook tells an operator to dispatch a workflow by the display name
+        they will look for in the Actions list, which is `name:` in the workflow file
+        and not the filename. Nothing else ties those two strings together, so a
+        rename leaves a procedure that sends someone hunting for a workflow that is
+        not there -- and the failure lands on whoever is mid-cutover.
+
+        Derived from both files rather than hardcoded: any future `dispatch **X**`
+        step is covered the moment it is written."""
+        names = re.findall(r"dispatch \*\*([^*]+)\*\*", OP_RUNBOOK.read_text())
+
+        self.assertTrue(
+            names, "no dispatch instruction found -- this test has stopped watching anything"
+        )
+
+        dispatchable = {}
+        for workflow_file in (REPO_ROOT / ".github" / "workflows").glob("*.yml"):
+            parsed = yaml.safe_load(workflow_file.read_text())
+            triggers = parsed.get("on") or parsed.get(True) or {}
+            if "workflow_dispatch" in triggers:
+                dispatchable[parsed["name"]] = workflow_file.name
+
+        for name in names:
+            self.assertIn(
+                name,
+                dispatchable,
+                f"the runbook says to dispatch '{name}', but no workflow declares "
+                f"that name with a workflow_dispatch trigger. Dispatchable: "
+                f"{sorted(dispatchable)}",
+            )
+
     def test_the_converter_is_deliberately_not_reachable_from_the_queue(self):
         """The asymmetry is the safety property. The finder reads and can be pointed
         at any catalog; the converter rewrites column types on production-derived
