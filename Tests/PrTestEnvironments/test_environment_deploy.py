@@ -6,6 +6,7 @@ to get wrong and expensive to get wrong on production. The tests below pin the
 properties that make the production path safe.
 """
 
+import collections
 import pathlib
 import re
 import subprocess
@@ -594,6 +595,59 @@ class DeployScriptDriftTests(unittest.TestCase):
         self.assertLess(
             names.index("Report deploy script drift"),
             names.index("Queue deploy-environment command"),
+        )
+
+    def test_it_covers_every_directory_the_bootstrap_publishes_from(self):
+        """Derived from the bootstrap rather than listed here, because a hard-coded
+        list is how the check silently stops covering things. The publish step is a
+        glob over N directories; on 2026-08-19 it was two, and a drift check that
+        knew about one of them would have reported "in sync" while the other was
+        stale. Add a third directory to the publish line and this fails until the
+        comparison and its checkout follow."""
+        published_from = re.findall(
+            r"(Deployment/[A-Za-z]+)/\*\.ps1",
+            BOOTSTRAP_WORKFLOW.read_text(),
+        )
+        self.assertGreater(len(set(published_from)), 0)
+
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = workflow["jobs"]["deploy"]["steps"]
+        drift = next(s for s in steps if s.get("name") == "Report deploy script drift")
+        checkout = next(
+            s for s in steps
+            if str(s.get("uses", "")).startswith("actions/checkout")
+            and "Deployment/" in str((s.get("with") or {}).get("sparse-checkout", ""))
+        )
+
+        for directory in sorted(set(published_from)):
+            with self.subTest(directory=directory):
+                self.assertIn(directory, drift["run"])
+                self.assertIn(directory, checkout["with"]["sparse-checkout"])
+
+    def test_no_two_published_directories_hold_the_same_script_name(self):
+        """The publish step globs N directories into one flat GCS prefix, so a
+        basename is the whole identity of a script once it lands on the VM. Two
+        directories holding the same name means whichever copies last wins,
+        silently, and the drift check then compares both local copies against that
+        one file and reports the loser as drifted forever. Cheaper to forbid the
+        collision than to teach the flat prefix about directories."""
+        published_from = sorted(set(re.findall(
+            r"(Deployment/[A-Za-z]+)/\*\.ps1",
+            BOOTSTRAP_WORKFLOW.read_text(),
+        )))
+
+        owners = collections.defaultdict(list)
+        for directory in published_from:
+            for script in (REPO_ROOT / directory).glob("*.ps1"):
+                owners[script.name].append(directory)
+
+        collisions = {name: dirs for name, dirs in owners.items() if len(dirs) > 1}
+
+        self.assertEqual(
+            collisions,
+            {},
+            "these script names exist in more than one published directory and "
+            "would overwrite each other on the VM",
         )
 
     def test_an_empty_local_directory_is_not_reported_as_in_sync(self):

@@ -180,6 +180,7 @@ jobs:
         with:
           sparse-checkout: |
             Deployment/PrTestEnvironments
+            Deployment/Database
           sparse-checkout-cone-mode: false
 
       - name: Report deploy script drift
@@ -189,7 +190,11 @@ jobs:
         # deploy was in before the check existed.
         continue-on-error: true
         run: |
-          $localDir = "Deployment/PrTestEnvironments"
+          # Both, because the bootstrap's upload is a glob over both into one flat
+          # prefix. Checking only PrTestEnvironments would report "in sync" while a
+          # Deployment/Database script on the VM was a version behind -- and those
+          # are the ones an operator reaches for mid-cutover.
+          $localDirs = @( "Deployment/PrTestEnvironments", "Deployment/Database" )
           $publishedPrefix = "gs://$env:GCS_BUCKET/pr-environments/bootstrap/latest"
           $downloadDir = Join-Path $env:RUNNER_TEMP "published-deploy-scripts"
           New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
@@ -210,11 +215,13 @@ jobs:
             return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "")
           }
 
-          $localScripts = @( Get-ChildItem -Path $localDir -Filter *.ps1 -ErrorAction SilentlyContinue )
+          $localScripts = @( $localDirs | ForEach-Object {
+            Get-ChildItem -Path $_ -Filter *.ps1 -ErrorAction SilentlyContinue
+          } )
           if ($localScripts.Count -eq 0) {
             # Reporting "in sync" against nothing is the failure mode this whole
             # check exists to prevent, so say the check did not run instead.
-            Write-Host "::warning::Found no deploy scripts in $localDir, so this run could not check whether the VM is up to date. The comparison, not the deploy, is what failed here."
+            Write-Host "::warning::Found no deploy scripts in $($localDirs -join ', '), so this run could not check whether the VM is up to date. The comparison, not the deploy, is what failed here."
             "| Deploy scripts | not checked -- no local copy to compare |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             return
           }
