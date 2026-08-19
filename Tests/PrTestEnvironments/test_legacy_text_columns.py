@@ -18,12 +18,20 @@ import pathlib
 import re
 import unittest
 
+import yaml
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO_ROOT / "Deployment" / "Database"
 FINDER = SCRIPT_DIR / "Find-LegacyTextColumns.ps1"
 CONVERTER = SCRIPT_DIR / "Convert-LegacyTextColumns.ps1"
 OP_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Operator-Runbook.md"
+BOOTSTRAP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-bootstrap-command-queue.yml"
+FINDER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "db-find-legacy-text-columns.yml"
+QUEUE_AGENT = (
+    REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
+)
+FINDER_COMMAND = "find-legacy-text-columns"
 
 WRITE_VERBS = [
     r"\bALTER\s+TABLE\b",
@@ -334,3 +342,76 @@ class TypeMappingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheFinderCanActuallyBeRunTests(unittest.TestCase):
+    """The runbook's procedure is only as real as the path that runs it.
+
+    Cloud SQL here is Private Service Connect only, so no GitHub-hosted runner and
+    no workstation can reach the catalog; the finder runs on the deploy VM or it
+    does not run. That makes four separate pieces load-bearing -- the script, the
+    bootstrap that publishes it, the agent command that invokes it, and the
+    workflow that queues that command -- and until 2026-08-19 nothing tied them
+    together. The v19 trunk cutover carried the script and the runbook forward and
+    left the other three behind, and this file stayed green the whole time, because
+    everything it asserted was still true. Losing the ability to run it was simply
+    not one of the things it was looking at.
+    """
+
+    def test_the_bootstrap_publishes_the_finder_to_the_vm(self):
+        """The agent runs scripts out of C:\\RockDeploy, which is populated only from
+        the bootstrap prefix. A script the publish step's glob does not cover never
+        reaches the VM, and the command fails minutes later with 'is not
+        recognized'."""
+        published_from = re.findall(
+            r"(Deployment/[A-Za-z]+)/\*\.ps1", BOOTSTRAP_WORKFLOW.read_text()
+        )
+
+        self.assertIn(
+            "Deployment/Database",
+            published_from,
+            "the bootstrap does not publish Deployment/Database, so the finder "
+            "cannot reach the VM that is the only place it can run",
+        )
+
+    def test_the_queue_agent_has_a_command_that_runs_the_finder(self):
+        """A workflow can queue any string it likes. If the agent has no branch for
+        it, the command comes back 'Unknown command' after the poll, which reads like
+        a queue fault rather than a missing feature."""
+        agent = QUEUE_AGENT.read_text()
+
+        self.assertIn(f'"{FINDER_COMMAND}" {{', agent)
+        self.assertIn(FINDER.name, agent)
+        self.assertIn(f"'{FINDER_COMMAND}' = ", agent)
+
+    def test_a_workflow_exists_to_dispatch_that_command(self):
+        """workflow_dispatch runs the workflow file from the repository's default
+        branch. So this file existing on some other branch is not the same as the
+        procedure being available -- which is exactly how it went missing."""
+        self.assertTrue(
+            FINDER_WORKFLOW.exists(),
+            f"{FINDER_WORKFLOW.name} does not exist, so the runbook's scan step "
+            "cannot be dispatched at all",
+        )
+
+        workflow = yaml.safe_load(FINDER_WORKFLOW.read_text())
+
+        self.assertIn("workflow_dispatch", workflow["on"])
+        self.assertIn(FINDER_COMMAND, FINDER_WORKFLOW.read_text())
+
+    def test_the_converter_is_deliberately_not_reachable_from_the_queue(self):
+        """The asymmetry is the safety property. The finder reads and can be pointed
+        at any catalog; the converter rewrites column types on production-derived
+        data and stays a by-hand script with a human reading the finder's output
+        first. Giving the agent a branch for it would put an -Apply-gated write
+        behind a dispatch box.
+
+        Comments are stripped first, for the same reason the read-only scan above
+        strips them: the agent names the converter precisely to record that it does
+        not run it, and a test that could not tell an explanation from a call would
+        be satisfied by deleting the explanation."""
+        agent = _strip_comments(QUEUE_AGENT.read_text())
+
+        self.assertIn(FINDER.name, agent)
+        self.assertNotIn(CONVERTER.name, agent)
+
