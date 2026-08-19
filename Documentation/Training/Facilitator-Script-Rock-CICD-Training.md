@@ -30,9 +30,11 @@ inevitable rather than imposed. And say early that **nothing in the browser can 
 production** — the lead will hold that anxiety through the whole hour otherwise, and stop
 listening.
 
-**Expect interruptions.** Ops is explicitly there to comment. The plan below is ~45 minutes
-of material in a 60-minute slot. Let it get interrupted; that's the slack being used
-correctly.
+**Expect interruptions.** Ops is explicitly there to comment — but budget for that out of
+the content, not out of thin air. The timing plan below is nine segments totalling 60
+minutes and it ends at exactly 1:00, so there is no slack in it. The cut list underneath it
+is the slack. Reach for it at the first checkpoint you miss rather than discovering at 0:52
+that the demo has nowhere to go.
 
 ---
 
@@ -71,7 +73,7 @@ five minutes" and every reference after it silently pointed one slide too far.
 | 6 | The fork | We didn't write Rock. We forked it. |
 | 7 | The fork | A fork is a two-way street. Both directions have rules. |
 | 8 | Version branches | The trunk is named after the Rock version it runs. |
-| 9 | Version branches | How the move to Rock 19 happens. |
+| 9 | Version branches | How an upgrade moves the trunk under you. |
 | 10 | Making changes | One decision matters more than all the rest: the base branch. |
 | 11 | Making changes | Labels are buttons. That's the whole control panel. |
 | 12 | Making changes | Why a pull request, even for a one-word typo. |
@@ -84,8 +86,20 @@ five minutes" and every reference after it silently pointed one slide too far.
 | 19 | Questions you're about to ask | And the harder ones. |
 | 20 | Where we go from here | Four things, and then it's yours. |
 
-*Verified against the deck on 2026-08-11: 20 slides, every heading and number above matches,
-and every slide range in the segment notes below resolves to the right headings.*
+*This table is no longer maintained by hand-checking.
+`Tests/PrTestEnvironments/test_training_deck_matches_facilitator.py` reads the deck and fails
+if a heading here does not match it, if the count differs, if the timing plan and the segment
+notes disagree on a segment's minutes or slides, if the clock stops adding up to the stated
+slot, if a slide is covered by no segment or by two, or if any numbered reference in the prose
+points past the end of the deck.*
+
+*What that caught on 2026-08-19, none of it visible to a reader: slide 9's heading was still
+"How the move to Rock 19 happens." after the deck was retitled "How an upgrade moves the trunk
+under you." for the branch-name-free rewrite — the second time the warning above had been
+earned. The framing paragraph promised "~45 minutes of material in a 60-minute slot" while the
+nine segments below it total exactly 60 and end at 1:00, so the slack a facilitator was told to
+spend on interruptions did not exist. And the deck's own navigation rail stopped at Q&A, giving
+the closing section no entry.*
 
 ---
 
@@ -528,8 +542,8 @@ running on that host.
    and the banner only exists on the branch. Two tabs side by side is the entire argument for
    PR environments in one screen: staging shows what is merged, the PR site shows what is
    proposed. Then open the staging home page, so nobody leaves thinking staging is a 404.
-7. **Skip this by default.** Pushing a trivial extra commit and watching `deployed` flip to
-   `building` within seconds is a genuinely good moment, but it is the one step that starts a
+7. **Skip this by default.** Pushing a trivial extra commit and watching the `rock:deployed`
+   label flip to `rock:building` within seconds is a genuinely good moment, but it is the one step that starts a
    twenty-five-minute build you then cannot show the end of, and it puts the projector on a
    robot's reaction time. Do it only if you are at 0:46 or earlier and the demo site is warm,
    and if you do, narrate that you are showing the *transition* and nothing further.

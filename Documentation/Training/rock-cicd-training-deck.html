@@ -568,6 +568,9 @@
   <a class="rail-node" href="#s18">
     <span class="rail-dot"></span><span class="rail-label">Q&amp;A</span>
   </a>
+  <a class="rail-node" href="#s20">
+    <span class="rail-dot"></span><span class="rail-label">Where we go from here</span>
+  </a>
 </nav>
 
 <main class="deck" id="deck">
@@ -855,14 +858,14 @@
         <div class="card">
           <h3>The robot sets these. Don't touch them.</h3>
           <p style="display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.6rem">
-            <span class="tag tag-state">queued</span>
-            <span class="tag tag-state">building</span>
-            <span class="tag tag-state">deploying</span>
-            <span class="tag tag-state">deployed</span>
-            <span class="tag tag-state">stopped</span>
-            <span class="tag tag-state">failed</span>
+            <span class="tag tag-state">rock:queued</span>
+            <span class="tag tag-state">rock:building</span>
+            <span class="tag tag-state">rock:deploying</span>
+            <span class="tag tag-state">rock:deployed</span>
+            <span class="tag tag-state">rock:stopped</span>
+            <span class="tag tag-state">rock:failed</span>
           </p>
-          <p class="card-note">They're a status light. <span class="tag tag-state">deployed</span> means your site is up and the URL is in the PR comment.</p>
+          <p class="card-note">They're a status light. <span class="tag tag-state">rock:deployed</span> means your site is up and the URL is in the PR comment.</p>
         </div>
       </div>
       <p class="card-note"><strong>Cleanup:</strong> merging the PR destroys its environment &middot; closing it without merging only <em>stops</em> it and keeps the files. Nothing else reaps anything on a timer, so if you're done with an environment, add <span class="tag tag-do">rock:destroy</span> yourself.</p>
