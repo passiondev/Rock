@@ -5,9 +5,9 @@ The guide tells a developer that plugin blocks and Passion's themes are not on t
 branch they work from, and backs it with four measurements. Three of them moved at
 the 19.3.4 cutover without anyone noticing: WebForms blocks fell 448 -> 353,
 Obsidian blocks rose 1,122 -> 1,294, and `RockWeb/Themes/` gained
-`RockManagerNextGen`. The numbers had been measured on 2026-08-10 against
-`passion-18.4.1` and read, nine days later, as claims about a trunk they were never
-measured on.
+`RockManagerNextGen`. The numbers had been measured on 2026-08-10 and 2026-08-11
+against `passion-18.4.1` and read, nine days later, as claims about a trunk they
+were never measured on.
 
 Stale numbers here are worse than no numbers. The whole point of the section is to
 stop someone concluding a block was deleted when it was converted, and a count that
@@ -37,7 +37,7 @@ GUIDE = REPO_ROOT / "Documentation" / "Local-Engineering-Training-Edit-Test-and-
 
 # Written as REPO_ROOT paths rather than as the bare "RockWeb/Blocks/" strings the
 # git output is filtered by, because test_ci_trigger_coverage.py discovers what this
-# suite reads by scanning for exactly that form. As plain strings these three trees
+# suite reads by scanning for exactly that form. As plain strings these four trees
 # would be invisible to it, and the CI trigger could stop covering them without
 # anything failing -- which is the hole that test exists to close.
 PLUGINS_DIR = REPO_ROOT / "RockWeb" / "Plugins"
