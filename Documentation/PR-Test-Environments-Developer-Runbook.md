@@ -41,7 +41,11 @@ A sticky PR comment shows the current status, URL, deployed SHA, logs, and comma
 - Failed build: open the linked GitHub Actions run from the sticky comment.
 - Failed deploy: check the deploy job logs and ask an operator to inspect `C:\RockDeploy\logs` and IIS.
 - Stopped environment: add `rock:start` again.
-- Certificate warning: currently expected. These hosts serve a self-signed certificate
-  (measured 2026-08-11); the fix is written but not yet on the VM. There is no VPN involved
-  in reaching them -- port 443 is open to the internet.
+- Certificate warning: expected only on a **brand-new** host. Established hosts hold a real
+  Let's Encrypt certificate and show a normal padlock; staging was re-confirmed on 2026-08-19
+  (issuer `O=Let's Encrypt`, expires 2026-11-09). A host created since the last renewal serves
+  a self-signed placeholder until the weekly job runs -- Monday 08:00 UTC -- so a site created
+  on a Tuesday waits almost a week. Clicking through is safe for
+  `*.rock-dev.connect.passion.team` only. There is no VPN involved in reaching any of them:
+  port 443 is open to the internet.
 - DNS failure (host does not resolve at all): ask an operator to verify the wildcard record.

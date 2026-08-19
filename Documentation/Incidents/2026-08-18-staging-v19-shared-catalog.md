@@ -1,7 +1,14 @@
 # 2026-08-18 — the v19 staging deploy migrated the shared sandbox catalog
 
-**Status:** staging is down. The shared sandbox catalog is stranded between Rock 18.4.1
-and 19.3.4 and needs a restore. No production system was touched.
+**Status:** **Resolved 2026-08-19.** Staging is serving 19.3.4 from its own catalog
+(`RockStaging`) and the trunk has cut over. No production system was touched at any point.
+
+*At the time:* staging was down, and the shared sandbox catalog was stranded between Rock
+18.4.1 and 19.3.4 and needed a restore.
+
+Everything below the header is the record as written during the incident and is left in the
+present tense on purpose. What happened afterwards is in **Follow-up** and in
+**What the cutover surfaced next**, both at the end.
 
 A separate document because it is an incident with a timeline and a recovery, not an
 open item. The follow-up work it generates lives in
@@ -109,11 +116,15 @@ recovery position here would have been considerably worse. See open item 22.
   `STAGING_DB_NAME` is unset, in the `resolve` job, before anything is built or deployed.
   The way past the guard is to give staging its own catalog, which is the documented
   migration path rather than a bypass.
-- **Devops.** Restore from the 10:04 backup, then redeploy 18.4.1.
-- **Devops.** Enable automated backups and PITR on `connect-restore-test` (open item 22).
-- **Devops.** Provision a dedicated staging catalog and set the `STAGING_DB_NAME`
-  repository variable. Until that exists, staging cannot go to v19 at all — which is now
-  enforced rather than merely documented.
+- **Done 2026-08-18.** Restored, then redeployed. Staging recovered.
+- **Done 2026-08-18.** Automated backups, PITR with 7-day log retention, and unlimited
+  `storageAutoResize` are all enabled on `connect-restore-test` (open item 22, now closed).
+  The autoresize was not in the original list and turned out to be a prerequisite: the copy
+  in the next item would otherwise have risked filling a disk that was already half full.
+- **Done 2026-08-18.** `RockStaging` provisioned on `connect-restore-test` by
+  `gcloud sql export bak` / `import bak` from `RockConnectProd` (~29 min out, ~24 min back),
+  probed read-only with the legacy-column finder before the switch, then `STAGING_DB_NAME`
+  set. Staging has its own catalog; the `pr-*` fleet still shares `RockConnectProd`.
 - **Done (this change).** `pr-test-deploy.yml` no longer reads `vars.STAGING_DB_NAME`; the
   fleet has its own `vars.PR_TEST_DB_NAME`. Both are unset and both fall back to
   `secrets.DB_NAME`, so nothing moves today — but setting staging's variable now moves
@@ -123,12 +134,63 @@ recovery position here would have been considerably worse. See open item 22.
   `Convert-LegacyTextColumns.ps1` (`-Apply`-gated, explicit columns, generated rollback).
   The finder also prints the `__MigrationHistory` high-water mark, which is what names the
   last migration to commit on a stranded catalog.
-- **Open — needs a database.** Run the finder against the restored catalog and fix what it
-  reports. The repository has no route to a connection string (Secret Manager is not
-  enabled on `passioncitychurch-com`), so this is the first step of the v19 attempt rather
-  than something that can be closed from here. It will recur on the real cutover, on every
-  catalog carrying the same drift — including production.
+- **Done 2026-08-18 — and the answer was not what this item assumed.** The finder reported
+  67 legacy `text` columns and **not one of them in a Rock table**. All of them sit in
+  leftover scratch: `RESTORE_Step`, `RESTORE_Step_Attribute`, `RESTORE_Step_Attribute_Values`,
+  `RESTORE_StepType`, and one column in `scheduler_log`. The migration that dies opens a
+  cursor over *every* user table with a column named `IconCssClass`, with no `is_ms_shipped`
+  filter and no allow-list, and exactly two of those scratch columns are typed `text`. So the
+  blocker was 2 columns and 24 rows in tables Rock does not own — not core schema drift.
+  **This changes the production forecast:** production is only exposed if it carries the same
+  scratch tables, which is a question about one prefix rather than a catalog-wide audit.
+  Still worth running the finder against production before its cutover; the `RESTORE_*` tables
+  should be dropped either way.
 - **Open — one line, blocked on PR #10.** `test_powershell_edition_compatibility.py` scans
   `Deployment/PrTestEnvironments` for PowerShell 7-only syntax and now misses
   `Deployment/Database`. Point it at both directories once that PR lands; duplicating its
   table onto this branch would only create a merge conflict for the sake of it.
+
+
+## What the cutover surfaced next (2026-08-19)
+
+Recorded here rather than as its own incident, because it is the same cutover and the same
+class of defect: something that is generated rather than committed, and that nothing in CI
+was producing.
+
+Once staging came up on 19.3.4 against its own catalog, the login page rendered correctly and
+every page behind it did not. That reads like a theme or a permissions problem, and it was
+neither.
+
+`RockWeb/Styles/styles-v2/` is committed on the 18.4.1 line — 178 files — and on 19.3.4 its
+`.gitignore` is `*`, because the content is generated by the `Rock.Frontend.Styles` project
+instead. No workflow in this repo referenced that project, so the v19 artifact shipped without
+it. `RockWeb/Styles/_rock-core.less:243` does `@import (less) "styles-v2/icons/tabler-icon.css"`,
+that file 404'd, Rock's LESS compile failed at startup, and the site went on serving whatever
+`theme.css` was already on disk — the 18.4.1 build, with no Tabler rules in it. Meanwhile
+`202603271810501_ReplaceFontAwesomeWithTablerIcons` had already rewritten every `IconCssClass`
+in the database to Tabler classes, and the webfont deployed fine. So the classes resolved to
+nothing.
+
+Measured, staging against production:
+
+| | staging (19.3.4, broken) | production (18.4.1) |
+|---|---|---|
+| `/Styles/styles-v2/icons/tabler-icon.css` | **404** | 200, 314,234 bytes |
+| `Themes/Rock/Styles/theme.css` | 430,153 bytes | 721,458 bytes |
+| — occurrences of `ti-` in it | **0** | 5,780 |
+| `Themes/RockManager/Styles/theme.css` | 393,455 bytes | 684,913 bytes |
+
+Both themes short by about the same amount is the tell: one shared import failing, not a
+theme-specific fault.
+
+**Fixed in PR #19** — `pr-test-artifact.yml` now builds `Rock.Frontend.Styles`, guarded on its
+lockfile so the step no-ops on the 18.4.1 line the `pr-*` fleet still builds. All three deploy
+paths reach the build through that one reusable workflow, so production's eventual v19 cutover
+is covered by the same change.
+
+**The generalisable lesson, which is the reason this is written down:** a Rock upgrade can move
+a directory from *committed* to *generated*, and nothing in a diff makes that obvious — the
+files simply stop being listed. The `Rock.JavaScript.Obsidian.Blocks` step in the same workflow
+exists for exactly this reason and was added the same way, after the same kind of outage. Before
+the next upgrade, diff `git ls-files` between the two tags and look for directories that lose
+their contents.

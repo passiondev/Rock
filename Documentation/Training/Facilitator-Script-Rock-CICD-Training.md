@@ -343,12 +343,20 @@ If someone does ask directly, answer briefly and move on rather than reaching fo
 things have been fixed, each fix has a test that fails if it regresses, and what's still open
 is written down and shared with DevOps.
 
-Close on slide 20: two asks for the team, three for DevOps. End on the last line — *the
+> **The fourth DevOps ask is new and you should read item 24 before you deliver it.** The test
+> sites sit behind the same world-open firewall rule as production, and since the catalog split
+> staging holds a full copy of prod-derived data. Frame it as a decision rather than a finding —
+> the rule is correct for production, and the test VM inherited it by sharing production's
+> network tag. If the Director asks whether we have been leaking data, the honest answer is that
+> the sites have always required a Rock login and nothing suggests misuse; what is missing is a
+> deliberate decision, not a patch.
+
+Close on slide 20: two asks for the team, four for DevOps. End on the last line — *the
 pipeline's job is to make a change boring.*
 
-**Land the second-approver ask while the Director is still in the room.** It is the only one
-of the five that needs someone else's authority rather than someone else's calendar, and it is
-five minutes of clicking. Say the uncomfortable version out loud — *"the production gate is
+**Land the second-approver ask while the Director is still in the room.** Of the six, it is
+the only one that needs someone else's authority rather than someone else's calendar, and it
+is five minutes of clicking. Say the uncomfortable version out loud — *"the production gate is
 real, admins can't bypass it, and as of this morning I'm the only name on it, which means
 production is one person"* — and ask for the name in the room rather than in a follow-up. Asking for a
 control on yourself is the most credible thing you will say all hour. If you get a yes, you
