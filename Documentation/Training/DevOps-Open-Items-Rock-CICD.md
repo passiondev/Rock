@@ -913,9 +913,44 @@ same change that flips the default, and re-check with
 ### 9. Stale branches — but two of them are not safe to delete
 
 `develop-17.6.1`, `deploy/ptp-14803-18.4.1`, `bump`, `fix/group-sync`, and
-`pilot/pr-test-env-doc-smoke-v1761` are superseded by the trunk. Pruning them removes
-several ways to target the wrong base branch. Confirm `fix/group-sync` is genuinely abandoned
-before deleting.
+`pilot/pr-test-env-doc-smoke-v1761` no longer serve a purpose. Pruning them removes several
+ways to target the wrong base branch. Confirm `fix/group-sync` is genuinely abandoned before
+deleting.
+
+**They are not equally safe, and "superseded by the trunk" — how this item read until
+2026-08-19 — was too loose a word for four of them.** Measured that day against
+`passion-19.3.4`, `passion-18.4.1`, `develop` and `feat/PTP-16122` together, counting files
+whose blob matches nothing at the same path on any of them:
+
+| Branch | Unique files | Of those, under `RockWeb/Plugins/` | Prunable on its own? |
+|---|---|---|---|
+| `deploy/ptp-14803-18.4.1` | 3 | 0 | **Yes** — 0 unique commits; fully contained in `passion-18.4.1` |
+| `fix/group-sync` | 3371 | 0 | Yes, once confirmed abandoned |
+| `bump` | 3376 | 5 | **No** — see the escalation below |
+| `pilot/pr-test-env-doc-smoke-v1761` | 3381 | 7 | **No** — see the escalation below |
+| `develop-17.6.1` | 3384 | 8 | **No** — see the escalation below |
+
+Read the first column with care: it is dominated by Rock core sitting at a 17.6.1-era
+revision, which is an old Rock version rather than anything of ours worth keeping. The column
+that decides anything is the second one, because `RockWeb/Plugins/` is where our code lives.
+That is also the column that ties this item to the escalation immediately below — the plugin
+files stranded by the `staging` deletion are exactly these.
+
+Recount before pruning rather than trusting the table; it is a measurement, not a rule:
+
+```bash
+git fetch origin --prune
+for b in develop-17.6.1 bump fix/group-sync pilot/pr-test-env-doc-smoke-v1761 deploy/ptp-14803-18.4.1; do
+  echo "== $b"
+  git rev-list --count "origin/$b" --not origin/passion-19.3.4 origin/passion-18.4.1 origin/develop
+done
+```
+
+One caveat on `deploy/ptp-14803-18.4.1` even though it is clean: it is the `push` trigger of
+`.github/workflows/ptp-14803-build-artifact.yml`. Deleting the branch leaves that workflow
+reachable only by `workflow_dispatch`, which is in fact how it was last used (run
+`32120334971`, 2026-08-18, dispatched against `fix/forward-port-to-19`). Fine to do, but do it
+knowingly.
 
 > **Escalated 2026-08-19 — this prune list is no longer safe as written.** `staging` was
 > deleted from `origin` on 2026-08-18 (a `DeleteEvent` at 09:17 UTC; the branch survives only

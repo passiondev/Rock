@@ -879,15 +879,40 @@ re-diagnosing them. All verified 2026-08-10.
 4. **`GCP_COMPUTE_PROJECT_ID` is a dead secret** — no workflow references it. Worth removing
    so the secret list reflects reality.
 
-5. **The `production` GitHub Environment and its repo variables do not exist yet.** Without
-   the Environment, the approval gate in `production-deploy.yml` passes through
-   unchallenged. Needs: Environment `production` with required reviewers, plus variables
-   `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`, `PRODUCTION_SITE_NAME`.
+5. **The `production` Environment exists now; its variables still do not.** Re-checked
+   2026-08-19: the Environment is there with a required reviewer, so the approval gate in
+   `production-deploy.yml` is real rather than passing through unchallenged — which is how
+   this item read until now. Two things are still outstanding:
+
+   - **None of `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`, `PRODUCTION_SITE_NAME` is
+     set**, at either environment or repository scope. The workflow supplies a fallback for
+     each (`rock.passion.team`, `C:\inetpub\wwwroot`, `Default Web Site`), so a production
+     deploy does not fail on the missing values — it quietly targets those defaults. Confirm
+     they match the live site before the first real run, because a wrong site path here
+     deploys Rock over the wrong directory without complaining.
+   - **The gate is self-approvable,** and cannot stop being so yet. There is one required
+     reviewer and `prevent_self_review` is `false`, so whoever pushes the deploy can approve
+     it. The flag has to stay `false` while there is only one reviewer, or the single person
+     named could never approve anything. The fix is a second reviewer first, then flip the
+     flag — open item 3 in `Training/DevOps-Open-Items-Rock-CICD.md` tracks it.
+
+   Re-check both with:
+
+   ```bash
+   gh api repos/passiondev/Rock/environments/production \
+     --jq '[.protection_rules[] | select(.type=="required_reviewers")
+            | {reviewers: [.reviewers[].reviewer.login], prevent_self_review}]'
+   gh api repos/passiondev/Rock/environments/production/variables --jq '.variables[].name'
+   ```
 
 6. **Stale branches — do not prune this list yet.** `develop-17.6.1`,
    `deploy/ptp-14803-18.4.1`, `bump`, `fix/group-sync`, and `pilot/pr-test-env-doc-smoke-v1761`
-   are all superseded by the current trunk, and pruning them would remove several ways to
-   target the wrong base branch. **But the branch that made that safe is gone.** The `staging`
+   no longer serve a purpose, and pruning them would remove several ways to target the wrong
+   base branch. They are not equally safe to delete, though — only `deploy/ptp-14803-18.4.1`
+   and `fix/group-sync` carry no unique plugin files. Open item 9 in
+   `Training/DevOps-Open-Items-Rock-CICD.md` has the per-branch measurement and the command to
+   recount it; do not prune from this list alone. **And the branch that made pruning safe is
+   gone.** The `staging`
    branch was deleted from `origin` on 2026-08-18, and it held the only copy of five plugin
    files — three RSVP (`RsvpDetailBETA.ascx`, `RsvpResponse.ascx.cs`, `RsvpResponseBETA.ascx.cs`)
    and two SECC authentication (`Arena.cs`, `org.secc.Authentication.csproj`). Those five are
@@ -896,9 +921,12 @@ re-diagnosing them. All verified 2026-08-10.
    Land those files somewhere durable first; then prune. `develop` is separate and must not be
    pruned regardless — it carries the other 78 plugin files.
 
-7. **The pilot doc is stale.** `Documentation/Discussion Docs/PR-Test-Environments-Issues/12-pilot-rollout.md`
-   still says deployment fails at an SSH step. That was fixed by the Cloud Storage command
-   queue.
+7. ~~**The pilot doc is stale.**~~ **Fixed 2026-08-19.**
+   `Documentation/Discussion Docs/PR-Test-Environments-Issues/12-pilot-rollout.md` said
+   deployment failed at an SSH step, which the Cloud Storage command queue had already
+   replaced. It now records the queue as the live mechanism, keeps the SSH attempt as clearly
+   labelled history, and has had its acceptance criteria re-marked against observed evidence —
+   several of which came back unmet, so read the boxes rather than assuming the pilot passed.
 
 8. **Nothing reaps abandoned environments.** Closing a PR stops its environment but never
    destroys it, and an environment on a long-lived open PR runs forever. The only scheduled

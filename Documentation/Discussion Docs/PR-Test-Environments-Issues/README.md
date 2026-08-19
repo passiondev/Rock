@@ -4,6 +4,24 @@ Parent PRD: `Documentation/Discussion Docs/PR-Test-Environments-PRD.md`
 
 These are tracer-bullet implementation slices written as markdown issue drafts instead of GitHub issues.
 
+**All twelve shipped.** These are kept as the design record of how the pipeline was
+built and why, not as work outstanding. They are frozen at the time they were written
+and are deliberately not bumped as the system changes -- so do not read a value here as
+current. For how the pipeline behaves today, read, in order of authority:
+
+- the workflows in `.github/workflows/` and `.github/pr-test-environments.json`, which
+  are the only definitive source;
+- `Documentation/PR-Test-Environments-Operator-Runbook.md` and
+  `Documentation/PR-Test-Environments-Developer-Runbook.md`;
+- `Documentation/Training/DevOps-Open-Items-Rock-CICD.md` for what is still open, and
+  `Documentation/Incidents/` for what has gone wrong.
+
+Two of the slices below have since been overtaken by measurement, which is worth
+knowing before you take either at face value. Slice 9 coordinates PR app pools with a
+nightly sandbox refresh that **does not exist** -- the sandbox was seeded once and has
+had no data load since (open item 7). Slice 12's acceptance criteria were re-marked
+against observed evidence on 2026-08-19 and several came back unmet.
+
 ## Proposed Order
 
 1. [Bootstrap server prerequisites and network access](./01-bootstrap-server-prerequisites.md) — HITL

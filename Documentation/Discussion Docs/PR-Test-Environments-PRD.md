@@ -1,5 +1,14 @@
 # PRD: Pull Request Test Environments for Rock RMS
 
+**Status: built and in service.** This is the design record — what was proposed and why — and
+it is deliberately frozen rather than bumped as the system changes, so do not read any value
+here as current. For how the pipeline behaves today, read the workflows in `.github/` (the
+only definitive source), then `PR-Test-Environments-Operator-Runbook.md` and
+`PR-Test-Environments-Developer-Runbook.md`; `Training/DevOps-Open-Items-Rock-CICD.md` has
+what is still open. The implementation slices are under
+`PR-Test-Environments-Issues/`, whose README notes which of them measurement has since
+overtaken.
+
 ## Problem Statement
 
 The development team uses MacBooks, but Rock RMS is a .NET Framework WebForms application that requires Windows-centric build and runtime tooling. Local macOS development is blocked by slow or unreliable VM-based builds. Developers need a low-cost, repeatable way to build and functionally test code changes before merging to shared branches without keeping many expensive per-developer Windows machines running.
