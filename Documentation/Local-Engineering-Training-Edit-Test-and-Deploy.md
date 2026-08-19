@@ -923,15 +923,29 @@ re-diagnosing them. All verified 2026-08-10.
    base branch. They are not equally safe to delete, though — only `deploy/ptp-14803-18.4.1`
    and `fix/group-sync` carry no unique plugin files. Open item 9 in
    `Training/DevOps-Open-Items-Rock-CICD.md` has the per-branch measurement and the command to
-   recount it; do not prune from this list alone. **And the branch that made pruning safe is
-   gone.** The `staging`
-   branch was deleted from `origin` on 2026-08-18, and it held the only copy of five plugin
-   files — three RSVP (`RsvpDetailBETA.ascx`, `RsvpResponse.ascx.cs`, `RsvpResponseBETA.ascx.cs`)
-   and two SECC authentication (`Arena.cs`, `org.secc.Authentication.csproj`). Those five are
-   still reachable, but only from `feat/PTP-16122` plus three of the branches listed above, so
-   the current prune list would take the safety margin down to a single feature branch.
-   Land those files somewhere durable first; then prune. `develop` is separate and must not be
-   pruned regardless — it carries the other 78 plugin files.
+   recount it; do not prune from this list alone.
+
+   **The safety margin this paragraph used to describe is already spent — re-measured
+   2026-08-19.** `staging` was deleted from `origin` on 2026-08-18, and it held five plugin
+   files: three RSVP (`RsvpDetailBETA.ascx`, `RsvpResponse.ascx.cs`, `RsvpResponseBETA.ascx.cs`)
+   and two SECC authentication (`Arena.cs`, `org.secc.Authentication.csproj`). This step used to
+   say they stayed reachable from `feat/PTP-16122` plus three branches below. **`feat/PTP-16122`
+   no longer exists on `origin` either.**
+
+   And `develop` is not the fallback it looks like. Comparing blobs rather than commit dates,
+   the five files sit at two or three versions each, and **`develop` holds the oldest of every
+   one** — 2026-01-09 across the board. The newest `RsvpResponse.ascx.cs` and
+   `RsvpResponseBETA.ascx.cs` (2026-04-21) exist only on `develop-17.6.1` and
+   `pilot/pr-test-env-doc-smoke-v1761`; `bump` holds a third, distinct 2026-02-24 version of
+   both; and the newest `Arena.cs` and `org.secc.Authentication.csproj` (2026-01-28) are on
+   those three branches and nowhere else. Every one of those holders is on the prune list above.
+
+   So pruning this list as written does not narrow the margin — it discards the newest copy of
+   all five files and leaves January 9 copies on `develop` that will look perfectly plausible to
+   whoever finds them next. **Tag the three holders before deleting anything** (item 9 has the
+   `git tag archive/...` commands; a tag is a ref, it costs nothing, and it survives the branch
+   deletion that is the whole risk). Then land the files somewhere durable, then prune.
+   `develop` must not be pruned regardless — it carries the other 78 plugin files.
 
 7. ~~**The pilot doc is stale.**~~ **Fixed 2026-08-19.**
    `Documentation/Discussion Docs/PR-Test-Environments-Issues/12-pilot-rollout.md` said

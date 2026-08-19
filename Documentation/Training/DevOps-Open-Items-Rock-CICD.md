@@ -1166,6 +1166,22 @@ deleting.
 `passion-19.3.4`, `passion-18.4.1`, `develop` and `feat/PTP-16122` together, counting files
 whose blob matches nothing at the same path on any of them:
 
+**On `feat/PTP-16122` in that baseline — checked 2026-08-19.** It is a **local branch only**; it
+is not on `origin` and never was pushed, so it resolves in one clone and nowhere else. Two
+consequences, and they pull in opposite directions:
+
+- *It does not weaken the table.* Of the 276 files it carries under `RockWeb/Plugins/`, **zero**
+  hold a blob that is absent from `origin`. It contributed nothing to the second column, which
+  is why the recount command below — which omits it — is still comparable to the table rather
+  than a different measurement. Drop it from the baseline mentally and the plugin numbers stand.
+- *It is itself a single-clone dependency.* It has one commit on no `origin` branch at all:
+  `283c41f1` (2026-04-01), "build on all branches and add local dev setup script". Nothing in
+  this item needs it, but it exists in exactly one place, and a clone is not a backup. Push it or
+  tag it, or decide out loud that the local dev setup script is not worth keeping.
+
+This is also why the escalation below says the branch no longer exists on `origin` while the
+baseline above names it — both are true, and the distinction is the whole point.
+
 | Branch | Unique files | Of those, under `RockWeb/Plugins/` | Prunable on its own? |
 |---|---|---|---|
 | `deploy/ptp-14803-18.4.1` | 3 | 0 | **Yes** — 0 unique commits; fully contained in `passion-18.4.1` |
