@@ -392,6 +392,12 @@ $(document).ready(function () {
             {
                 valGuests.Text = "Please specify your other dietary restriction.";
                 valGuests.Visible = true;
+
+                // valGuests sits above a tall pnlForm inside the UpdatePanel, so an async postback
+                // leaves the viewport where it was and the message goes unread -- the success path
+                // below scrolls for exactly this reason. The birth date and address checks above
+                // share the problem; left alone to keep this change inside PTP-18203's scope.
+                ScriptManager.RegisterStartupScript(this.Page, this.Page.GetType(), "ScrollToTop", "setTimeout(function() { window.scrollTo(0, 0); }, 100);", true);
                 return;
             }
 

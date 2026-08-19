@@ -55,20 +55,19 @@
                     <div class="row">
                         <!-- ADD Gender element which will be conditional based on the group attribute (should be checked in cs file) -->
                         <div class="col-xs-12 col-sm-5 col-md-5">
-                            <%-- PTP-18203: this was a Rock:DataDropDownList carrying no SourceTypeName or
-                                 PropertyName. DataDropDownList.IsValid runs its DataAnnotationValidator
-                                 unconditionally, and that throws "Null SourceTypeName can't be validated" when the
-                                 pair is absent. RockControlHelper.RenderControl reads IsValid on every labeled
-                                 control, so the page returned a 500 whenever this control rendered while visible --
-                                 that is, any time lbAccept_Single_Click fails a check and returns instead of
-                                 advancing: blank "Other" dietary text, an incomplete address, a bad birth date.
-                                 RockDropDownList is what this static three-item list always wanted; it has no data
-                                 validator. Adding SourceTypeName="Rock.Model.Person, Rock" PropertyName="Gender"
-                                 would also stop the throw, but Person.Gender is [Required], so it would begin
-                                 enforcing gender on every render -- a behavior change rather than a fix.
-                                 RepeatDirection is dropped: a DropDownList has no such property, so it only ever
-                                 rendered as a stray HTML attribute, left over from when this was a RadioButtonList
-                                 (hence the "rbl" prefix, kept so the code-behind is untouched). --%>
+                            <%-- PTP-18203: this was a Rock:DataDropDownList declaring no SourceTypeName or
+                                 PropertyName. DataDropDownList.IsValid calls its DataAnnotationValidator
+                                 unconditionally, which throws "Null SourceTypeName can't be validated" when that
+                                 pair is absent, and RockControlHelper.RenderControl reads IsValid on any postback.
+                                 So the page returned a 500 whenever this rendered on a postback that failed a check
+                                 and returned instead of advancing -- only for groups with Info_Gender enabled, since
+                                 that is what makes this control visible. A static three-item list has no model
+                                 property to validate, so RockDropDownList is the right control: it keeps the
+                                 RequiredFieldValidator that rblGender.Required relies on and carries no data
+                                 validator to throw. Supplying the missing pair would also silence it, but it binds
+                                 this list to Person.Gender and stacks a second validator on the required check
+                                 already in play. (The "rbl" prefix predates this and is kept so the code-behind is
+                                 untouched.) --%>
                             <Rock:RockDropDownList ID="rblGender" runat="server" Required="false" Label="Gender" Visible="false" >
                                     <asp:ListItem Value="" />
                                     <asp:ListItem Text="Male" Value="1" />
