@@ -61,6 +61,24 @@ class BaseBranchConfigTests(unittest.TestCase):
             self.assertIn(EXPECTED_BASE_BRANCH, text)
 
     def test_runbooks_and_pilot_document_base_branch_config(self):
+        """These three docs name the current trunk *and* point at the config file, and
+        both halves are deliberate.
+
+        Naming the branch in prose looks like the un-evergreen thing to do, and the
+        instinct is to strip it out. Don't: this assertion is what keeps the name from
+        going stale, because a cutover that forgets these docs fails the suite. Remove
+        the literal and the docs become quietly wrong instead of loudly wrong -- which
+        is strictly worse for a runbook someone reads under pressure. The config-path
+        assertion is the other half: the reader is told where the authority actually
+        lives, so a doc that has somehow drifted still routes them to the right place.
+
+        One caveat learned the hard way, and the reason PILOT_ISSUE now carries a
+        frozen-history banner: a cutover must satisfy this by updating the doc's
+        statement of the *current* pin, never by find-and-replacing the branch name
+        through the whole file. The pilot doc records a PR that was based on
+        develop-17.6.1, and successive bulk replacements had rewritten that history
+        into whatever the trunk happened to be.
+        """
         for path in [DEV_RUNBOOK, OP_RUNBOOK, PILOT_ISSUE]:
             text = path.read_text()
             self.assertIn(EXPECTED_BASE_BRANCH, text)

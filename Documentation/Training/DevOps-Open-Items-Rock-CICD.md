@@ -80,9 +80,11 @@ first real run** rather than trusting the defaults.
 
 ### 3. The trunk branch has no protection at all
 
-The trunk is the default branch and **merging into it auto-deploys staging**. It currently has
-`protected: false` and the repo has **0 rulesets**. Anyone with write access can push directly
-to it — no PR, no review, no build check.
+The trunk is the default branch and **merging into it auto-deploys staging**. It has
+`protected: false` and the repo has **0 rulesets** (re-verified 2026-08-19, against the trunk
+the cutover created). Anyone with write access can push directly to it — no PR, no review, no
+build check. When this does get fixed, see the third note in item 23: protection is bound to a
+branch name and will need re-pointing at every upgrade.
 
 (It is *not* always what production runs: during a Rock upgrade the trunk leads and production
 deliberately lags. That widens the window this item is about rather than narrowing it — an
@@ -276,12 +278,27 @@ PR closed more than a week ago.
 
 ### 7. Staging and every PR environment share one database catalog
 
+> **Half fixed on 2026-08-18: staging is out.** `STAGING_DB_NAME` is now set to `RockStaging`,
+> a full copy taken by Cloud SQL export/import from `RockConnectProd` and probed read-only
+> before the variable was flipped. Staging no longer shares a catalog with anything, so the
+> specific failure this item was opened for — *a staging deploy migrating the schema out from
+> under a running `pr-*` site* — cannot happen any more. The `staging-deploy.yml` resolve job
+> prints `STAGING_DB_NAME: RockStaging` and the line "staging has its own catalog", which is
+> how you confirm it from a run log.
+>
+> **The fleet is still shared, and that half is still open.** `PR_TEST_DB_NAME` is
+> deliberately unset, so every `pr-*` site continues to fall back to `secrets.DB_NAME`
+> (`RockConnectProd`) and they still share one catalog *with each other*. Two `pr-*` sites on
+> different Rock minors will still break each other exactly as described below. Everything
+> from here down is the original finding, kept because the mechanism is unchanged for the
+> fleet and because the 2026-08-11 incident is the proof that it is not hypothetical.
+
 `env-deploy-command.yml:121` and `pr-test-deploy.yml:193` build their connection strings from
 the same four secrets — `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — and
-neither deploy script derives a per-environment catalog. So `staging` and `pr-4` and every
-future `pr-*` all point at one catalog on the shared test Cloud SQL instance. Each side now
-accepts its own override — `STAGING_DB_NAME` for staging, `PR_TEST_DB_NAME` for the fleet — but
-neither is set, so both still resolve to that one catalog.
+neither deploy script derives a per-environment catalog. So every `pr-*` environment, and
+staging too until the split above, points at one catalog on the shared test Cloud SQL
+instance. Each side accepts its own override — `STAGING_DB_NAME` for staging,
+`PR_TEST_DB_NAME` for the fleet — and only the staging one has been set.
 
 That is one shared mutable dependency behind every isolated-looking test site. Rock runs EF
 and plugin migrations at `Application_Start`, writes global attributes such as
@@ -290,8 +307,10 @@ different versions against one catalog is a genuine way to break both at once, a
 instance that fails during `Application_Start` serves the same generic ASP.NET error page on
 every path — including static files — which is a confusing thing to debug.
 
-**This stopped being hypothetical on 2026-08-11.** `pr-3` now serves an ASP.NET **"Runtime
-Error"** page — HTTP 500 — on every request, and keeps doing so across app pool recycles
+**This stopped being hypothetical on 2026-08-11.** (The environments named below were torn
+down when the fleet was pruned on 2026-08-19 — they are the evidence, not somewhere to go and
+look.) `pr-3` served an ASP.NET **"Runtime
+Error"** page — HTTP 500 — on every request, and kept doing so across app pool recycles
 (measured 500 in 29.3s, then 500 in 71.1s after a recycle). `pr-4` and `staging` on newer
 commits answer 302 from the same box at the same moment, so IIS, the binding and the
 certificate are all fine; what differs is which build's expectations the one shared schema
@@ -456,8 +475,10 @@ export/import instead.
 
 ##### What this changes
 
-- **The provisioning blocker is cleared.** Create `RockStaging` on `connect-restore-test`; no new
-  instance required.
+- **The provisioning blocker is cleared — and the catalog now exists.** `RockStaging` was
+  created on `connect-restore-test` on 2026-08-18 by export/import from `RockConnectProd`; no
+  new instance was required. `gcloud sql databases list --instance=connect-restore-test` shows
+  both catalogs.
 - **"Exclude it from the refresh" is a no-op today.** There is nothing to exclude. Keep the note
   for whoever eventually builds the refresh.
 - **A Rock upgrade on the shared catalog would *not* be reverted overnight.** Earlier revisions of
@@ -471,10 +492,13 @@ export/import instead.
   every PR's data and migrations with no reset.
 - **The refresh coordinator has never run.** Its acceptance criteria in issue 09 are checked
   because the script implements them, not because the process exercises it.
-- One open sizing question for DevOps: `connect-restore-test` is `db-custom-2-8192` with a **418 GB
-  disk and `storageAutoResize` disabled**. A ~127 GB striped backup implies a restored database
-  well over 150 GB, so a second full copy beside it is marginal. Check used bytes before cloning;
-  seeding `RockStaging` may need a disk bump first.
+- **The sizing question is answered.** It was real: `connect-restore-test` is `db-custom-2-8192`
+  with a 418 GB disk, and at the time `storageAutoResize` was **disabled**, so a second full copy
+  beside the first was marginal. Autoresize was turned on with no limit before the copy was
+  taken (2026-08-18), and the copy then completed. Both catalogs are ~108 GiB, so the instance
+  now sits over half full. Autoresize covers growth, but **check used bytes before any further
+  in-place copy** — the operation that fills that disk is the one that copies a catalog beside
+  itself.
 
 ### 8. `build-develop.yml` still deploys by rebooting a VM
 
@@ -727,19 +751,93 @@ deploy after the catalog work is the real test; it is expected to be uneventful.
 
 ---
 
-### 22. `connect-restore-test` has no automated backups — and prod does
+### 24. The test fleet is on the open internet, carrying a copy of prod data
 
-Checked on 2026-08-18, because it is worth stating which half of this is fine:
+**Found 2026-08-19, while re-checking the pilot doc's acceptance criteria.** Issue 12 has
+always carried the line *"the PR URL is reachable over VPN and not reachable from an
+unapproved network."* It is unchecked because it has never been true, and nothing in the
+pipeline was ever built to make it true.
 
-| | `connect-prod` | `connect-restore-test` |
+What is actually in place:
+
+| | Value |
+|---|---|
+| Firewall rule | `https-from-world` — INGRESS, `0.0.0.0/0`, `tcp:443` |
+| Applies to tag | `prod-passion-compute` |
+| `connect-srv-test` tags | `prod-passion-compute` |
+| `connect-srv-prod` tags | `prod-passion-compute` — *the same tag* |
+
+So staging and every `pr-*` site sit behind exactly the same world-open rule as production,
+and the test VM is not distinguished from the production VM in any network policy.
+
+**The firewall rule is the evidence, not a reachability test.** Staging answers
+`https://staging.rock-dev.connect.passion.team/` with HTTP 302 in 0.371s on a valid
+certificate (`ssl_verify_result=0`, from `34.24.168.219` = `connect-srv-test-ip`) — but that
+measurement was taken from `159.63.145.194`, which is the office address, so on its own it
+proves only that the *office* can reach it. What makes it a world-open finding is
+`https-from-world` itself: source range `0.0.0.0/0`, no VPN gateway in front, and the office
+allowlist covering only RDP (3389) and SQL (1433). Nothing in the path narrows 443.
+
+Worth being clear about what is *not* wrong here: the rule is correct for
+`connect-srv-prod`, which has to serve the public church site. The finding is that the test
+VM shares its tag and therefore inherits a policy written for a public web server.
+
+**Why this is a P1 and not hygiene.** Since 2026-08-18 the staging catalog `RockStaging` is a
+full export/import copy of `RockConnectProd`. Staging is therefore a publicly-addressable Rock
+instance holding real congregant data — names, addresses, giving history — protected by
+nothing but Rock's own login. The `pr-*` fleet is the same data through `RockConnectProd`
+directly. This was less alarming when the sandbox was thought of as scratch; it is not
+scratch, and the catalog split is what made the exposure worth writing down, not what caused
+it.
+
+It also quietly contradicts the pipeline's own story elsewhere: item 5's health check was
+reworked specifically because *the VM cannot reach its own public address*, which reads as
+though something is closed. Nothing is. That was a route problem on the VM, not a policy.
+
+**What to decide.** Three options, cheapest first, and this is DevOps's call rather than a
+change to make unilaterally:
+
+1. **Split the tag.** Give `connect-srv-test` its own tag and a rule that allows `tcp:443`
+   only from the office/VPN ranges plus the ACME challenge source. One rule, one tag change,
+   no application involvement. Note `pr-test-acme-http` already opens `tcp:80` from
+   `0.0.0.0/0` for the Let's Encrypt HTTP-01 challenge — that one has to stay open, or
+   certificate renewal breaks, so scope any restriction to 443 and leave 80 alone.
+2. **Accept it deliberately and write down why**, with the compensating control named (Rock
+   login, no anonymous surface). If this is the answer, say so in the pilot doc too, and close
+   the acceptance criterion as *won't do* rather than leaving it looking unfinished.
+3. **Stop putting prod-derived data on the test instance.** Much more work, and it fights the
+   whole point of a prod-shaped sandbox.
+
+Do not simply drop the criterion from issue 12. It has been sitting unchecked for months and
+was read as an incomplete pilot step rather than an open exposure; deleting it is how that
+happens again.
+
+---
+
+### 22. `connect-restore-test` had no automated backups — fixed 2026-08-18
+
+> **Done.** Automated backups, point-in-time recovery with 7-day log retention, and unlimited
+> `storageAutoResize` are all enabled on `connect-restore-test` as of 2026-08-18. Re-verified
+> 2026-08-19 — the instance reports `True / True / 7 / True` for those four settings. Kept here
+> because the finding explains why the settings were changed, and because the asymmetry is an
+> easy one to reintroduce when someone next builds a sandbox instance.
+
+As found on 2026-08-18, and it is worth stating which half was already fine:
+
+| | `connect-prod` | `connect-restore-test` (as found) |
 |---|---|---|
 | Automated backups | **on** — nightly 01:00 UTC, most recent `1787014800000` succeeded 2026-08-18 | **off** |
 | Point-in-time recovery | **on**, 7-day transaction log retention | **off** |
 | Retained backups | 7 | — |
 | `storageAutoResize` | off, 418 GB disk | off, 418 GB disk |
 
-**Production is protected.** An earlier reading of this suggested otherwise; it was wrong, and
-the table above is the verified state.
+**Production was never the exposed side.** An earlier reading of this suggested otherwise; it
+was wrong, and the table above is the verified state as found.
+
+The autoresize half mattered as much as the backups. The instance holds a 418 GB disk and a
+~108 GiB catalog, so any operation that copies a catalog in place — which is exactly what
+seeding `RockStaging` did the same day — can fill the disk. Both were changed before that copy
+was attempted, not after.
 
 The gap is `connect-restore-test`, and it is not a spare box. It holds the shared sandbox
 catalog that staging and every `pr-*` site run against — item 7 is the same instance seen from
@@ -800,6 +898,15 @@ carried over.** For this cutover that was the teardown fixes and the app-pool AC
 `workflow_dispatch` and `schedule` both run the workflow file from the **default** branch, so a
 fix that only exists on the incoming branch fixes nothing until the cutover — but that is
 exactly what makes them easy to leave behind. Diff the two trunks before flipping the default.
+
+**A third one, once item 3 is actually done: branch protection does not follow the cutover.**
+Rules and rulesets are bound to a branch *name*, so the moment the default moves, the new trunk
+is unprotected and the rules that still exist are guarding a branch nobody targets any more.
+Today that costs nothing because there is no protection to lose (item 3, verified still
+`protected: false` on 2026-08-19) — which is precisely why it is worth writing down now, before
+the first cutover that happens *after* somebody sets the rules up. Re-point the ruleset in the
+same change that flips the default, and re-check with
+`gh api repos/passiondev/Rock/branches/$(gh api repos/passiondev/Rock --jq .default_branch)/protection`.
 
 ## P2 — hygiene
 
@@ -865,10 +972,23 @@ shim is removed. Also inconsistent across the repo:
 
 Pin one version per action across all workflows and bump the Node-20 ones.
 
-### 12. The pilot doc is stale
+### 12. The pilot doc was stale — rewritten 2026-08-19
 
-`Documentation/Discussion Docs/PR-Test-Environments-Issues/12-pilot-rollout.md` still says
-deployment fails at an SSH step. That was replaced by the Cloud Storage command queue.
+> **Done.** `Documentation/Discussion Docs/PR-Test-Environments-Issues/12-pilot-rollout.md`
+> said deployment failed at an SSH step, which the Cloud Storage command queue replaced long
+> ago. It now separates the current pin from a frozen historical record of the pilot, and its
+> acceptance criteria are re-marked against what has actually been observed rather than what
+> the code is believed to do.
+
+Two things worth carrying forward from the rewrite:
+
+- **A mechanical branch bump had falsified a historical fact.** The doc recorded PR #3's base
+  branch as the *then-current* trunk, because each cutover found-and-replaced the branch name
+  through the whole file. PR #3 was actually based on `develop-17.6.1` (confirmed against the
+  API). The frozen-history banner now in that document exists to stop the next cutover doing
+  it again — see also item 23.
+- **Re-marking the criteria surfaced item 24.** The "not reachable from an unapproved network"
+  box had been unread for months as an unfinished pilot step. It is an open exposure.
 
 ### 13. The test VM sends nothing to Cloud Logging
 
@@ -1113,7 +1233,7 @@ example: a build cannot verify what it never attempted, and nothing in the job e
 | Nothing captured the application's own error when a site deployed but would not start | The health-check failure path uploads a diagnostic report to the private bucket and prints only its object name — an application log can carry someone's email address |
 | **`RockWeb` is a Web Site project, not a `.csproj`,** so the per-project build never built it and never resolved its 84 `*.dll.refresh` pointers. The 20 packages that reach `bin` *only* that way were absent from every artifact ever produced. `Application_Start` loads `Google.Protobuf` through the Google/Firebase stack, so **staging and every PR environment returned 500 on every request** — while the build reported green, because nothing looked | A step resolves each `.refresh` pointer out of `packages\` into `RockWeb\bin`, filling gaps only so a project-built DLL still wins. `Google.Protobuf.dll` joined the artifact gate as the canary, and the run summary reports resolved and unresolved counts |
 | The resolver above then found `packages\` **empty**, because nothing restored it. Rock's `.csproj` projects use `PackageReference`, whose packages land in the global `~/.nuget/packages` cache; the 84 `.refresh` pointers are written in the older packages.config convention, `..\packages\<Id>.<Version>\lib\<tfm>\`. `nuget restore Rock.sln` walks projects, and a Web Site project has none to walk, so `RockWeb\packages.config` was never restored. All 20 pointers still failed — the run reported `RESOLVED_REFRESH_COUNT: 0` and `UNRESOLVED_REFRESH_COUNT: 20` and the artifact gate caught it | `nuget restore RockWeb\packages.config -PackagesDirectory packages` runs alongside the solution restore, which is what Visual Studio does for a Web Site project. All 20 packages are declared there at exactly the versions the pointers name |
-| `build-develop.yml` was a second, worse production deploy path: it set a `windows-startup-script-ps1` on the production VM, then stopped and started the VM to run it. The script copied the package over `C:\inetpub\wwwroot\` — not the site path this pipeline uses — and mixed cmd.exe syntax (`%errorlevel%`, `2>nul`, `if (…) (…) else (…)`) into PowerShell. It was gated on `branches: [staging]`, dormant since 2026-02-24, and one push away from firing | Deleted from `passion-18.4.1`; `production-deploy.yml` supersedes it. The separate build-only copy on `develop` was left alone |
+| `build-develop.yml` was a second, worse production deploy path: it set a `windows-startup-script-ps1` on the production VM, then stopped and started the VM to run it. The script copied the package over `C:\inetpub\wwwroot\` — not the site path this pipeline uses — and mixed cmd.exe syntax (`%errorlevel%`, `2>nul`, `if (…) (…) else (…)`) into PowerShell. It was gated on `branches: [staging]`, dormant since 2026-02-24, and one push away from firing | Deleted from the trunk (on `passion-18.4.1`, the trunk at the time); `production-deploy.yml` supersedes it. The separate build-only copy on `develop` was left alone |
 | The `DedicatedSite` deploy path deleted the site directory wholesale and never consulted `$PreservedFiles` — only the `InPlace` path did. A deploy that supplied no connection string therefore destroyed `web.ConnectionStrings.config`, and since `web.config` binds it through a `configSource`, the site 500'd on every request including its own error page | Preserved files are stashed and restored across the replace, and `Write-RuntimeConfiguration` now throws when no connection string was supplied *and* none exists, instead of reporting that it is "leaving the existing" file in place |
 | A syntax error in a deployment script surfaced as a scheduled task dying quietly on the VM | The bootstrap workflow parses every `Deployment/PrTestEnvironments/*.ps1` before uploading any of them |
 | The one failure in the other direction: the staging deploy reported "did not become healthy within 300 seconds" three times over while the site was serving Rock normally minutes later. ASP.NET caches an `Application_Start` failure for the lifetime of the app domain, so once one probe lands on a faulted domain, every later probe re-reads that same cached exception — retrying alone can never recover. 300 seconds also fits only about four probes at `-TimeoutSec 60` plus a 10-second sleep, which is not enough to distinguish "still running migrations" from "broken" | The window is 900 seconds (still under the queue agent's 1800s command timeout and the deploy job's 60 minutes), the probe recycles the app pool after 4 minutes of failures so a poisoned domain costs one interval instead of the whole window, each attempt logs its own error, and `SecurityProtocol` is pinned to TLS 1.2 so a protocol mismatch cannot masquerade as a dead site |
@@ -1134,19 +1254,26 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    DevOps engineer as a second reviewer and then flipping `prevent_self_review` to `true`
    (~5 min, and only then is production two-person)
 2. Item 3 — protect the trunk (~10 min, makes the training true)
-3. Item 15 — the source branch is settled (the trunk). What's left: add the ref guard so
-   `develop` can never be deployed, re-confirm production's assembly inventory, and plan the
-   18.3.1 → 18.4.1 migration with a verified backup. This gates the first real production deploy
-4. Item 7 — decide the staging database question (a decision, then a restore)
-5. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window).
+3. Item 15 — the source branch is settled (production is pinned, and during an upgrade it
+   deliberately lags the trunk). What's left: add the ref guard so `develop` can never be
+   deployed, re-confirm production's assembly inventory, and plan production's next version
+   move with a verified backup. This gates the first real production deploy
+4. Item 7 — **the staging half is done** (`RockStaging`, split 2026-08-18). What's left is the
+   `pr-*` fleet, which still shares one catalog with itself: decide whether to give the fleet
+   `PR_TEST_DB_NAME` too, or to accept the risk while only one PR site runs at a time
+5. Item 24 — decide the test fleet's network exposure. It is a decision plus, if the answer
+   is option 1, a single firewall rule and a tag; the reason it sits this high is that the
+   data behind it became prod-derived on 2026-08-18 and the decision has never actually been
+   made by anyone
+6. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window).
    Do item 21's `automaticRestart` flip on `connect-srv-prod` in the same window: it needs the
    same stop/start, takes about a minute, and until it is done an unplanned host failure leaves
    production off until a human notices and starts it
-6. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
+7. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
    and both hosts were re-measured on real certificates *after* a subsequent deploy and a VM
    restart. Nothing left but to let the weekly schedule run. Read item 4 anyway before touching
    either deploy script — the bug existed in two places and only one of them was obvious
-7. Item 14 — decide whether test sites should render plugin pages (a config line, then a
+8. Item 14 — decide whether test sites should render plugin pages (a config line, then a
    decision about version control that is bigger than this pipeline), and reconcile it with
    item 15 — they are the same reconciliation seen from two ends
 8. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it

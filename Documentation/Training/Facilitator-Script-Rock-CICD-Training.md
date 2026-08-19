@@ -5,7 +5,13 @@
 **Slot:** 60 minutes · **Deck:** `Documentation/Training/rock-cicd-training-deck.html`
 **Handout:** `Documentation/Local-Engineering-Training-Edit-Test-and-Deploy.md`
 **One-pager:** `Documentation/Training/rock-cicd-cheat-sheet.html` (print 8 copies)
-**Last verified:** 2026-08-10
+**Last verified:** 2026-08-19
+
+> **Start with "Prepare the demo PR" below, two days out.** The demo environment is built for
+> each delivery and torn down afterwards — merging or closing the PR destroys it, and the fleet
+> gets pruned between sessions. There is no standing demo site to check the morning of, so
+> everything downstream in this script assumes you created one. Wherever it says `pr-<N>`,
+> substitute the number your PR was given.
 
 ---
 
@@ -119,31 +125,46 @@ wants to discuss trunk-based vs. GitFlow, park it: *"Worth a conversation, not t
 
 ### 0:12 — The fork (slides 6–7, 6 min)
 
-Slide 6's diagram is the answer to "where does our code come from." Numbers to say out loud —
-these are measured against Spark's **`18.4.1` tag**, and they split cleanly:
+Slide 6's diagram is the answer to "where does our code come from." The numbers to say out loud
+are a comparison against **Spark's own tag for the Rock version our trunk runs** — so recount
+them before you present rather than reading them off this page:
 
-> "Our trunk differs from Rock's own 18.4.1 in 68 files. Sixty-one of those are files that
+```bash
+git fetch upstream --tags
+TAG=$(…the version in Directory.Build.props…)            # e.g. the tag matching the trunk name
+git diff --diff-filter=A --name-only "$TAG"..origin/HEAD | wc -l   # added
+git diff --diff-filter=M --name-only "$TAG"..origin/HEAD | wc -l   # edited
+git diff --diff-filter=D --name-only "$TAG"..origin/HEAD | wc -l   # deleted
+```
+
+Measured 2026-08-19 against the `19.3.4` tag, the split was **77 added, 8 edited, 0 deleted**:
+
+> "Our trunk differs from Rock's own release in 85 files. Seventy-seven of those are files that
 > don't exist in Rock at all — the workflows, the deploy scripts, the runbooks, the tests. This
-> pipeline. Only **seven** files that Rock ships have been edited by us, and five of those are
+> pipeline. Only **eight** files that Rock ships have been edited by us, and five of those are
 > one feature: the header image upload in Form Builder. Nothing has been deleted."
 
-The point of saying it that way: we have barely touched Rock, and almost everything we've added
-is plumbing. It also pre-answers the upgrade fear — a fork that mostly *adds* files is a fork
-that merges cleanly.
+The point of saying it that way, and the part that stays true whatever the recount returns: we
+have barely touched Rock, and almost everything we've added is plumbing. It also pre-answers the
+upgrade fear — a fork that mostly *adds* files is a fork that merges cleanly.
 
 If someone asks which five: `FormBuilderDetail.cs`, `FormGeneralViewModel.cs`,
-`generalSettings.partial.obs`, `types.partial.ts`, `entryFormPersonEntry.partial.obs`. The
-other two edited files are `.gitignore` and the PR template — both ours, not Rock's behaviour.
+`generalSettings.partial.obs`, `types.partial.ts`, `entryFormPersonEntry.partial.obs`. Two more
+are `.gitignore` and the PR template — both ours, not Rock's behaviour.
 
-> Recount before you present if the trunk has moved:
-> `git fetch upstream --tags && git diff --diff-filter=A --name-only 18.4.1..HEAD | wc -l`
-> for the added count, `--diff-filter=M` for the edited one. The earlier version of this script
-> called all 68 "files that don't exist upstream," which was wrong for the seven edited ones.
+The eighth is worth knowing about because it is the only place we have edited Rock's own
+behaviour: `Rock.Migrations/…/202603271810501_ReplaceFontAwesomeWithTablerIcons.cs`, a guard on
+an upstream v19 migration that would otherwise fail against our catalog. If DevOps asks, that is
+a fork carrying a fix for an upstream bug, and it is reported rather than hidden. Don't
+volunteer it to the wider room — it's a level of detail the segment doesn't need.
+
+> The earlier version of this script called every differing file "a file that doesn't exist
+> upstream," which was wrong for the edited ones. Keep the two counts separate.
 
 Slide 7 is the most important non-demo slide in the deck. Two directions, then the warning.
 
 If anyone asks about `develop` being a "mirror" — the deck used to say that and it was wrong.
-`develop` carries 276 files under `RockWeb/Plugins/`, 78 of them ours; upstream's 18.4.1 tag
+`develop` carries 276 files under `RockWeb/Plugins/`, 78 of them ours; the upstream tag
 carries 2. The clean reference is Spark's **tag**, not a branch of ours. Say it as a
 correction if it comes up; don't volunteer it, because the rule people need is unchanged:
 never open a PR against `develop`.
@@ -214,8 +235,8 @@ Slide 13's table answers "why does it take so long" before it's asked. The line 
 them the compiled file that a MacBook cannot produce, and leave it at that — don't open the tab
 yet. It is step 5b of the demo runbook: one line changed in a `.obs` Vue component, and the
 string comes back out of
-`pr-4.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`. Setting it up here
-and closing it there is what turns this slide from an assertion into a demonstration.
+`pr-<N>.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`. Setting it up
+here and closing it there is what turns this slide from an assertion into a demonstration.
 
 Slide 14, reason 3 is for the Technology Director: credentials live in GitHub secrets and are
 only ever read by a build. They never land on anyone's laptop.
@@ -223,8 +244,9 @@ only ever read by a build. They never land on anyone's laptop.
 Set the expectation explicitly: **~40 minutes, label to live site.** Better they hear it from
 you than discover it while staring at a PR.
 
-Measured from the two most recent successful PR deploys, so quote it with confidence — and
-quote the range, not a single number, because the spread is real:
+Quote the range, not a single number, because the spread is real. These two are from
+2026-08-10; your own demo deploy is a fresher measurement of the same thing, so use its
+numbers if you have them:
 
 | Run | Build | Deploy on the VM | Total |
 | --- | --- | --- | --- |
@@ -241,15 +263,15 @@ version of this line said 30 minutes and no recent run has come in under 40.
 
 ### 0:35 — Three doors (slides 15–16, 7 min)
 
-> ⚠️ **First, before you say anything: open `pr-4` in a background tab.** The app pool idles
-> out after 20 minutes, so whatever warming you did before the meeting has already expired by
-> now. Loading it here means it is warm when you switch to it at 0:42 instead of showing the
+> ⚠️ **First, before you say anything: open your demo site in a background tab.** The app pool
+> idles out after 20 minutes, so whatever warming you did before the meeting has already expired
+> by now. Loading it here means it is warm when you switch to it at 0:42 instead of showing the
 > room a 60-second white screen. It loads while you talk through this segment. See the
 > morning-of checklist for the measurement behind this.
 >
 > Warm the two tabs the demo actually uses, not just the home page — the same app pool serves
 > all of them, so one request warms the site, but having them already open saves fumbling:
-> `pr-4.rock-dev.connect.passion.team/this-page-does-not-exist` and
+> `pr-<N>.rock-dev.connect.passion.team/this-page-does-not-exist` and
 > `staging.rock-dev.connect.passion.team/this-page-does-not-exist`.
 
 Slide 15's table is the mental model for the whole hour. Walk the rows in order — PR,
@@ -327,18 +349,55 @@ pipeline's job is to make a change boring.*
 **Land the second-approver ask while the Director is still in the room.** It is the only one
 of the five that needs someone else's authority rather than someone else's calendar, and it is
 five minutes of clicking. Say the uncomfortable version out loud — *"the production gate is
-real, admins can't bypass it, and right now I'm the only name on it, which means production is
-one person"* — and ask for the name in the room rather than in a follow-up. Asking for a
+real, admins can't bypass it, and as of this morning I'm the only name on it, which means
+production is one person"* — and ask for the name in the room rather than in a follow-up. Asking for a
 control on yourself is the most credible thing you will say all hour. If you get a yes, you
 can have it configured before the room stands up.
 
 ---
 
+## Prepare the demo PR
+
+**Do this two days out, not the morning of.** A build is ~25 minutes and the deploy after it is
+another 7–17, so the whole chain is most of an hour and it can fail. Two days leaves room to
+run it twice.
+
+The demo branch is kept in the repository for exactly this: **`demo/ptp-cicd-training-walkthrough`**.
+It carries three commits that each prove a different thing, described under "What the three
+commits prove" below. You do not rewrite them; you bring the branch forward and re-open it.
+
+1. **Bring the branch up to the current trunk.** Merge the default branch into
+   `demo/ptp-cicd-training-walkthrough` and push. This is not housekeeping — it is the
+   demo's own subject matter, and step 1 of the sequence points at it.
+2. **Open a PR into the default branch.** Not into anything else; the robot ignores every other
+   base. **Files changed** should show exactly four files: `login.obs`, `Http404Error.aspx`, and
+   the two `Site.Master` layouts. If it shows more, the merge picked something up — look before
+   you continue.
+3. **Apply `rock:start`.** Then apply **`rock:auto`** as well. `rock:auto` is what makes step 7
+   of the sequence possible, and a PR without it silently ignores pushes.
+4. **Wait for `rock:deployed`,** then record three things at the top of your own notes: the PR
+   number `<N>`, the deployed SHA, and the URL `https://pr-<N>.rock-dev.connect.passion.team`.
+   Every `pr-<N>` in this script means that number.
+5. **Confirm the four checks** in the morning-of checklist below at least once now, while there
+   is still time to rebuild.
+
+**Afterwards, tear it down.** Close the PR — do not merge it, since merging puts a green
+"CI/CD Training Build" banner on staging. Closing destroys the environment and leaves the
+branch intact for next time. If you skip this, the next fleet prune does it for you and the
+`pr-<N>` in your notes stops resolving.
+
+> **Why this is a per-session build rather than a standing site.** An idle environment still
+> occupies the VM and still shares the fleet's database, and the fleet is pruned whenever it is
+> in the way of other work. An earlier version of this script named a specific PR as
+> "pre-warmed" and that PR was closed and destroyed between deliveries, which is the failure
+> this section exists to prevent.
+
+---
+
 ## Demo runbook
 
-**Pre-warmed:** PR #4 — <https://github.com/passiondev/Rock/pull/4>
-Branch `demo/ptp-cicd-training-walkthrough` · deployed SHA `aaceb67c8e`
-Live: <https://pr-4.rock-dev.connect.passion.team>
+**Pre-built:** your demo PR from the section above — `pr-<N>`, base = the repository default.
+Live: `https://pr-<N>.rock-dev.connect.passion.team`
 Staging: <https://staging.rock-dev.connect.passion.team>
 
 **Nothing in this section builds anything.** Every artifact below was built and deployed before
@@ -347,28 +406,29 @@ early — *"a build takes twenty-five minutes, so I ran it this morning"* — be
 the one thing that could read as a limitation into the exact point you are making. A pipeline
 you wait on is a pipeline that is doing real work.
 
-**If you show only one thing, show the PR.** <https://github.com/passiondev/Rock/pull/4> is the
-whole hour in one page, and it needs no live site and no network beyond GitHub: four changed
-files against the trunk, the label you applied, the labels the robot applied back, a bot
-comment carrying the live URL and the deployed SHA, and a Checks tab where every build step is
-named. Steps 1–4 below are that page. Steps 5 and 6 open live sites, which is stronger but
-depends on a warm app pool; step 7 is the only one that starts anything, and it is optional.
-If the room is running long or the projector is fighting you, land steps 1–4 and describe the
-rest — the argument survives intact.
+**If you show only one thing, show the PR.** The PR page is the whole hour in one place, and it
+needs no live site and no network beyond GitHub: four changed files against the trunk, the label
+you applied, the labels the robot applied back, a bot comment carrying the live URL and the
+deployed SHA, and a Checks tab where every build step is named. Steps 1–4 below are that page.
+Steps 5 and 6 open live sites, which is stronger but depends on a warm app pool; step 7 is the
+only one that starts anything, and it is optional. If the room is running long or the projector
+is fighting you, land steps 1–4 and describe the rest — the argument survives intact.
 
-> "Pre-warmed" means the environment is **built and deployed**, not that it will still be warm
-> when you get here. The app pool idles out after 20 minutes. If you did not load pr-4 during
-> the 0:35 segment, load it *now* and talk over the first slide of this section — do not open
-> it cold on the projector and wait.
+> "Pre-built" means the environment is **built and deployed**, not that it will still be warm
+> when you get here. The app pool idles out after 20 minutes. If you did not load the demo site
+> during the 0:35 segment, load it *now* and talk over the first slide of this section — do not
+> open it cold on the projector and wait.
 
-`aaceb67c8e` is a merge of the trunk into the demo branch, not one of the three demo commits
-below. That is deliberate and worth a sentence if anyone asks: the branch was brought up to
-date with the trunk and redeployed, which is the same thing they will do to any branch
+**The deployed SHA will be a merge commit, not one of the three demo commits.** That is the
+merge you did in preparation, and it is worth a sentence if anyone asks: the branch was brought
+up to date with the trunk and redeployed, which is the same thing they will do to any branch
 that has fallen behind. **Files changed** still shows only the four demo files, because GitHub
 diffs against the merge base rather than the branch tip.
 
-The three demo commits each prove a different thing, and one of them deliberately proves it by
-being invisible. Read this before the demo — *where* each change surfaces is not obvious:
+### What the three commits prove
+
+Each proves a different thing, and one of them deliberately proves it by being invisible. Read
+this before the demo — *where* each change surfaces is not obvious:
 
 1. `a16b5b2c3b` — relabels the core Obsidian login block (`login.obs`) to
    "Log In — CI/CD Training Build". This one is the **build** proof, not a visual one.
@@ -415,43 +475,44 @@ running on that host.
    see that every step is named and logged. This is where "it's a black box" dies.
 5. **The live site.** Two tabs, in this order.
 
-   **a. The banner.** <https://pr-4.rock-dev.connect.passion.team/this-page-does-not-exist> —
+   **a. The banner.** `https://pr-<N>.rock-dev.connect.passion.team/this-page-does-not-exist` —
    a green bar across the top of Rock's "We Can't Find That Page". That bar exists in my branch
    and nowhere else: not on staging, not in production. Say the quiet part rather than hoping
    nobody notices it: *"I asked for a page that doesn't exist on purpose — it's the one page a
    signed-out visitor can see that this repository actually owns."*
 
    **b. The thing a MacBook cannot make.**
-   <https://pr-4.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js>, then ⌘F
+   `https://pr-<N>.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`, then ⌘F
    for `CI/CD Training Build`. That file is *compiled output*. I edited one line of a Vue
    single-file component; a Windows runner on GitHub turned it into that bundle. This is the
    whole argument of the previous section made physical — nobody in this room could have
    produced that file on their laptop. It is also why the label never shows up on screen:
    Passion's login page is a plugin block, not this core one.
 
-   > **Both hosts now hold real certificates — but still check the morning of.** Measured
-   > 2026-08-11 02:40Z, after a deploy: `staging` presents Let's Encrypt YR2 (expires
-   > 2026-11-09) and `pr-4` presents Let's Encrypt YR1 (expires 2026-11-08), each chaining to
-   > ISRG Root X1, and both answer HTTP 302 under strict TLS validation. No warning, on a
-   > laptop or a phone.
+   > **Check both certificates the morning of — do not assume either way.** Staging holds a
+   > real Let's Encrypt certificate and has for a while (re-confirmed 2026-08-19: HTTPS answers
+   > 302 under strict validation, no `-k` needed). Your demo host is the uncertain one, because
+   > it is new.
    >
-   > This is worth re-checking rather than assuming, because an earlier version of this script
-   > got it wrong in both directions — first claiming a valid certificate that had never been
-   > measured, then recording a self-signed one that had since been fixed. One command:
-   > `echo | openssl s_client -connect pr-4.rock-dev.connect.passion.team:443 -servername pr-4.rock-dev.connect.passion.team 2>/dev/null | openssl x509 -noout -issuer -subject`
-   > — if the issuer names Let's Encrypt you are fine; if issuer and subject are identical it
-   > has reverted to self-signed. Compare the two fields; do not grep for `CN=`, because the
-   > printed format varies between OpenSSL builds (`/CN=*.x`, `CN=*.x` and `CN = *.x` have all
-   > been observed on this same certificate).
-   >
-   > If it has somehow reverted, own it in one sentence and move on: *"These test hosts are on
-   > an internal certificate today — the real site isn't."* Click through once, deliberately,
-   > and say you're doing it. Do **not** teach the room that clicking through warnings is
+   > **A brand-new `pr-<N>` gets the self-signed placeholder** until the renewal job issues a
+   > real certificate for that host name, and that job runs weekly (Monday 08:00 UTC) — so a
+   > demo PR created mid-week will still be on the placeholder on the day. Two options, decided
+   > in advance rather than on the projector: run **PR Test Environment Renew Certificates** by
+   > hand once the environment is up, or plan to own it in one sentence — *"these test hosts are
+   > on an internal certificate today; the real site isn't"* — click through once, deliberately,
+   > and say you are doing it. Do **not** teach the room that clicking through warnings is
    > routine.
    >
-   > A **brand-new** PR environment is a different case and is still expected to warn: it gets
-   > the self-signed placeholder until the weekly renewal issues a certificate for its host
-   > name. Say that if someone spins one up and asks.
+   > Measure rather than assume, because earlier versions of this script got it wrong in both
+   > directions — first claiming a valid certificate that had never been checked, then recording
+   > a self-signed one that had since been fixed. One command per host:
+   > `echo | openssl s_client -connect <host>:443 -servername <host> 2>/dev/null | openssl x509 -noout -issuer -subject`
+   > — if the issuer names Let's Encrypt you are fine; if issuer and subject are identical it is
+   > self-signed. Compare the two fields; do not grep for `CN=`, because the printed format
+   > varies between OpenSSL builds (`/CN=*.x`, `CN=*.x` and `CN = *.x` have all been observed on
+   > the same certificate). Quicker still: `curl -s -o /dev/null -w '%{http_code}' https://<host>/`
+   > with **no** `-k`. If it returns a status code rather than a TLS error, the certificate
+   > validates.
 6. **Staging.** <https://staging.rock-dev.connect.passion.team/this-page-does-not-exist> —
    the same page, on the same server, with **no green bar**, because staging builds the trunk
    and the banner only exists on the branch. Two tabs side by side is the entire argument for
@@ -460,7 +521,7 @@ running on that host.
 7. **Skip this by default.** Pushing a trivial extra commit and watching `deployed` flip to
    `building` within seconds is a genuinely good moment, but it is the one step that starts a
    twenty-five-minute build you then cannot show the end of, and it puts the projector on a
-   robot's reaction time. Do it only if you are at 0:46 or earlier and pr-4 is already warm,
+   robot's reaction time. Do it only if you are at 0:46 or earlier and the demo site is warm,
    and if you do, narrate that you are showing the *transition* and nothing further.
 
    The cheaper substitute, which needs no push: on the Checks tab of the run already open in
@@ -469,28 +530,28 @@ running on that host.
    ran it before you got here."* Same lesson, no live wait, and it reinforces rather than
    apologises for the build time.
 
-   > **This only works because PR #4 carries `rock:auto`.** A push to a PR without that
-   > label is deliberately ignored: `pr-test-deploy.yml` handles the `synchronize` event, checks
-   > for `rock:auto`, and logs *"PR does not have rock:auto; skipping automatic
-   > redeploy"* if it is missing. Rebuilding a Windows artifact on every push to every branch is
-   > 26 minutes of runner time nobody asked for, so opting in is the default. PR #4 has the
-   > label; a PR someone opens in the room will not, and the answer to "why didn't mine deploy?"
-   > is either add `rock:auto` or apply `rock:start` once. Worth knowing before someone
-   > pushes and nothing happens on the projector.
+   > **This only works if your demo PR carries `rock:auto`** — step 3 of the preparation
+   > section. A push to a PR without that label is deliberately ignored: `pr-test-deploy.yml`
+   > handles the `synchronize` event, checks for `rock:auto`, and logs *"PR does not have
+   > rock:auto; skipping automatic redeploy"* if it is missing. Rebuilding a Windows artifact on
+   > every push to every branch is 26 minutes of runner time nobody asked for, so opting in is
+   > the default. A PR someone opens in the room will not have it, and the answer to "why didn't
+   > mine deploy?" is either add `rock:auto` or apply `rock:start` once. Worth knowing before
+   > someone pushes and nothing happens on the projector.
 
 **Fallbacks, in order:**
 
-- **Cert warning on the *staging* URL** → possible; `pr-4` is fine. Staging is a host I stood
-  up this week and the certificate job only picks up environments that have recorded a
-  successful deploy, so it hasn't been issued one yet. Say that plainly and move on. Don't
+- **Cert warning on the demo URL** → likely, and expected: the renewal job only picks up
+  environments that have recorded a successful deploy, and it runs weekly, so a host created
+  mid-week has not been issued one yet. Staging's is real. Say that plainly and move on. Don't
   describe it as normal, and don't teach the room to click through TLS warnings.
 - **Site won't load** → it is not the network. Port 443 on the test VM is open to
   `0.0.0.0/0` (rule `https-from-world`), so these hosts work from anywhere — a hotel, a phone
   tether, an attendee's laptop. The `159.63.145.194` office-egress restriction applies only to
   RDP and SQL. Don't spend demo time blaming VPN.
 - **First load times out** → reload once. Rock applies migrations on first request. Measured
-  cold on 2026-08-11 after a VM restart: **55 seconds** to the first response on `pr-4`, then
-  instant. This is why the checklist warms both sites; see below.
+  cold on 2026-08-11 after a VM restart: **55 seconds** to the first response on a `pr-*` host,
+  then instant. This is why the checklist warms both sites; see below.
 - **Site is genuinely down** → fall back to the Checks tab and the bot's status comment.
   The build log is real evidence and it's just as convincing. Say what happened.
 - **Everything is down** → screenshots (take them the morning of, see checklist).
@@ -501,15 +562,17 @@ running on that host.
 
 Do this at least 90 minutes before, so a rebuild is still possible.
 
-- [ ] <https://pr-4.rock-dev.connect.passion.team> loads, and the login box actually renders —
+- [ ] `https://pr-<N>.rock-dev.connect.passion.team` loads, and the login box actually renders —
       no "Error Loading Block". No VPN needed; 443 is open to the world on the test VM.
-- [ ] <https://pr-4.rock-dev.connect.passion.team/this-page-does-not-exist> shows the green
+- [ ] `https://pr-<N>.rock-dev.connect.passion.team/this-page-does-not-exist` shows the green
       banner. This is the demo's money shot; check it, don't assume it.
-- [ ] <https://pr-4.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js>
+- [ ] `https://pr-<N>.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`
       contains `CI/CD Training Build`.
 - [ ] <https://staging.rock-dev.connect.passion.team> loads, and its
       `/this-page-does-not-exist` has **no** banner — that contrast is step 6.
-- [ ] PR #4 still shows `rock:deployed`.
+- [ ] Your demo PR still shows `rock:deployed`, and still carries `rock:auto`.
+- [ ] The demo host's certificate — see the certificate box in step 5b. Decide now whether you
+      are running the renewal or owning the warning; don't decide it on the projector.
 - [ ] **Screenshot both sites and the PR page.** This is the real insurance.
 - [ ] Print 8 copies of the cheat sheet.
 - [ ] Deck open, full screen, arrow keys working. Rail nodes jump between sections.
@@ -526,8 +589,8 @@ browser on 2026-08-11. Warm, it is instant. Fifty-five seconds of white screen w
 watches is the demo failing even though nothing is broken.
 
 Budget more than that if the VM has been restarted rather than merely gone idle. Measured
-twice on 2026-08-11, on the first request after a reboot: **pr-4 53s / staging 129s**, and
-after a second reboot **pr-4 95s / staging 107s**. So call it one to two minutes per host,
+twice on 2026-08-11, on the first request after a reboot: **a `pr-*` host 53s / staging 129s**,
+and after a second reboot **95s / 107s**. So call it one to two minutes per host,
 varying run to run — don't plan around the low number. Two minutes of white screen is well
 past what a room will sit through politely, so if anything rebooted that morning, warm the
 sites early and warm them twice. Both went back to well under half a second on the second
@@ -535,14 +598,14 @@ request in every measurement.
 
 **A certificate renewal also causes a cold start**, and it is the sneakiest version of this
 because nothing looks like it changed. Renewal rebinds the certificate in IIS, which restarts
-the site. Measured immediately after the 2026-08-11 02:00 UTC renewal: **pr-4 took 85.3
-seconds** on the next request, then 0.17s. That is longer than the idle-timeout cold start.
+the site. Measured immediately after the 2026-08-11 02:00 UTC renewal: the `pr-*` host took
+**85.3 seconds** on the next request, then 0.17s. That is longer than the idle-timeout cold start.
 The weekly renewal cron is Monday 08:00 UTC — so if you ever present on a Monday morning, or
 you run the renewal by hand that day, warm the sites *after* it finishes, not before.
 
 ```bash
 # Run this immediately before presenting. Both should come back fast the second time.
-for h in pr-4 staging; do
+for h in "pr-<N>" staging; do    # substitute your demo PR's number
   curl -s -o /dev/null -k -w "$h  %{http_code}  %{time_total}s\n" \
     --max-time 240 "https://$h.rock-dev.connect.passion.team/"
 done
@@ -558,16 +621,16 @@ about the certificate. Check that separately with the `openssl` line in the cert
 This is the trap, and it is worth more than everything above it. **Warming a site at 0:00 does
 not keep it warm until the demo at 0:42.** Nothing in this repo ever sets `idleTimeout`,
 `startMode`, or `preloadEnabled` on the app pool, so IIS defaults apply: the worker process
-shuts down after **20 minutes** with no requests. Warm pr-4 at 0:00, talk for forty minutes,
-open it for the demo, and you are opening a *cold* site in front of the room — the exact
+shuts down after **20 minutes** with no requests. Warm the demo site at 0:00, talk for forty
+minutes, open it for the demo, and you are opening a *cold* site in front of the room — the exact
 failure the pre-meeting warm-up was supposed to prevent.
 
-Measured on 2026-08-11: pr-4 answered in 0.23s, sat untouched for about 32 minutes, and then
-took **62.2 seconds** on the next request. Nothing had been deployed to it and nothing had
+Measured on 2026-08-11: a `pr-*` host answered in 0.23s, sat untouched for about 32 minutes,
+and then took **62.2 seconds** on the next request. Nothing had been deployed to it and nothing had
 restarted; it simply idled out.
 
 So add one item to the run of show: **at the start of the "Three doors" segment (0:35), load
-pr-4 in a background tab.** Seven minutes ahead of the demo is comfortably inside the 20-minute
+the demo site in a background tab.** Seven minutes ahead is comfortably inside the 20-minute
 window and far enough ahead that the load finishes while you are still talking. If you would
 rather not touch the keyboard mid-segment, ask someone in the room to hit it — that is a fine
 thing for Ops to do and it costs them nothing.
@@ -591,8 +654,10 @@ warming — only an idle one does.
   If you want to show the gate, show it **without approving**: dispatch nothing, and instead
   open Settings → Environments → `production` and let them see the required reviewer and that
   admins can't bypass it. Same point, no hostage.
-- **Don't merge PR #4** during the meeting. Merging destroys the environment you're
-  demonstrating, and it would kick off a staging deploy you can't finish watching.
+- **Don't merge the demo PR** during the meeting, and don't merge it afterwards either.
+  Merging destroys the environment you're demonstrating, kicks off a staging deploy you can't
+  finish watching, and puts a green "CI/CD Training Build" banner on staging for the whole team.
+  Close it instead — see the teardown note in the preparation section.
 - **Don't start a build you can't finish.** Twenty-five minutes is longer than the segment,
   so any build begun on the projector ends as an unfinished progress spinner — the single worst
   image for a session arguing the pipeline is trustworthy. Everything you need is already built.
@@ -618,14 +683,18 @@ Say "I don't know, I'll find out" rather than improvising. These are the plausib
 - **"What happens if two people merge at once?"** Staging deploys supersede each other by
   design — the newer commit cancels the older in-flight one. Nobody's change is lost, because
   the newer build already contains it.
-- **"Who can approve a production deploy?"** You can answer this one now — it changed on
-  2026-08-11. The `production` environment exists, has **one required reviewer**
-  (`justinpbarnett`), and admins **cannot** bypass it, all verified against the GitHub API that
-  night. So today the honest answer is *"me, and only me — which is exactly one person too
-  few."* The open item is no longer creating the gate; it is adding the DevOps engineer as a
-  second reviewer and then turning on `prevent_self_review`, which is the point at which
-  production genuinely takes two people. Say that plainly in front of the Director — asking for
-  the second reviewer in the room is the cheapest way to get it.
+- **"Who can approve a production deploy?"** You can answer this one. The `production`
+  environment exists, has **one required reviewer** (`justinpbarnett`), and admins **cannot**
+  bypass it — first verified against the GitHub API on 2026-08-11, re-verified 2026-08-19. So
+  unless the check below says otherwise, the honest answer is *"me, and only me — which is
+  exactly one person too few."* The open item is no longer creating the gate; it is adding the
+  DevOps engineer as a second reviewer and then turning on `prevent_self_review`, which is the
+  point at which production genuinely takes two people. Say that plainly in front of the
+  Director — asking for the second reviewer in the room is the cheapest way to get it.
+
+  Re-check before you present, because this is the one fact in the deck that someone in the
+  room may have changed since:
+  `gh api repos/passiondev/Rock/environments/production --jq '.protection_rules[] | select(.type=="required_reviewers") | [(.reviewers[].reviewer.login), .prevent_self_review]'`
 
   *(Earlier drafts of this script said the reviewer list "doesn't exist yet." That was true when
   written and is not true now; don't say it.)*
@@ -653,31 +722,30 @@ Say "I don't know, I'll find out" rather than improvising. These are the plausib
   check makes a real request as its last step; and if they are about to show their change to
   somebody, open the page a few minutes early. This is on the printed handout too.
 
-- **"Can these test environments break each other?"** *(Most likely from DevOps, and the
-  honest answer is yes — say so plainly, because it's the top item on the fix list.)* Every
-  test site — staging and all the `pr-*` ones — points at **one shared database**. The web
-  servers are separate; the database is not. Rock applies its migrations to that database on
-  first load, so two sites on different commits can disagree about the schema, and the one
-  that loses serves an error page on every request.
+- **"Can these test environments break each other?"** *(Most likely from DevOps, and the honest
+  answer is partly — say so plainly rather than claiming isolation you don't have.)* The web
+  servers are separate. The databases are not fully separate, and the shape of that changed in
+  August 2026, so check the current state before you answer:
 
-  There is a live example to show if it comes up: **`pr-3` returns a 500 right now**, while
-  `pr-4` and `staging` on the same box answer normally — and GitHub still shows PR #3 as
-  successfully deployed, because the PR path doesn't check that the site actually came up.
-  Don't hide it. It is a better argument for the fix than any slide, and "a catalog per
-  environment" is the first thing on the list after this meeting.
+  - **Staging has its own catalog** (`RockStaging`, split out 2026-08-18). A staging deploy can
+    no longer migrate the schema out from under a `pr-*` site, which is what used to happen.
+  - **The `pr-*` fleet still shares one catalog** with each other. Rock applies its migrations
+    on first load, so two `pr-*` sites on different Rock *minors* can disagree about the schema,
+    and the one that loses serves an error page on every request.
 
-  If you want the specifics, they're measured, not guessed — `AssemblySharedInfo.cs` declares
-  **18.4.1** on the trunk and on PR #4, and **17.6.1** on PR #3 (its base branch is
-  `develop-17.6.1`). So `pr-3` is Rock 17.6 trying to run against a database that Rock 18.4
-  already migrated forward. Newer wins; older serves the error page.
+  What keeps that safe today is construction, not isolation: every `pr-*` site builds from a PR
+  based on the trunk, so they are the same minor by construction, and
+  `test_base_branch_config.py` fails if that drifts. A PR based on an *older* trunk is the way
+  it breaks — that is exactly what happened on 2026-08-11, when a PR based on `develop-17.6.1`
+  put Rock 17.6 against a catalog Rock 18.4 had already migrated forward. Newer wins; older
+  serves the error page, and the PR path still showed it as successfully deployed because it
+  does not check that the site came up.
 
-  **Be ready for the follow-up — "then could your staging deploy break the demo you just
-  showed us?"** The answer is no, and for a specific reason worth saying out loud: `staging`
-  and `pr-4` are both **18.4.1**, so a staging deploy runs the exact migration set `pr-4` has
-  already run. They're safe because their versions match, *not* because they're isolated —
-  they aren't. That holds as long as every live `pr-*` sits on the trunk's minor line. Saying
-  this precisely is much stronger than claiming isolation you don't have; if you overclaim
-  here, DevOps will find the seam in about ten seconds.
+  **Be ready for the follow-up — "then could a staging deploy break the demo you just showed
+  us?"** Since the catalog split, no: staging writes to its own schema. Before the split the
+  answer was "no, but only because their versions match" — if someone in the room remembers the
+  old answer, that is why it changed.
 
-  Resist the urge to redeploy `pr-3` to make it green before the meeting: that just moves the
-  breakage to whichever environment matches the schema now.
+  Saying this precisely is much stronger than overclaiming; DevOps will find the seam in about
+  ten seconds. Per-environment catalogs for the `pr-*` fleet are still on the list — see open
+  item 7 in the DevOps register.

@@ -322,9 +322,10 @@
           <tr><td class="k"><strong>Production</strong></td><td>manual <em>Deploy Production</em> run + a named reviewer's approval. Nothing merges here.</td></tr>
         </tbody>
       </table>
-      <p>No VPN needed. These open from anywhere, on a phone too. <code>staging</code> and <code>pr-4</code> have
-      real Let's Encrypt certificates, so no warning. A <strong>brand-new</strong> PR environment starts on a
-      self-signed placeholder until the weekly renewal issues one for its host name. That warning is
+      <p>No VPN needed. These open from anywhere, on a phone too. <code>staging</code> has a
+      real Let's Encrypt certificate, so no warning. A <strong>brand-new</strong> PR environment starts on a
+      self-signed placeholder until the weekly renewal issues one for its host name &mdash; that runs
+      Monday at 08:00&nbsp;UTC, so a site created on Tuesday waits almost a week. That warning is
       expected and safe to click through for <code>*.rock-dev.connect.passion.team</code> only.</p>
       <p>Expect a <strong>slow first load</strong>, one to two minutes, while Rock runs its
       migrations and warms its caches. Every load after that is well under a second. Reload once, and wait

@@ -2,7 +2,7 @@
 
 **Audience:** Local Engineering team (no prior GitHub experience assumed)
 **Covers:** `connect.passion.team` (Rock RMS) — the code and files behind the site
-**Last verified:** 2026-08-10 (see [Facts that go stale](#facts-that-go-stale))
+**Last verified:** 2026-08-19 (see [Facts that go stale](#facts-that-go-stale))
 
 This is the training doc for making a change to Rock, testing it on a private copy of the
 site, and getting it live. Read Parts 0–2 before your first change. Parts 3–6 are
@@ -667,7 +667,7 @@ Downtime is an app pool recycle plus Rock's cold start — Rock applies its EF a
 migrations on the first request afterward, which is why step 5 waits several minutes before
 calling the site unhealthy.
 
-> **Status as of 2026-08-10:** every step above is built, tested, and proven end to end
+> **Status as of 2026-08-19:** every step above is built, tested, and proven end to end
 > against staging. The one remaining piece is installing the command-queue agent on the
 > production VM, which is deliberately being done together with DevOps rather than
 > unattended. Until that is installed, a production run will build, gate, queue — and then
@@ -944,15 +944,17 @@ re-diagnosing them. All verified 2026-08-10.
 
 Re-verify these before trusting this document:
 
-| Fact | Value as of 2026-08-10 | Where to check |
+| Fact | Value as of 2026-08-19 | Where to check |
 | --- | --- | --- |
 | Eligible base branch / repo default branch | read it, don't memorise it — named `passion-<version>` | `.github/pr-test-environments.json` |
 | Environment domain | `rock-dev.connect.passion.team` | same file |
 | Staging URL | `staging.rock-dev.connect.passion.team` | `.github/workflows/staging-deploy.yml` |
+| Staging database catalog | `RockStaging` — its own, split from the fleet 2026-08-18 | `gh variable list -R passiondev/Rock` |
+| `pr-*` database catalog | shared: all `pr-*` sites use `RockConnectProd` together | `PR_TEST_DB_NAME` unset ⇒ falls back to `secrets.DB_NAME` |
 | Office allowlisted IP — **RDP (3389) and SQL (1433) only**, never HTTPS | `159.63.145.194` | GCP firewall rules |
-| Public reachability of test URLs | 443 and 80 open to `0.0.0.0/0` (`https-from-world`, `pr-test-acme-http`) | GCP firewall rules |
-| Certificate health, `pr-*` | Valid Let's Encrypt; `pr-4` issued 2026-08-10, expires 2026-11-08 | `curl -v https://pr-<n>.rock-dev.connect.passion.team` |
-| Certificate health, `staging` | **Untrusted** as of 2026-08-10 — renewal not yet run for this new host | same command against the staging URL |
+| Public reachability of test URLs | 443 and 80 open to `0.0.0.0/0` (`https-from-world`, `pr-test-acme-http`); the test VM shares production's `prod-passion-compute` tag | GCP firewall rules; open item 24 |
+| Certificate health, `pr-*` | Valid Let's Encrypt when a site exists. Renewal runs weekly, Monday 08:00 UTC, so a host created after the last run serves a self-signed placeholder until then | `curl -v https://pr-<n>.rock-dev.connect.passion.team` |
+| Certificate health, `staging` | **Valid** — Let's Encrypt YR2, `CN=staging.rock-dev.connect.passion.team`, expires 2026-11-09 (verified 2026-08-19). An earlier revision of this table said "Untrusted"; that was true before the renewal selector was fixed | same command against the staging URL |
 | Overlaid directories | `Themes,Content,Assets,Styles`, copy-if-absent only | `Deploy-PrEnvironment.ps1` |
 | Directories a deploy never touches | `Content`, `App_Data`, `Logs`, `Uploads`, `web.ConnectionStrings.config` | `Deploy-RockEnvironment.ps1` |
 | Typical build+deploy time | ~30 minutes | Recent Actions runs |
