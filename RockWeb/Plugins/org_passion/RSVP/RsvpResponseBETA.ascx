@@ -94,7 +94,7 @@
                              does not break the Bootstrap "row > col-sm-12" structure. --%>
                         <asp:PlaceHolder ID="pnlDietary" runat="server" Visible="false">
                             <div class="col-sm-12 js-dietary-picker">
-                                <Rock:DefinedValuesPicker ID="dvpDietaryRestrictions" runat="server" Label="Dietary Restrictions" Required="false" DefinedTypeId="346" />
+                                <Rock:DefinedValuesPicker ID="dvpDietaryRestrictions" runat="server" Label="Dietary Restrictions" Required="true" DefinedTypeId="346" RepeatColumns="1"/>
                             </div>
                             <div class="col-sm-12 js-dietary-other" style="display: none;">
                                 <%-- Required is deliberately NOT set here. RockControlHelper re-forces

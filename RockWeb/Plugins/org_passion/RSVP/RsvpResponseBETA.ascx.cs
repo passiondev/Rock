@@ -1052,6 +1052,7 @@ $(document).ready(function () {
 
             return otherDefinedValue != null
                 && dvpDietaryRestrictions.SelectedValues.Contains(otherDefinedValue.Id.ToString());
+
         }
 
         /// <summary>
