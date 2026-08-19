@@ -518,12 +518,39 @@ jobs:
           if (!(Test-Path $tablerIcons)) {
             $failures += "missing $tablerIcons -- _rock-core.less imports it, so every LESS theme will fail to compile and the site will silently serve stale CSS"
           }
+          elseif ((Get-Item $tablerIcons).Length -lt 50KB) {
+            # Test-Path is satisfied by an empty file, and an empty icon sheet
+            # compiles cleanly -- it just renders every icon as nothing.
+            $failures += "$tablerIcons is only $((Get-Item $tablerIcons).Length) bytes; it is truncated or empty (291,210 bytes is the real size)"
+          }
 
           # A build that emits the one gated file and nothing else would pass the
-          # check above while still shipping a broken stylesheet set.
+          # check above while still shipping a broken stylesheet set. What must NOT
+          # be used to detect that is the file count -- see below.
+          #
+          # On the 18.4.1 line RockWeb\Styles\styles-v2 holds 178 committed SCSS
+          # sources. On 19.x it holds 7 build outputs, because the 189 partials all
+          # compile into core.css and emit nothing of their own. There is no
+          # threshold that fits both, and picking one calibrated on the committed
+          # layout is not a conservative choice -- it blocked every staging deploy on
+          # 2026-08-19 against a build that was complete and correct.
+          #
+          # core.css is the honest signal. Every partial lands in it, so a compile
+          # that silently produced nothing leaves a stub rather than a 700 KB sheet,
+          # and that holds identically on both lines.
           $stylesV2 = @(Get-ChildItem "RockWeb\Styles\styles-v2" -Recurse -File -ErrorAction SilentlyContinue)
-          if ($stylesV2.Count -lt 10) {
-            $failures += "RockWeb\Styles\styles-v2 holds only $($stylesV2.Count) files; the styles build produced almost nothing"
+          $coreCss = "RockWeb\Styles\styles-v2\core.css"
+          if (!(Test-Path $coreCss)) {
+            $failures += "missing $coreCss -- the styles-v2 build emitted no core stylesheet, so every page renders unstyled"
+          }
+          else {
+            # 705,722 bytes on 18.4.1 and the same order of magnitude on 19.x. The
+            # floor sits far below that so a legitimate shrink never blocks a deploy,
+            # and far above the few hundred bytes a failed SCSS compile leaves.
+            $coreBytes = (Get-Item $coreCss).Length
+            if ($coreBytes -lt 100KB) {
+              $failures += "$coreCss is only $coreBytes bytes; the SCSS compile emitted a stub rather than the core stylesheet"
+            }
           }
 
           if ($failures.Count -gt 0) {

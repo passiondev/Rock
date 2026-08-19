@@ -336,5 +336,116 @@ class RefreshPointerResolutionTests(unittest.TestCase):
                 f"_rock-core.less imports {imported} but the artifact gate does not check for it",
             )
 
+
+class StylesGateCompletenessTests(unittest.TestCase):
+    """The gate has to tell a complete build from an empty one, on two branch lines
+    whose styles-v2 folders look nothing alike.
+
+    On 18.4.1 that folder is 178 committed SCSS sources. On 19.x it is 7 build
+    outputs, because the 189 partials compile into core.css and emit nothing
+    themselves. The first version of this gate required 10 files, which is a fine
+    number for the committed layout and blocked every staging deploy against the
+    generated one on 2026-08-19 -- on a build that was complete and correct.
+    """
+
+    STYLES_V2_SOURCE = REPO_ROOT / "Rock.Frontend.Styles" / "src" / "styles" / "styles-v2"
+
+    def _verify_run(self):
+        steps = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]["package"]["steps"]
+        return next(s for s in steps if s.get("name") == "Verify Build Artifacts")["run"]
+
+    def test_the_gate_does_not_treat_a_file_count_as_completeness(self):
+        """The specific regression. A count is a property of the layout, not of the
+        build, and the two lines disagree about the layout by a factor of 25."""
+        run = self._verify_run()
+
+        counting_failures = re.findall(
+            r"if \(\$stylesV2\.Count[^)]*\)\s*\{(.*?)\}", run, re.S
+        )
+        for body in counting_failures:
+            self.assertNotIn(
+                "$failures +=", body,
+                "the gate fails the build on a styles-v2 file count again -- 178 on "
+                "18.4.1 versus 7 on 19.x means no threshold can be right for both",
+            )
+
+    def test_the_gate_measures_the_stylesheet_that_carries_the_partials(self):
+        """core.css is where all 189 partials land, so its size is the one signal
+        that separates a real compile from a stub, and it means the same thing on
+        both lines."""
+        run = self._verify_run()
+
+        self.assertIn("core.css", run)
+        self.assertRegex(
+            run,
+            r"\$coreBytes\s*-lt\s*\d+KB",
+            "nothing checks how big core.css is, so an empty stub passes the gate",
+        )
+
+    def test_every_stylesheet_the_gate_names_is_also_size_checked(self):
+        """Test-Path is satisfied by a zero-byte file, and an empty stylesheet
+        compiles perfectly well -- it just renders nothing. Presence alone was how
+        the original silent failure got through."""
+        run = self._verify_run()
+
+        for stylesheet in ("tabler-icon.css", "core.css"):
+            with self.subTest(stylesheet=stylesheet):
+                # Scoped to the block that owns this stylesheet, not the whole step.
+                # One size check anywhere in the script would otherwise satisfy the
+                # assertion for a file nothing measures -- the same shape of mistake
+                # as the count it replaced.
+                binding = re.search(
+                    r"^\s*(\$\w+)\s*=\s*\"[^\"]*" + re.escape(stylesheet) + r"\"",
+                    run,
+                    re.M,
+                )
+                self.assertIsNotNone(
+                    binding, f"{stylesheet} is not bound to a variable the gate checks"
+                )
+
+                variable = re.escape(binding.group(1))
+                block = run[binding.end():]
+                next_binding = re.search(r"^\s*\$\w+\s*=\s*\"RockWeb", block, re.M)
+                if next_binding:
+                    block = block[:next_binding.start()]
+
+                self.assertRegex(
+                    block,
+                    variable + r"\)?\.Length",
+                    f"{stylesheet} is checked for presence but its size is never read",
+                )
+                self.assertRegex(
+                    block,
+                    r"-lt\s*\d+KB",
+                    f"{stylesheet} has its size read but never compared against a floor",
+                )
+
+    def test_the_generated_layout_this_gate_assumes_is_the_one_the_source_produces(self):
+        """Derived from the source tree rather than asserted as a number, so the day
+        someone adds a second entry point the expectation moves with it. Only
+        non-partial .scss files and plain .css files emit anything; a leading
+        underscore means the file compiles into another one."""
+        if not self.STYLES_V2_SOURCE.is_dir():
+            self.skipTest("Rock.Frontend.Styles does not exist on this branch")
+
+        entry_points = [
+            p for p in self.STYLES_V2_SOURCE.rglob("*.scss") if not p.name.startswith("_")
+        ]
+        plain_css = list(self.STYLES_V2_SOURCE.rglob("*.css"))
+
+        self.assertEqual(
+            [p.name for p in entry_points],
+            ["core.css".replace(".css", ".scss")],
+            "styles-v2 has an entry point other than core.scss, so core.css alone no "
+            "longer represents the build and the gate needs to name the new one too",
+        )
+        self.assertLess(
+            len(entry_points) + len(plain_css),
+            10,
+            "the generated output now exceeds the count the old gate demanded, which "
+            "would make that gate look correct again -- reread why it was removed",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
