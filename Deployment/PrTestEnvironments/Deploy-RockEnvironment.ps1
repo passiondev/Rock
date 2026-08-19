@@ -770,6 +770,38 @@ try {
         if (Test-Path $SitePath) { Remove-Item $SitePath -Recurse -Force }
         Move-Item -Path $ExtractPath -Destination $SitePath
 
+        # Move-Item within a volume is a rename, so the tree keeps the ACLs it
+        # inherited at $ExtractPath and never picks up inheritance from the site
+        # root's parent. Nothing else here grants anything, so the app pool
+        # identity lands with read access and no write access -- and Rock needs
+        # write access, because it compiles the legacy LESS themes to .css on a
+        # background thread at every application start.
+        #
+        # The failure is close to invisible, which is why this went unnoticed from
+        # January to August 2026. RockTheme.Compile writes each theme's files in
+        # directory order, so it dies on bootstrap.css -- the first one -- with
+        # UnauthorizedAccessException, and its catch abandons that theme's whole
+        # loop before ever reaching theme.css. The exception is logged to
+        # ExceptionLog and nowhere else: Global.asax only surfaces compile
+        # messages through Debug.WriteLine guarded by IsDevelopmentEnvironment.
+        # The stale .css keeps being served with a 200, so every health check
+        # passes while every theme silently rots.
+        #
+        # InPlace deploys robocopy into a directory that already exists and so
+        # inherit its ACLs -- which is the only reason production was unaffected.
+        # This branch is the one that needs the grant.
+        #
+        # (OI)(CI) makes the ACE inheritable, so NTFS propagates it to the
+        # existing children and to whatever the preserved-file restore and the
+        # shared-asset overlay write afterwards. No /T: it would walk the whole
+        # site for no gain, as Expand-Archive leaves inheritance enabled.
+        $appPoolIdentity = "IIS AppPool\$AppPoolName"
+        & icacls $SitePath /grant "${appPoolIdentity}:(OI)(CI)(M)" /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not grant $appPoolIdentity modify rights on $SitePath (icacls exit code $LASTEXITCODE). Rock cannot compile its themes without it."
+        }
+        Write-Host "Granted $appPoolIdentity modify rights on $SitePath."
+
         foreach ($file in $preservedStash.Keys) {
             $restoreTo = Join-Path $SitePath $file
             # Only fill a gap. The artifact shipping its own copy means the branch
