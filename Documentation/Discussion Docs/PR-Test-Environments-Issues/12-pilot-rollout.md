@@ -1,5 +1,7 @@
 # Pilot rollout on one internal PR
 
+**Last verified:** 2026-08-19
+
 **Type:** HITL  
 **Blocked by:** 01-bootstrap-server-prerequisites, 04-label-triggered-deploy-workflow, 06-stop-destroy-lifecycle, 10-runtime-config-integration-lockdown, 11-runbooks  
 **User stories covered:** 1, 2, 3, 4, 6, 7, 13, 14, 15, 16

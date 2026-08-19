@@ -1,5 +1,9 @@
 # PR Test Environments: Operator Runbook
 
+**Last verified:** 2026-08-19 · **Audience:** whoever is operating the pipeline, not using it
+(developers want the Developer Runbook). Open items and their reasoning live in
+`Training/DevOps-Open-Items-Rock-CICD.md`; incidents live under `Incidents/`.
+
 ## Infrastructure
 
 - Base branch config: `.github/pr-test-environments.json` controls which PR base branch is eligible for PR test environments. It currently targets `passion-19.3.4` for the Rock version pin. Update this value during Rock upgrades.
