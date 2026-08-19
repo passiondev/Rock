@@ -1254,13 +1254,27 @@ knowingly.
 "pristine upstream mirror" and put `staging` in the safe-to-prune set. Both were wrong, and
 measurably so:
 
-- `develop` declares **Rock 19.0.3** — it is the v19 line, not a mirror and not an ancestor of
-  the trunk (the two diverged 2026-01-07). It tracks all **276** files under
-  `RockWeb/Plugins/`, 78 of them `org_passion`/`team_passion`. It is simultaneously where
-  Passion's plugin work lives *and* the only in-repo starting point for the eventual v19
-  upgrade. It is also the branch the last production build came from — 2026-05-06 from
-  `dd6d189b`, which is `origin/develop` HEAD today. See item 15 for why that build must never
-  be installed on production.
+- `develop` declares **Rock 19.0.3** — not a mirror and not an ancestor of the trunk. It tracks
+  all **276** files under `RockWeb/Plugins/`, 78 of them `org_passion`/`team_passion`, and all
+  78 are absent from the trunk. It is also the branch the last production build came from —
+  2026-05-06 from `dd6d189b`, still `origin/develop` HEAD. See item 15 for why that build must
+  never be installed on production. *(Re-measured 2026-08-19 against the new trunk: 276, 78, 78
+  and `dd6d189b` all still hold.)*
+
+  **One of the two reasons this item gave for keeping it has expired.** Until the cutover,
+  `develop` was the v19 line and therefore "the only in-repo starting point for the eventual v19
+  upgrade". That upgrade has happened, and it did not start here — the trunk took 19.3.4 from
+  upstream and is now **three minors ahead** of `develop`, which is 1,537 commits behind it and
+  35 ahead. Of those 35, four are the January plugin import and most of the rest are the
+  original PR-test-environment automation that has since been re-landed on the trunk. So the
+  case for keeping `develop` now rests on the plugin files and the build provenance alone, and
+  once item 14 reconciles the plugins onto the trunk, only the provenance is left — which a tag
+  holds just as well as a branch.
+
+  Do not copy the divergence date out of here. The two diverged in early January 2026, but the
+  exact merge base moves every time the trunk does: it was `daea3ce6` (2026-01-07) against
+  `passion-18.4.1` and is `faffd264` (2026-01-08) against `passion-19.3.4`. Measure it with
+  `git merge-base origin/develop origin/<trunk>` rather than trusting a copy.
 - `staging` (now deleted from `origin`, see above) declares **Rock 17.6.1** and is 73 commits
   ahead of `develop`, holding **five plugin files newer than `develop`'s copies** — `org_passion/RSVP/RsvpDetailBETA.ascx`,
   `org_passion/RSVP/RsvpResponse.ascx.cs`, `org_passion/RSVP/RsvpResponseBETA.ascx.cs` (all
@@ -1495,13 +1509,17 @@ test_base_branch_config.py` asserts them separately for exactly that reason.
 
 Each branch declares its own Rock version — in `Rock.Version/AssemblySharedInfo.cs` through
 18.x, and in `Directory.Build.props` as `<Version>` from 19.x, which deleted the older file.
-They are not three points on one line — they are three different Rock majors:
+They are not three points on one line — they are three different Rock majors. The cutover added
+a fourth: the trunk is `passion-19.3.4` today, three minors ahead of `develop`, so "the v19
+branch" is no longer a unique description of anything. The exact divergence commit moves with the
+trunk — measure it, per item 9 — and the row below is the 2026-08-10 reading against
+`passion-18.4.1`.
 
 | Branch | Declares | Descends from upstream tag `18.4.1`? | Commits the tag has that it lacks | Files under `RockWeb/Plugins/` |
 | --- | --- | --- | --- | --- |
 | `passion-18.4.1` (trunk when measured; production's pin today) | **18.4.1** | yes | 0 | 2 |
-| `develop` | **19.0.3** | no — diverged 2026-01-07 | 218 | 276 |
-| `staging` | **17.6.1** | no | 2,238 | 276 |
+| `develop` | **19.0.3** | no — diverged early January 2026 | 218 | 276 |
+| `staging` (deleted from `origin` since; see item 9) | **17.6.1** | no | 2,238 | 276 |
 
 **Read "trunk" below as "the production branch" -- corrected 2026-08-19.** This section was
 written when production's source branch *was* the trunk, and it used the two words
