@@ -209,7 +209,7 @@ class TrunkProtectionDryRunTests(unittest.TestCase):
             "case \"$args\" in\n"
             "  *--paginate*rulesets)  cat <<'EOF'\n" + pages + "\nEOF\n    ;;\n"
             "  *rulesets/*)           cat <<'EOF'\n" + detail + "\nEOF\n    ;;\n"
-            "  *default_branch*)      echo 'passion-18.4.1' ;;\n"
+            "  *default_branch*)      echo 'passion-19.3.4' ;;\n"
             "  *nameWithOwner*)       echo 'passiondev/Rock' ;;\n"
             "  *)                     echo \"stub gh: unhandled: $args\" >&2; exit 1 ;;\n"
             "esac\n"

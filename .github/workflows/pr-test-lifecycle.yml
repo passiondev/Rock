@@ -83,7 +83,7 @@ jobs:
               ref: pull.base.ref
             });
             const config = JSON.parse(Buffer.from(configResponse.data.content, 'base64').toString('utf8'));
-            const configuredBaseBranch = config.baseBranch || 'passion-18.4.1';
+            const configuredBaseBranch = config.baseBranch || 'passion-19.3.4';
             const environmentDomain = config.environmentDomain || 'rock-dev.connect.passion.team';
             if (pull.base.ref !== configuredBaseBranch) {
               core.info(`PR ${pull.number} targets ${pull.base.ref}; PR test environments are configured for ${configuredBaseBranch}.`);

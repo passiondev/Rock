@@ -15,7 +15,7 @@ Run the complete PR test environment workflow against one internal PR and verify
   - Result: closed because it targeted `develop` instead of the configured base branch.
 - Current pilot PR: https://github.com/passiondev/Rock/pull/3
   - Branch: `pilot/pr-test-env-doc-smoke-v1761`
-  - Base branch: `passion-18.4.1` as configured in `.github/pr-test-environments.json`
+  - Base branch: `passion-19.3.4` as configured in `.github/pr-test-environments.json`
   - Change type: documentation-only smoke change
   - Applied label: `rock:start`
   - Current result: GitHub Actions now triggers from `rock:start`, builds the latest PR head, packages and uploads the PR/SHA-specific artifact to GCS, updates the sticky PR comment, and fails at the SSH deployment step because the Google Windows VM is not reachable from GitHub-hosted runners on port 22.

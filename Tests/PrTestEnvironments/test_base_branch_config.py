@@ -24,8 +24,23 @@ PILOT_ISSUE = REPO_ROOT / "Documentation" / "Discussion Docs" / "PR-Test-Environ
 # bump is a one-line change in this file plus the JSON config -- previously the
 # branch name was repeated in five places and every one of them had to be found
 # by hand. Bump this together with .github/pr-test-environments.json.
-EXPECTED_BASE_BRANCH = "passion-18.4.1"
+EXPECTED_BASE_BRANCH = "passion-19.3.4"
 EXPECTED_ENVIRONMENT_DOMAIN = "rock-dev.connect.passion.team"
+
+# Production is pinned separately, and during a Rock upgrade it deliberately lags.
+#
+# Staging goes first: it is the place a new minor is proven, so its trunk moves the
+# moment the artifact is ready. Production keeps running the old minor until its own
+# cutover, which is a separate decision with a separate catalog behind it. While that
+# gap is open the two pins genuinely disagree, and folding production into
+# BASE_BRANCH_PIN_SITES would force them level -- which in this direction means
+# production-deploy.yml offering a v19 artifact as the default ref for a manual
+# production deploy. Rock migrates at Application_Start, so accepting that default
+# once migrates the production catalog with no way back.
+#
+# So it is pinned here rather than exempted. Both constants are asserted; neither can
+# drift unnoticed. At production cutover, set this to EXPECTED_BASE_BRANCH's value.
+EXPECTED_PRODUCTION_BRANCH = "passion-18.4.1"
 
 
 class BaseBranchConfigTests(unittest.TestCase):
@@ -144,9 +159,14 @@ BASE_BRANCH_PIN_SITES = [
     PinSite("pr-test-lifecycle.yml: PR gate fallback", LIFECYCLE_WORKFLOW, _js_gate_fallbacks),
     PinSite("staging-deploy.yml: push branches", STAGING_WORKFLOW, _push_branches),
     PinSite("staging-deploy.yml: workflow_dispatch ref default", STAGING_WORKFLOW, _dispatch_ref_defaults),
-    PinSite("production-deploy.yml: workflow_dispatch ref default", PRODUCTION_WORKFLOW, _dispatch_ref_defaults),
     PinSite("deployment-pipeline-tests.yml: push branches", PIPELINE_TESTS_WORKFLOW, _push_branches),
     PinSite("test_environment_deploy.py: TRUNK_BRANCH", ENVIRONMENT_DEPLOY_TEST, _python_trunk_constants),
+]
+
+# Pinned to the production Rock line, not the trunk. Kept in the same shape as the
+# list above so the completeness sweep below can cover both as one set.
+PRODUCTION_PIN_SITES = [
+    PinSite("production-deploy.yml: workflow_dispatch ref default", PRODUCTION_WORKFLOW, _dispatch_ref_defaults),
 ]
 
 
@@ -220,6 +240,29 @@ class BaseBranchCutoverPinTests(unittest.TestCase):
             f"these pins disagree with EXPECTED_BASE_BRANCH ({EXPECTED_BASE_BRANCH}): " + "; ".join(drifted),
         )
 
+    def test_production_pins_the_production_rock_line_not_the_trunk(self):
+        """The one pin that does not follow staging. Asserted rather than skipped,
+        so "production still points at the old branch" stays a deliberate statement
+        in this file instead of something a cutover forgot."""
+        drifted = []
+        for site in PRODUCTION_PIN_SITES:
+            found = site.read_pins(site.path)
+            self.assertTrue(
+                found,
+                f"{site.label}: no pin found -- the file's shape changed and this guard "
+                f"is no longer reading it",
+            )
+            drifted.extend(
+                f"{site.label} -> {value}" for value in found if value != EXPECTED_PRODUCTION_BRANCH
+            )
+
+        self.assertEqual(
+            drifted,
+            [],
+            f"these pins disagree with EXPECTED_PRODUCTION_BRANCH ({EXPECTED_PRODUCTION_BRANCH}): "
+            + "; ".join(drifted),
+        )
+
     def test_no_workflow_pins_a_trunk_branch_the_cutover_list_does_not_cover(self):
         """The list above is only useful while it is complete. A new workflow that
         names the trunk branch has to join it, or the next cutover misses that file
@@ -230,7 +273,7 @@ class BaseBranchCutoverPinTests(unittest.TestCase):
         prose is full of branch names that are not pins, so a text sweep there
         false-positives more than it catches. New workflows are the realistic
         source of a missed pin; everything else is caught by review."""
-        covered = {site.path for site in BASE_BRANCH_PIN_SITES}
+        covered = {site.path for site in [*BASE_BRANCH_PIN_SITES, *PRODUCTION_PIN_SITES]}
         stray = []
         for workflow in sorted([*WORKFLOW_DIR.glob("*.yml"), *WORKFLOW_DIR.glob("*.yaml")]):
             if workflow in covered:

@@ -2,7 +2,7 @@
 
 PR test environments let internal PRs run Rock on the shared Windows/IIS test host without building locally on macOS.
 
-The currently enabled PR base branch is configured in `.github/pr-test-environments.json`. For the current Rock version pin, PR test environments run for PRs targeting `passion-18.4.1`. When Rock is upgraded, update that config and branch new work from the new pinned base branch.
+The currently enabled PR base branch is configured in `.github/pr-test-environments.json`. For the current Rock version pin, PR test environments run for PRs targeting `passion-19.3.4`. When Rock is upgraded, update that config and branch new work from the new pinned base branch.
 
 ## URL
 

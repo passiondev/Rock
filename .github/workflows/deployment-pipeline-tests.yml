@@ -17,7 +17,7 @@ name: Deployment Pipeline Tests
 "on":
   push:
     branches:
-      - passion-18.4.1
+      - passion-19.3.4
     paths:
       # Whole trees, not the specific subdirectories they used to name. The suite
       # reads Deployment/Repository/ and .github/scripts/ as well, and both were
