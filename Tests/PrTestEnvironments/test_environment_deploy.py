@@ -533,6 +533,101 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("shared sandbox catalog", step["run"])
 
 
+class DeployScriptDriftTests(unittest.TestCase):
+    """The deploy scripts the VM runs are not the ones in the repository.
+
+    `Sync-DeploymentScripts` refreshes C:\\RockDeploy from the bootstrap prefix on
+    every queue poll, and the only publisher to that prefix is
+    pr-test-bootstrap-command-queue.yml, which is workflow_dispatch-only. So a fix
+    merged to Deployment/PrTestEnvironments/** changes nothing on the VM until
+    somebody dispatches a bootstrap -- and every deploy in between runs the old
+    script and reports success, because the code that would have done the work was
+    never there. That is open item 25.
+    """
+
+    def _drift_step(self):
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = workflow["jobs"]["deploy"]["steps"]
+        matching = [s for s in steps if s.get("name") == "Report deploy script drift"]
+        self.assertEqual(len(matching), 1)
+        return matching[0]
+
+    def test_the_deploy_compares_the_published_scripts_against_this_commit(self):
+        step = self._drift_step()
+
+        self.assertIn("Deployment/PrTestEnvironments", step["run"])
+        self.assertIn("::warning::", step["run"])
+
+    def test_it_compares_against_the_prefix_the_bootstrap_actually_publishes_to(self):
+        """The coupling this test exists for: the drift check reads one GCS prefix
+        and the bootstrap writes another, and nothing at runtime would notice them
+        diverging -- the check would just report 'in sync' forever against an empty
+        prefix. Renaming the prefix in one file has to fail here."""
+        prefix = "pr-environments/bootstrap/latest"
+
+        self.assertIn(prefix, self._drift_step()["run"])
+        self.assertIn(prefix, BOOTSTRAP_WORKFLOW.read_text())
+
+    def test_the_working_tree_it_compares_against_is_actually_checked_out(self):
+        """This job has no working tree of its own -- it authenticates, queues a
+        command and waits. Comparing against Deployment/PrTestEnvironments without
+        checking it out first reads an empty directory, which reports 'in sync' and
+        is worse than not checking at all."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = workflow["jobs"]["deploy"]["steps"]
+
+        names = [s.get("name") for s in steps]
+        checkout = next(
+            index for index, step in enumerate(steps)
+            if str(step.get("uses", "")).startswith("actions/checkout")
+            and "Deployment/PrTestEnvironments" in str(step.get("with", {}).get("sparse-checkout", ""))
+        )
+
+        self.assertLess(checkout, names.index("Report deploy script drift"))
+
+    def test_the_warning_arrives_before_the_command_is_queued(self):
+        """A warning printed after the deploy has already run is a post-mortem. The
+        point is to see it while the deploy can still be abandoned."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        names = [s.get("name") for s in workflow["jobs"]["deploy"]["steps"]]
+
+        self.assertLess(
+            names.index("Report deploy script drift"),
+            names.index("Queue deploy-environment command"),
+        )
+
+    def test_an_empty_local_directory_is_not_reported_as_in_sync(self):
+        """The comparison walks the checkout. If the checkout silently produced
+        nothing, a naive loop reports zero differences -- "in sync" -- which is the
+        precise failure this check exists to catch, now with a green tick on it."""
+        run = self._drift_step()["run"]
+
+        self.assertIn("$localScripts.Count -eq 0", run)
+        self.assertIn("could not check", run)
+
+    def test_the_check_cannot_break_a_deploy_it_is_only_observing(self):
+        """Structural rather than incidental. Warning-only holds today because the
+        script happens to be correct; continue-on-error holds it when the script is
+        not, or when gsutil has a bad afternoon. A diagnostic that can fail a
+        production deploy gets deleted the first time it does."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = workflow["jobs"]["deploy"]["steps"]
+        step = next(s for s in steps if s.get("name") == "Report deploy script drift")
+
+        self.assertTrue(step.get("continue-on-error"))
+
+    def test_drift_warns_and_does_not_fail_the_deploy(self):
+        """Deliberate, and the reason this is option 2 of open item 25 rather than
+        option 3: failing closed would block every deploy from the moment a script
+        is merged until somebody dispatches a bootstrap, including the deploys that
+        have nothing to do with the changed script. Failing closed is a separate
+        decision with an operational cost, not a free upgrade to this one."""
+        step = self._drift_step()
+
+        self.assertNotIn("exit 1", step["run"])
+        self.assertNotIn("::error::", step["run"])
+
+
 class StagingWorkflowTests(unittest.TestCase):
     def test_staging_tracks_the_trunk_branch(self):
         workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())

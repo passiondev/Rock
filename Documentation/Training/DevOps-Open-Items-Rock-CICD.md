@@ -884,6 +884,23 @@ script only needs the *upload*. So this item is about publishing, not about rebo
 Option 1 is the actual fix and is small. Option 2 is worth doing regardless, because it is the
 thing that would have turned three hours of diagnosis into one line of log.
 
+> **Option 2 is built, 2026-08-19.** `env-deploy-command.yml` now sparse-checks out
+> `Deployment/PrTestEnvironments`, downloads the published copies, and compares them with line
+> endings normalised, before it queues the command. A mismatch prints a `::warning::` naming the
+> stale scripts and a `STALE ON THE VM` row in the run summary. Three things about it are
+> deliberate and should survive edits: it runs **before** the queue step, so the warning arrives
+> while the deploy can still be abandoned rather than as a post-mortem; it is
+> `continue-on-error: true`, so a diagnostic can never fail the deploy it is only observing; and
+> an empty local directory reports *not checked* rather than *in sync*, because "zero differences
+> found against nothing" is the exact failure this check exists to catch. `DeployScriptDriftTests`
+> in `Tests/PrTestEnvironments/test_environment_deploy.py` pins all three, and pins the GCS prefix
+> against the one the bootstrap actually publishes to -- the two could otherwise drift apart and
+> the check would report "in sync" forever against an empty prefix.
+>
+> **Options 1 and 3 are still open**, and option 2 does not substitute for either. This tells you
+> the scripts are stale; it does not publish them, and it does not stop the deploy. Somebody still
+> has to dispatch the bootstrap and deploy again.
+
 **How to apply, generally:** verify at the receiving end, not the publishing end. Both existing
 tests around the bootstrap assert that the upload step exists, and both were green throughout.
 

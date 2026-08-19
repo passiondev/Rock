@@ -164,6 +164,88 @@ jobs:
             Write-Host "::warning::$env:ENVIRONMENT_NAME is deploying against the shared sandbox catalog, which every pr-* site also uses. Rock migrates on startup, so this is only safe while every live environment sits on the same Rock minor version. If this environment is meant to have its own catalog, its db_name input resolved to empty -- check that the repository variable exists and is spelled as the caller expects."
           }
 
+      # What the VM runs is not what is in this repository. Sync-DeploymentScripts
+      # refreshes C:\RockDeploy from the bootstrap prefix on every queue poll, and
+      # the only publisher to that prefix is pr-test-bootstrap-command-queue.yml,
+      # which is workflow_dispatch-only. So a fix merged to
+      # Deployment/PrTestEnvironments/** changes nothing on the VM until somebody
+      # remembers to dispatch a bootstrap -- and the deploys in between run the old
+      # script and report success, because the code that would have done the work
+      # was never there to fail. That is exactly how an ACL fix sat merged for a day
+      # on 2026-08-19 while three green deploys kept serving a stale stylesheet.
+      # Comparing the two copies costs one gsutil call and turns a silent no-op into
+      # a warning on the run it affects. Open item 25.
+      - name: Check out the deploy scripts for the drift check
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments
+          sparse-checkout-cone-mode: false
+
+      - name: Report deploy script drift
+        # Structural, not incidental: this step exists to make a problem visible and
+        # must never become one. A parse error or a gsutil outage here reports
+        # nothing and lets the deploy proceed, which is the same position every
+        # deploy was in before the check existed.
+        continue-on-error: true
+        run: |
+          $localDir = "Deployment/PrTestEnvironments"
+          $publishedPrefix = "gs://$env:GCS_BUCKET/pr-environments/bootstrap/latest"
+          $downloadDir = Join-Path $env:RUNNER_TEMP "published-deploy-scripts"
+          New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+
+          # Failure here is not fatal and must not read as "in sync": if the copy
+          # returns nothing, every script falls into $missing below and the warning
+          # says so.
+          gsutil -m cp "$publishedPrefix/*.ps1" $downloadDir 2>&1 | Out-Null
+
+          # Hashed with line endings normalised. The two copies reach this runner
+          # through different Git checkouts, and PowerShell runs either -- so
+          # reporting a CRLF-only difference as drift would train people to ignore
+          # this warning, which is the one thing it cannot survive.
+          function Get-NormalizedHash($path) {
+            $text = [System.IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "")
+          }
+
+          $localScripts = @( Get-ChildItem -Path $localDir -Filter *.ps1 -ErrorAction SilentlyContinue )
+          if ($localScripts.Count -eq 0) {
+            # Reporting "in sync" against nothing is the failure mode this whole
+            # check exists to prevent, so say the check did not run instead.
+            Write-Host "::warning::Found no deploy scripts in $localDir, so this run could not check whether the VM is up to date. The comparison, not the deploy, is what failed here."
+            "| Deploy scripts | not checked -- no local copy to compare |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            return
+          }
+
+          $drifted = @()
+          $missing = @()
+          foreach ($local in $localScripts) {
+            $published = Join-Path $downloadDir $local.Name
+            if (-not (Test-Path $published)) {
+              $missing += $local.Name
+              continue
+            }
+            if ((Get-NormalizedHash $local.FullName) -ne (Get-NormalizedHash $published)) {
+              $drifted += $local.Name
+            }
+          }
+
+          $stale = $drifted + $missing
+          if ($stale.Count -eq 0) {
+            Write-Host "Deploy scripts published to the VM match this commit."
+            "| Deploy scripts | in sync with this commit |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            return
+          }
+
+          foreach ($name in $drifted) { Write-Host "  differs from the published copy: $name" }
+          foreach ($name in $missing) { Write-Host "  never published: $name" }
+
+          $names = $stale -join ", "
+          "| Deploy scripts | STALE ON THE VM -- $names |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Write-Host "::warning::The deploy scripts on the VM are not the ones in this commit ($names). This deploy will run the published copies and will report success either way, so a fix you expect to be exercised here may not run at all. Dispatch the 'PR Test - Bootstrap command queue' workflow to publish them, then deploy again."
+
       - name: Queue deploy-environment command
         run: |
           $command = [ordered]@{

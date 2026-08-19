@@ -88,26 +88,41 @@ class PublicUrlVerificationTests(unittest.TestCase):
     def test_the_sparse_checkout_includes_the_action(self):
         """A sparse checkout that omits the action's own path produces a working tree
         without it, which fails exactly like having no checkout at all -- while looking
-        like the checkout succeeded."""
+        like the checkout succeeded.
+
+        The one that has to contain it is the *last* checkout before the action runs,
+        because each checkout replaces the sparse patterns and the working tree that
+        the previous one left. A job may legitimately check out something else earlier
+        for an unrelated step -- env-deploy-command.yml checks out
+        Deployment/PrTestEnvironments for the drift comparison -- and requiring every
+        checkout in the job to carry this action's path would only force cargo into
+        steps that have nothing to do with it.
+        """
         for path in DEPLOY_WORKFLOWS:
             for job_name, job in _load(path).get("jobs", {}).items():
                 steps = job.get("steps", []) or []
-                if not any(step.get("uses", "") == ACTION_REF for step in steps):
+                action_indexes = [
+                    index for index, step in enumerate(steps)
+                    if step.get("uses", "") == ACTION_REF
+                ]
+                if not action_indexes:
                     continue
 
-                for step in steps:
-                    if not str(step.get("uses", "")).startswith("actions/checkout@"):
-                        continue
-                    sparse = (step.get("with") or {}).get("sparse-checkout")
-                    if sparse is None:
-                        continue
-                    with self.subTest(workflow=path.name, job=job_name):
-                        self.assertIn(
-                            ".github/actions/verify-public-url",
-                            sparse,
-                            f"{path.name}:{job_name} sparse-checks-out a tree that does "
-                            "not contain the action it then uses",
-                        )
+                preceding = [
+                    step for step in steps[: action_indexes[0]]
+                    if str(step.get("uses", "")).startswith("actions/checkout@")
+                    and (step.get("with") or {}).get("sparse-checkout") is not None
+                ]
+                if not preceding:
+                    continue
+
+                with self.subTest(workflow=path.name, job=job_name):
+                    self.assertIn(
+                        ".github/actions/verify-public-url",
+                        preceding[-1]["with"]["sparse-checkout"],
+                        f"{path.name}:{job_name} sparse-checks-out a tree that does "
+                        "not contain the action it then uses",
+                    )
 
     def test_unreachable_is_fatal_but_a_certificate_finding_is_not(self):
         """These are different failures with different owners. A site nobody can load is
