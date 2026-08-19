@@ -714,7 +714,8 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>What's ours</h3>
-          <p>Our trunk differs from Rock's <code>18.4.1</code> in <strong>68 files</strong>. <strong>61 don't exist in Rock at all</strong>: the workflows, the deploy scripts, the runbooks, the tests. Only <strong>7</strong> of Rock's own files have been edited, and 5 of those are one Form Builder feature. Nothing deleted.</p>
+          <p>Our trunk differs from Rock's <code>19.3.4</code> in <strong>86 files</strong>. <strong>78 don't exist in Rock at all</strong>: the workflows, the deploy scripts, the runbooks, the tests. Only <strong>8</strong> of Rock's own files have been edited &mdash; 5 of those are one Form Builder feature, and one is the migration fix that unblocked the Rock 19 upgrade. Nothing deleted.</p>
+          <p class="card-note" style="margin-top:.5rem">Measured 2026-08-19 against the <code>19.3.4</code> tag. Recount before presenting &mdash; the tag changes at every upgrade and the count moves with every merge.</p>
           <p style="margin-top:.5rem">Our long-standing custom blocks (check-in, scheduling, RSVP, finance, CMS) are <strong>78 files under <code>RockWeb/Plugins/org_passion</code></strong> and <code>team_passion</code>. They are on the older <code>develop</code> branch, <strong>not on the trunk.</strong> Reconciling those two is the next piece of work and the top item on the open-items list.</p>
         </div>
         <div class="card">
@@ -733,7 +734,7 @@
       <div class="cols cols-2">
         <div class="card">
           <h3>Down: their work into ours</h3>
-          <p>Our clean reference point sits outside our branches entirely: <strong>Spark's tag <code>18.4.1</code></strong>, fetched from the <code>upstream</code> remote. That tag is what we diff against to see exactly what is ours and what is theirs.</p>
+          <p>Our clean reference point sits outside our branches entirely: <strong>Spark's tag for whatever version the trunk runs</strong> &mdash; <code>19.3.4</code> today &mdash; fetched from the <code>upstream</code> remote. That tag is what we diff against to see exactly what is ours and what is theirs.</p>
           <p style="margin-top:.6rem">Our <code>develop</code> branch is <strong>not</strong> a clean mirror, despite the name. It carries 276 files under <code>RockWeb/Plugins/</code>, 78 of them ours, where upstream's tag carries 2. It is history we still need, not a reference copy.</p>
           <p class="card-note" style="margin-top:.6rem">Never open a PR against <code>develop</code>.</p>
         </div>

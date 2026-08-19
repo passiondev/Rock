@@ -1205,6 +1205,51 @@ knowingly.
 > prune.** Deleting the list today leaves one feature branch as the sole remote copy.
 > **Do item 14 first,** or tag the content, before any pruning happens.
 
+> **Re-measured 2026-08-19, later the same day, and it is worse than the paragraph above
+> says. Read this one instead.** Two things moved.
+>
+> **`feat/PTP-16122` no longer exists on `origin`.** So the safety margin that paragraph
+> describes — one feature branch still holding the content after the prune — is already gone.
+> Both unique commits are now reachable from exactly three remote branches, and all three are
+> on the safe-to-prune list:
+>
+> ```
+> d3119b5103, 0fe0175651 -> origin/bump, origin/develop-17.6.1,
+>                           origin/pilot/pr-test-env-doc-smoke-v1761
+> ```
+>
+> **And `develop` is not the backstop it is being treated as.** Comparing blobs rather than
+> commit dates, the four plugin files sit at three different versions, and `develop` holds the
+> oldest of them in every case:
+>
+> | File | `bump` | `develop-17.6.1`, `pilot/…` | `develop` |
+> |---|---|---|---|
+> | `org_passion/RSVP/RsvpDetailBETA.ascx` | `f5d0a5458` | `f5d0a5458` | `7e3472a23` |
+> | `org_passion/RSVP/RsvpResponse.ascx.cs` | `9db5b4b36` | **`a5b64c4b0`** | `5efd2ccef` |
+> | `org_passion/RSVP/RsvpResponseBETA.ascx.cs` | `6b88881e1` | **`b0c637db0`** | `b1a6af931` |
+> | `org_secc/Authentication/Arena.cs` | `dad198cc0` | `dad198cc0` | `1df50645c` |
+>
+> The two bolded blobs are the current content of those files and they exist on
+> **`develop-17.6.1` and `pilot/pr-test-env-doc-smoke-v1761` only** — not on `bump`, and not on
+> the branch this item spends a paragraph telling you to protect. Pruning the list as written
+> destroys the newest copy of two plugin files and keeps a January copy on `develop` that will
+> look plausible to whoever finds it next.
+>
+> That is the actual correction here: **"do not delete `develop`" was aimed at the wrong
+> branch.** `develop` is worth keeping for the reasons given below, but it is not what is
+> holding this code. Before anything is pruned, tag the three holders — a tag is a ref, it
+> costs nothing, and it survives the branch deletion that is the whole risk:
+>
+> ```
+> git tag archive/plugins-bump            origin/bump
+> git tag archive/plugins-develop-17.6.1  origin/develop-17.6.1
+> git tag archive/plugins-pilot-v1761     origin/pilot/pr-test-env-doc-smoke-v1761
+> git push origin --tags
+> ```
+>
+> Nothing here has been deleted or tagged — this is a measurement, and the pruning decision is
+> still open.
+
 **Do not delete `develop`.** An earlier revision of this list called it a
 "pristine upstream mirror" and put `staging` in the safe-to-prune set. Both were wrong, and
 measurably so:
@@ -1622,8 +1667,12 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 9. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
    reporting a cold start as a broken environment. `staging` first; measure the memory before
    doing it to every `pr-*` site
-10. Items 9–13 — cleanup, any time. Note item 9's warning: `develop` and `staging` are **not**
-    safe to prune yet
+10. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
+    line used to say.** `staging` is already deleted, so there is nothing left to protect by not
+    pruning it; what needs protecting is `bump`, `develop-17.6.1` and
+    `pilot/pr-test-env-doc-smoke-v1761`, which between them hold the only remote copy of four
+    plugin files and two commits — and all three are on that item's own safe-to-prune list. Tag
+    them first (the commands are in item 9), or do item 14, before deleting anything
 11. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
 12. Item 22 — enable automated backups and PITR on `connect-restore-test` (~5 min of clicking,

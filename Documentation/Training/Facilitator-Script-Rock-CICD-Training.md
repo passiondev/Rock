@@ -43,7 +43,7 @@ correctly.
 | 0:00 | 4 | Open — why this exists | 1–2 | Rock only builds on Windows; we're all on Macs. That's the whole reason. |
 | 0:04 | 8 | Git in five minutes | 3–5 | A branch is a copy you can't break. |
 | 0:12 | 6 | The fork | 6–7 | We didn't write Rock. We keep our changes next to theirs. Repo is **public**. |
-| 0:18 | 4 | Version branches | 8–9 | The trunk is named after the version production runs. |
+| 0:18 | 4 | Version branches | 8–9 | The trunk is named after the Rock version *it* runs — which is not always the one production runs. |
 | 0:22 | 8 | Making changes | 10–12 | Base branch must be the repo default, or nothing happens. |
 | 0:30 | 5 | Why GitHub builds it | 13–14 | Half an hour of compiling on a Windows machine none of us owns. |
 | 0:35 | 7 | Three doors | 15–16 | Merging deploys **staging**. Production takes a deliberate run *and* an approval. |
@@ -137,9 +137,11 @@ git diff --diff-filter=M --name-only "$TAG"..origin/HEAD | wc -l   # edited
 git diff --diff-filter=D --name-only "$TAG"..origin/HEAD | wc -l   # deleted
 ```
 
-Measured 2026-08-19 against the `19.3.4` tag, the split was **77 added, 8 edited, 0 deleted**:
+Measured 2026-08-19 against the `19.3.4` tag, the split was **78 added, 8 edited, 0 deleted**.
+It was 77 added earlier the same day — the count moves with every merge, which is the reason
+this block says to recount rather than quoting a number:
 
-> "Our trunk differs from Rock's own release in 85 files. Seventy-seven of those are files that
+> "Our trunk differs from Rock's own release in 86 files. Seventy-eight of those are files that
 > don't exist in Rock at all — the workflows, the deploy scripts, the runbooks, the tests. This
 > pipeline. Only **eight** files that Rock ships have been edited by us, and five of those are
 > one feature: the header image upload in Form Builder. Nothing has been deleted."
