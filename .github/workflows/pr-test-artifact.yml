@@ -148,6 +148,7 @@ jobs:
             Rock.JavaScript.Obsidian/node_modules
             Rock.JavaScript.Obsidian.Blocks/node_modules
             Rock.JavaScript.EditorJs/node_modules
+            Rock.Frontend.Styles/node_modules
           key: js-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
             js-${{ runner.os }}-
@@ -186,6 +187,29 @@ jobs:
 
       - name: Build Rock.JavaScript.Obsidian.Blocks
         working-directory: Rock.JavaScript.Obsidian.Blocks
+        run: npm run build
+
+      # Same trap as the Obsidian blocks above, and it only appeared in v19. Under
+      # 18.4.1 the generated CSS under RockWeb/Styles/styles-v2/ was committed (178
+      # files). In 19.x that folder's .gitignore is '*' and the content is produced
+      # here instead, so without this step the artifact ships without
+      # styles-v2/icons/tabler-icon.css. That file is @import-ed by
+      # RockWeb/Styles/_rock-core.less, so Rock's LESS theme compile fails at startup
+      # and every page renders against whatever stale theme.css was already on disk.
+      #
+      # obsidian.config.json copies src/styles -> RockWeb/Styles and src/themes ->
+      # RockWeb/Themes, so this has to run before the packaging steps below.
+      #
+      # Guarded on the lockfile because Rock.Frontend.Styles does not exist on the
+      # 18.4.1 line, and this workflow still builds that branch for the pr-* fleet.
+      - name: Install Rock.Frontend.Styles Dependencies
+        if: hashFiles('Rock.Frontend.Styles/package-lock.json') != ''
+        working-directory: Rock.Frontend.Styles
+        run: npm ci
+
+      - name: Build Rock.Frontend.Styles
+        if: hashFiles('Rock.Frontend.Styles/package-lock.json') != ''
+        working-directory: Rock.Frontend.Styles
         run: npm run build
 
       - name: Move Plugins Folder
