@@ -122,6 +122,70 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                 "so the shared-asset overlay now runs on the InPlace production path",
             )
 
+    def test_dedicated_site_grants_the_app_pool_write_access(self):
+        """Rock compiles its legacy LESS themes to .css on a background thread at
+        every application start, so the app pool identity needs write access to the
+        site directory. A DedicatedSite deploy expands a fresh tree, which inherits
+        only the parent's ACLs and leaves that identity read-only; InPlace copies
+        over a directory that already has the right ACEs, which is the only reason
+        production was never affected.
+
+        Losing the grant fails almost silently, which is why it went unnoticed from
+        January to August 2026. RockTheme.Compile dies on the first file with
+        UnauthorizedAccessException and abandons the theme's whole loop before
+        reaching theme.css; the exception reaches ExceptionLog and nowhere else, and
+        the stale .css keeps being served with a 200. Every health check passes while
+        every theme silently rots -- so no other test in this suite can catch it, and
+        nothing on the deploy path will either. That is what this one is for.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        openers = [
+            index for index, line in enumerate(lines)
+            if line.strip() == "if ($Mode -eq 'DedicatedSite') {"
+        ]
+        self.assertTrue(openers, "no DedicatedSite branch found")
+
+        guarded = set()
+        for opener in openers:
+            start, end = _block_body(lines, opener)
+            guarded.update(range(start, end))
+
+        grants = [
+            index for index, line in enumerate(lines)
+            if "icacls" in line and "/grant" in line
+        ]
+        self.assertTrue(
+            grants,
+            "the DedicatedSite deploy no longer grants the app pool modify rights on the "
+            "site directory, so Rock cannot compile its themes and will serve stale .css "
+            "while every health check passes",
+        )
+        for index in grants:
+            self.assertIn(
+                index, guarded,
+                f"the icacls grant at line {index + 1} is not inside a DedicatedSite branch; "
+                "it must not run on the InPlace production path",
+            )
+            grant = lines[index]
+            # (OI)(CI) so NTFS propagates to existing children and to whatever the
+            # preserved-file restore and the shared-asset overlay write afterwards;
+            # (M) because compiling a theme rewrites files rather than only adding them.
+            self.assertIn("(OI)(CI)(M)", grant)
+            self.assertIn("$SitePath", grant)
+
+            # The identity is assembled a line or two above rather than inlined, so
+            # widen to the surrounding lines instead of matching the grant alone.
+            window = "\n".join(lines[max(0, index - 4):index + 6])
+            self.assertIn(
+                "IIS AppPool", window,
+                "the grant no longer names the app pool identity, so whatever it grants "
+                "rights to is not the account Rock compiles its themes under",
+            )
+            # A grant that fails and says nothing is the same outcome as no grant at all.
+            self.assertIn("$LASTEXITCODE", window)
+            self.assertIn("throw", window)
+
     def test_plugin_build_artifacts_are_stripped_after_the_overlay(self):
         """The strip runs on the freshly extracted artifact, which was sufficient
         while the overlay could not carry Plugins. Now that it does, the base
