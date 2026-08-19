@@ -72,7 +72,18 @@ JOIN
 JOIN 
     sys.schemas s ON t.schema_id = s.schema_id
 WHERE 
-    c.name = 'IconCssClass';
+    c.name = 'IconCssClass'
+    -- The UPDATE generated below joins IconCssClass to __IconTransition.FontAwesomeFull,
+    -- which is NVARCHAR(75). The LOB types text/ntext cannot appear on either side of '='
+    -- in SQL Server, and because every table's UPDATE is concatenated into one batch run
+    -- by a single sp_executesql, one such column fails the conversion for every table.
+    -- So take only the columns the join can actually use.
+    --
+    -- TYPE_NAME( system_type_id ) rather than a join to sys.types: it resolves an alias
+    -- type back to its base type, so a column declared over one is still converted, and
+    -- it cannot duplicate a cursor row the way joining on system_type_id would.
+    AND TYPE_NAME( c.system_type_id ) IN ( 'nvarchar', 'varchar', 'nchar', 'char' )
+    AND t.is_ms_shipped = 0;
 
 OPEN icon_cursor;
 FETCH NEXT FROM icon_cursor INTO @tableName, @schemaName;
