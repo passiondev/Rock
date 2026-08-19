@@ -868,7 +868,7 @@ re-diagnosing them. All verified 2026-08-10.
 3. **Production deploys from the production branch, and only that.** Note the wording: it read
    "from the trunk, and only the trunk" until 2026-08-19, and the cutover made that wrong.
    Each branch declares its own Rock version — `passion-18.4.1` is **18.4.1**, the trunk
-   `passion-19.3.4` is **19.3.4**, `develop` is **19.0.3**, `staging` is **17.6.1** — and
+   `passion-19.3.4` is **19.3.4**, `develop` is **19.0.3**, `develop-17.6.1` is **17.6.1** — and
    production's own assemblies are 18.x, a mix of 18.1.0, 18.3.1, and 18.4.1. So production's
    branch is `passion-18.4.1`, not the trunk, and deploying the trunk today would be the same
    irreversible jump to Rock 19 that deploying `develop` would be.

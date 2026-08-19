@@ -897,12 +897,122 @@ thing that would have turned three hours of diagnosis into one line of log.
 > against the one the bootstrap actually publishes to -- the two could otherwise drift apart and
 > the check would report "in sync" forever against an empty prefix.
 >
+> **It shipped with the bug it was built to catch, which is worth recording.** The first version
+> compared `Deployment/PrTestEnvironments` only. Smoke-testing it against the live bucket showed
+> 10 local scripts and 12 published ones: the bootstrap globs *two* directories into that one flat
+> prefix, and the check was blind to `Deployment/Database` -- the scripts an operator reaches for
+> mid-cutover. A drift check that covers most of the scripts reports "in sync" with authority it
+> has not earned. The directory list is now derived from the bootstrap's own publish line by
+> regex rather than written out again, so adding a third directory fails the test until the
+> comparison and its sparse checkout follow. A second test forbids the same `.ps1` basename in
+> two published directories, because the prefix is flat: the name is the whole identity once a
+> script lands on the VM, and a collision would let one copy overwrite the other silently and
+> pin the loser as permanently drifted.
+>
 > **Options 1 and 3 are still open**, and option 2 does not substitute for either. This tells you
 > the scripts are stale; it does not publish them, and it does not stop the deploy. Somebody still
 > has to dispatch the bootstrap and deploy again.
 
 **How to apply, generally:** verify at the receiving end, not the publishing end. Both existing
 tests around the bootstrap assert that the upload step exists, and both were green throughout.
+
+---
+
+### 26. The v19 cutover dropped a working feature, and every test stayed green
+
+**Found and fixed 2026-08-19.** The runbook's v19 pre-flight step is "dispatch **DB - Find legacy
+text columns** and read the output". On the new trunk that was not a thing you could do. Three of
+the four pieces it needs had not been carried across the cutover:
+
+| Piece | State on the new trunk |
+|---|---|
+| `Deployment/Database/Find-LegacyTextColumns.ps1` | present |
+| `Deployment/Database` in the bootstrap's publish glob | **missing** — the script never reached the VM |
+| `find-legacy-text-columns` branch in the queue agent | **missing** — the command returned "Unknown command" |
+| `.github/workflows/db-find-legacy-text-columns.yml` | **missing** — nothing to dispatch |
+
+All three were added on `passion-18.4.1` on 2026-08-18, the day before the trunk moved. There is
+no commit deleting them; the branches simply diverged and the merge did not carry them. Confirmed
+by counting `+` lines when restoring: the bootstrap needed two (both shortened variants of lines
+already there) and the agent needed none, so the trunk files were strict subsets — a wholesale
+restore, not a merge.
+
+**The part worth internalising is that `test_legacy_text_columns.py` was green the entire time.**
+It asserted the scripts exist, the runbook names them, and the finder performs no writes. All
+still true. The ability to *run* the thing was not among the things it was looking at, so its
+disappearance was invisible. This is the same failure shape as item 24's wording tests and item
+25's "the upload step exists" tests: the assertion is pinned next to the feature rather than on it.
+
+The chain is now pinned end to end by `TheFinderCanActuallyBeRunTests` — bootstrap publishes the
+script, agent has a command that invokes it, a `workflow_dispatch` workflow queues that command,
+and the `-Apply`-gated converter is deliberately *not* reachable from the queue. Each was
+mutation-tested by breaking that link alone and confirming that test and only that test fails.
+
+**Two facts that make this class of loss more likely here than it looks.** `workflow_dispatch`
+runs the workflow file from the repository's **default branch**, so a workflow left behind on the
+old trunk is not merely stale, it is unreachable. And Cloud SQL here is Private Service Connect
+only, so the finder has exactly one place it can run — the deploy VM — and no local fallback
+exists to paper over a broken publish path.
+
+**What to do about it, and it is not "write more tests".** Item 23 already said "diff the two
+trunks before flipping the default", and it was done — it is how the ACL fix was caught. It was
+read as a list of commits rather than a list of files, which is why this slipped through. At the
+*next* upgrade, diff the two trunks for whole files present on the old one and absent on the new
+before renaming the default branch, and treat `.github/workflows/*` and `Deployment/**` as the high-risk set. A file that
+exists on only one side is either a deliberate deletion with a commit behind it or an unported
+fix, and the difference is one `git log` away. Nothing currently performs that check.
+
+---
+
+### 27. The guard added to catch the silent CSS failure blocked the next deploy instead
+
+**Found and fixed 2026-08-19, about three hours after the guard it is about.** Item 25 and the
+theme-CSS work produced a completeness gate in `pr-test-artifact.yml`: after the styles build,
+fail the artifact if `RockWeb\Styles\styles-v2` looks empty. The reasoning was sound — a build
+that emits `tabler-icon.css` and nothing else would satisfy the existing check while still
+shipping a broken stylesheet set. The implementation was `if ($stylesV2.Count -lt 10)`.
+
+It failed the first build it ever gated, on output that was complete and correct:
+
+| | |
+|---|---|
+| Guard merged (`6df00c490d`) | 2026-08-19 16:49 UTC |
+| Next staging deploy (`32279379727`) | 2026-08-19 17:02 UTC — **failed**, `styles-v2 holds only 7 files` |
+| Builds the guard has passed | 0 of 1 |
+
+**Why 7 is right.** `Rock.Frontend.Styles/src/styles/styles-v2` holds 189 SCSS partials, one
+non-partial entry point (`core.scss`), and five plain `.css` files. Partials compile *into*
+`core.css` and emit nothing of their own, so a complete build emits six files plus a map. The
+build log confirms it: steps 1–6 of 98 are the whole of styles-v2, and the other 92 are themes
+and layouts.
+
+**Where 10 came from.** The 18.4.1 line commits that folder as *source* — 178 files. The 19.x
+line generates it as *output* — 7 files. Both numbers are correct for their branch and no
+threshold separates a good build from a bad one across both. The guard's own comment said it was
+"deliberately unguarded — it has to hold either way", which is the right instinct aimed at the
+wrong quantity: what has to hold either way is that the stylesheets have content, not that there
+is a particular number of them.
+
+**The fix is to measure the payload rather than the layout.** Every one of those 189 partials
+lands in `core.css` — 705,722 bytes on 18.4.1 and the same order on 19.x — so its size separates
+a real compile from a stub identically on both lines. The gate now requires `core.css` to exist
+and clear 100 KB, and `tabler-icon.css` to clear 50 KB, because `Test-Path` is satisfied by a
+zero-byte file and an empty stylesheet compiles perfectly well — it just renders nothing. That
+last point is not hypothetical; presence-without-content is the shape of the original silent
+failure this whole thread started from.
+
+**The lesson is narrower than "test your guards" and worth stating exactly.** A guard is code
+that runs in a place the author cannot see, on branches the author is not building. This one was
+written while reading the 19.x tree and reasoning about the 18.4.1 tree, and the number came from
+the tree that was *not* in front of it. When a check has to hold across two branch lines, derive
+its expectation from something both lines actually agree on — here, "the stylesheet has bytes in
+it" — and never from a count of files, which is a property of how a branch stores things rather
+than of whether the build worked.
+
+`StylesGateCompletenessTests` in `Tests/PrTestEnvironments/test_pr_artifact_workflow.py` pins the
+fix, including a regression test that fails if a `$stylesV2.Count` threshold is ever reintroduced
+as a build failure, and a test that reads the source tree to confirm `core.scss` is still the only
+entry point — so the day someone adds a second one, the gate is told to name it.
 
 ---
 
@@ -991,6 +1101,12 @@ carried over.** For this cutover that was the teardown fixes and the app-pool AC
 `workflow_dispatch` and `schedule` both run the workflow file from the **default** branch, so a
 fix that only exists on the incoming branch fixes nothing until the cutover — but that is
 exactly what makes them easy to leave behind. Diff the two trunks before flipping the default.
+
+That advice was already written here on the day it failed. **Item 26 is what it missed**, and the
+reason is worth carrying: the diff was read as a list of *commits* to cherry-pick, which found the
+ACL fix, and not as a list of *files present on one side and absent on the other*, which is what
+would have found the legacy-column workflow. The second reading is the one to do — it is
+`git diff --name-status old..new --diff-filter=D` and it takes a minute.
 
 **A third one, once item 3 is actually done: branch protection does not follow the cutover.**
 Rules and rulesets are bound to a branch *name*, so the moment the default moves, the new trunk
