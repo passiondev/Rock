@@ -55,11 +55,25 @@
                     <div class="row">
                         <!-- ADD Gender element which will be conditional based on the group attribute (should be checked in cs file) -->
                         <div class="col-xs-12 col-sm-5 col-md-5">
-                            <Rock:DataDropDownList ID="rblGender" runat="server" RepeatDirection="Vertical" Required="false" Label="Gender" Visible="false" >
+                            <%-- PTP-18203: this was a Rock:DataDropDownList carrying no SourceTypeName or
+                                 PropertyName. DataDropDownList.IsValid runs its DataAnnotationValidator
+                                 unconditionally, and that throws "Null SourceTypeName can't be validated" when the
+                                 pair is absent. RockControlHelper.RenderControl reads IsValid on every labeled
+                                 control, so the page returned a 500 whenever this control rendered while visible --
+                                 that is, any time lbAccept_Single_Click fails a check and returns instead of
+                                 advancing: blank "Other" dietary text, an incomplete address, a bad birth date.
+                                 RockDropDownList is what this static three-item list always wanted; it has no data
+                                 validator. Adding SourceTypeName="Rock.Model.Person, Rock" PropertyName="Gender"
+                                 would also stop the throw, but Person.Gender is [Required], so it would begin
+                                 enforcing gender on every render -- a behavior change rather than a fix.
+                                 RepeatDirection is dropped: a DropDownList has no such property, so it only ever
+                                 rendered as a stray HTML attribute, left over from when this was a RadioButtonList
+                                 (hence the "rbl" prefix, kept so the code-behind is untouched). --%>
+                            <Rock:RockDropDownList ID="rblGender" runat="server" Required="false" Label="Gender" Visible="false" >
                                     <asp:ListItem Value="" />
                                     <asp:ListItem Text="Male" Value="1" />
                                     <asp:ListItem Text="Female" Value="2" />
-                            </Rock:DataDropDownList>
+                            </Rock:RockDropDownList>
                         </div>
                     </div>
                         <!-- ADD Birthdate element which will be conditional based on the group attribute (should be checked in cs file) -->

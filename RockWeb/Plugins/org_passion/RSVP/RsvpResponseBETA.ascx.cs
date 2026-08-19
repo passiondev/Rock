@@ -1014,7 +1014,10 @@ $(document).ready(function () {
             if (animate) { $other.slideDown(150); } else { $other.show(); }
         } else {
             if (animate) { $other.slideUp(150); } else { $other.hide(); }
-            $other.find('input[type=text]').val('');
+            // The box keeps its value on purpose. Clearing it here wiped a pre-filled value the
+            // moment 'Other' was unchecked -- and sync(false) also runs on add_endRequest, so
+            // every async postback wiped it too. SaveDietaryRestrictions stores string.Empty
+            // when 'Other' is not selected, so a hidden leftover is never persisted.
         }
     }
 
@@ -1098,10 +1101,10 @@ $(document).ready(function () {
             var otherDefinedValue = GetDietaryOtherDefinedValue();
 
             // Some existing records carry "Other" text without the "Other" option selected. Left as
-            // stored, the picker renders "Other" unchecked, the reveal script clears the hidden box on
-            // load, and SaveDietaryRestrictions then writes string.Empty -- silently destroying text
-            // the person was never shown. Selecting "Other" makes the loaded state self-consistent, so
-            // the text is visible and only ever cleared deliberately.
+            // stored, the picker renders "Other" unchecked and SaveDietaryRestrictions then writes
+            // string.Empty -- silently destroying text the person was never shown. Selecting "Other"
+            // makes the loaded state self-consistent, so the text is visible and only ever cleared
+            // deliberately.
             if (savedOtherText.IsNotNullOrWhiteSpace()
                 && otherDefinedValue != null
                 && !savedIds.Contains(otherDefinedValue.Id))
