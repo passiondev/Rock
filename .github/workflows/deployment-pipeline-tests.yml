@@ -23,10 +23,28 @@ name: Deployment Pipeline Tests
       # reads Deployment/Repository/ and .github/scripts/ as well, and both were
       # outside the old list -- so a change to a tested file did not run its own
       # test. Naming the parent means the next thing added cannot reopen that.
+      #
+      # That claim was still false when it was written, and stayed false until
+      # 2026-08-19. Four things the suite reads sat outside this list:
+      # .github/pr-test-environments.json (the base-branch pin the cutover flips,
+      # guarded by test_base_branch_config.py), .github/actions/verify-public-url/,
+      # Documentation/ (test_runbooks.py and test_legacy_text_columns.py both read
+      # runbooks), and the styles sources behind the artifact gate. `.github/**`
+      # replaces the two subdirectory globs for that reason.
+      #
+      # What actually keeps this honest is not the width of the globs but
+      # test_ci_trigger_coverage.py, which fails when the suite reads a path no
+      # entry here matches. With that in place these can stay narrow where being
+      # narrow is worth it -- RockWeb is the whole application and the suite reads
+      # three known corners of it.
+      - '.github/**'
       - 'Deployment/**'
+      - 'Documentation/**'
       - 'Tests/PrTestEnvironments/**'
-      - '.github/workflows/**'
-      - '.github/scripts/**'
+      - 'Rock.Frontend.Styles/**'
+      - 'RockWeb/Styles/**'
+      - 'RockWeb/Bin/**'
+      - 'RockWeb/packages.config'
       # Both read by test_environment_deploy.py, which checks the production version
       # guard against whichever file this checkout actually declares its version in,
       # rather than against a fixture that can drift from it. 18.x uses the first;
@@ -41,14 +59,17 @@ name: Deployment Pipeline Tests
   # GitHub Actions -- which does not support them -- rejected the file.
   pull_request:
     paths:
-      # Whole trees, not the specific subdirectories they used to name. The suite
-      # reads Deployment/Repository/ and .github/scripts/ as well, and both were
-      # outside the old list -- so a change to a tested file did not run its own
-      # test. Naming the parent means the next thing added cannot reopen that.
+      # Kept identical to the push list above, deliberately and by hand -- see the
+      # note below on why this is not a YAML anchor. test_ci_trigger_coverage.py
+      # asserts the two lists match, so they cannot drift apart silently.
+      - '.github/**'
       - 'Deployment/**'
+      - 'Documentation/**'
       - 'Tests/PrTestEnvironments/**'
-      - '.github/workflows/**'
-      - '.github/scripts/**'
+      - 'Rock.Frontend.Styles/**'
+      - 'RockWeb/Styles/**'
+      - 'RockWeb/Bin/**'
+      - 'RockWeb/packages.config'
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
   workflow_dispatch:
