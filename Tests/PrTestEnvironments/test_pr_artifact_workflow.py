@@ -8,6 +8,7 @@ import yaml
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "pr-test-artifact.yml"
 BOOTSTRAP_ISSUE_PATH = REPO_ROOT / "Documentation" / "Discussion Docs" / "PR-Test-Environments-Issues" / "01-bootstrap-server-prerequisites.md"
+ROCK_CORE_LESS = REPO_ROOT / "RockWeb" / "Styles" / "_rock-core.less"
 
 
 class PrTestEnvironmentBootstrapTests(unittest.TestCase):
@@ -268,6 +269,72 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         self.assertIn("Google.Protobuf.dll", verify_step["run"])
         self.assertIn("Google.Protobuf", ROCKWEB_PACKAGES_CONFIG.read_text())
 
+    def test_the_styles_build_runs_and_its_output_is_gated(self):
+        """The 19.3.4 cutover moved RockWeb/Styles/styles-v2 from committed to
+        generated: 178 tracked files on 18.4.1, one on 19.3.4, where its .gitignore
+        is `*` and Rock.Frontend.Styles produces the directory instead. No workflow
+        referenced that project, so the artifact shipped without
+        styles-v2/icons/tabler-icon.css.
+
+        _rock-core.less imports that file, so dotless failed the entire theme
+        compile at Application_Start and IIS went on serving the previous theme.css
+        -- with a 200, which is why no health check saw it. Staging came up with a
+        styled login page and everything behind it unstyled, against a database
+        whose IconCssClass values the icon migration had already rewritten to Tabler.
+
+        Two halves, and both are needed. Building without gating the output is how
+        this stays broken quietly: `npm run build` can exit 0 and emit nothing.
+        """
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+        steps = workflow["jobs"]["package"]["steps"]
+
+        build_steps = [s for s in steps if "Rock.Frontend.Styles" in (s.get("name") or "")]
+        self.assertTrue(
+            build_steps,
+            "nothing builds Rock.Frontend.Styles, so a 19.x artifact ships without styles-v2",
+        )
+        for step in build_steps:
+            # Guarded on the lockfile because the project does not exist on the
+            # 18.4.1 line, which this workflow still builds for the pr-* fleet.
+            self.assertIn("Rock.Frontend.Styles/package-lock.json", step.get("if", ""))
+
+        verify_step = next(s for s in steps if s.get("name") == "Verify Build Artifacts")
+        run = verify_step["run"]
+        self.assertIn("tabler-icon.css", run)
+        self.assertIn("styles-v2", run)
+
+        # Anchor on the code rather than the first mention of the filename: the step
+        # explains itself in a comment above the check, and matching that prose would
+        # make this assertion pass on documentation alone.
+        check = re.search(
+            r"if \(!\(Test-Path \$tablerIcons\)\) \{(.*?)\}", run, re.S
+        )
+        self.assertIsNotNone(
+            check, "no Test-Path check on the tabler-icon.css path in the artifact gate"
+        )
+        self.assertIn(
+            "$failures +=", check.group(1),
+            "the missing stylesheet has to fail the build, not warn -- a warning is "
+            "indistinguishable from the silent failure this replaced",
+        )
+
+    def test_the_stylesheet_the_gate_names_is_the_one_less_actually_imports(self):
+        """The gate is only worth anything while it names the file _rock-core.less
+        imports. If a Rock upgrade renames or moves that import, the gate would keep
+        passing on a file nothing reads."""
+        verify_step = next(
+            s for s in yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]["package"]["steps"]
+            if s.get("name") == "Verify Build Artifacts"
+        )
+        imports = re.findall(
+            r'@import[^;]*"([^"]*styles-v2[^"]*)"', ROCK_CORE_LESS.read_text()
+        )
+        self.assertTrue(imports, "_rock-core.less no longer imports anything from styles-v2")
+        for imported in imports:
+            self.assertIn(
+                imported.rsplit("/", 1)[-1], verify_step["run"],
+                f"_rock-core.less imports {imported} but the artifact gate does not check for it",
+            )
 
 if __name__ == "__main__":
     unittest.main()
