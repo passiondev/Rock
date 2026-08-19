@@ -1077,9 +1077,9 @@ was attempted, not after.
 The gap is `connect-restore-test`, and it is not a spare box. It holds the shared sandbox
 catalog that staging and every `pr-*` site run against — item 7 is the same instance seen from
 the isolation angle. Until 10:04 UTC on 2026-08-18 it had **zero** backups of any kind, and the
-only restore point in existence was a striped `.bak` from 2026-05-12. It now has exactly one:
+only restore point in existence was a striped `.bak` from 2026-05-12. The first was
 `1787047442610`, taken by hand immediately before the v19 staging migration, precisely because
-there was nothing else to fall back to.
+there was nothing else to fall back to; the nightly schedule has been running since.
 
 One manual backup is not a backup policy. Rock runs its EF and plugin migrations at
 `Application_Start`, so the first request after any deploy rewrites the schema irreversibly — the
@@ -1087,33 +1087,35 @@ failure mode this protects against is not an operator typo, it is a routine depl
 whose migrations do something unexpected. That is the same mechanism that gave `pr-3` a permanent
 HTTP 500 on 2026-08-11.
 
-Enable automated backups and PITR on `connect-restore-test`, matching prod's 7-day retention.
+This is what was done on 2026-08-18, and the instance now matches prod: backups on, PITR on,
+7 retained backups, 7 days of transaction logs. The window is **08:00 UTC** — an earlier draft
+of this item proposed 03:00, and either satisfies the only actual requirement, which is not
+landing on top of prod's 01:00.
 
-**Timing matters, and this is the one caveat.** Turning PITR on can force an instance restart.
-Do not do it while a migration is in flight — a restart part-way through a schema migration is
-how you get a half-applied catalog, which is strictly worse than the missing backup. Apply it in
-a quiet window, with no deploy running and the queue empty.
+**Timing matters, and it is the one caveat — kept here because it applies to the next instance
+somebody builds, not because this one is outstanding.** Turning PITR on can force an instance
+restart. Do not do it while a migration is in flight: a restart part-way through a schema
+migration is how you get a half-applied catalog, which is strictly worse than the missing
+backup. Apply it in a quiet window, with no deploy running and the queue empty.
 
-```
-gcloud sql instances patch connect-restore-test \
-  --project=passioncitychurch-com \
-  --backup-start-time=03:00 \
-  --retained-backups-count=7 \
-  --enable-point-in-time-recovery \
-  --retained-transaction-log-days=7
-```
-
-`03:00` UTC deliberately: prod backs up at 01:00, and staggering them keeps two large backup jobs
-off the same window.
-
-Both instances also have `storageAutoResize` **disabled** on a 418 GB disk, which is the sizing
-question already raised at the end of item 7. Enabling it is a no-downtime change and removes a
-failure mode — a full disk stops the instance — that no alert currently covers:
+**One piece is still open, and it is on the other instance.** `connect-prod` has
+`storageAutoResize` **disabled** on a 418 GB disk — the sizing question already raised at the end
+of item 7. `connect-restore-test` was flipped on 2026-08-18 and prod was not, so the two now
+disagree. Enabling it is a no-downtime change and removes a failure mode — a full disk stops the
+instance — that no alert currently covers:
 
 ```
 gcloud sql instances patch connect-prod --project=passioncitychurch-com --storage-auto-increase
-gcloud sql instances patch connect-restore-test --project=passioncitychurch-com --storage-auto-increase
 ```
+
+Read live on 2026-08-19, which is where the split above comes from:
+
+| | `connect-prod` | `connect-restore-test` |
+|---|---|---|
+| Automated backups / PITR | on / on | on / on |
+| Retained backups / log days | 7 / 7 | 7 / 7 |
+| Backup window | 01:00 UTC | 08:00 UTC |
+| `storageAutoResize` | **off** | on |
 
 ### 23. Every trunk cutover has repo-side steps that are easy to miss
 
@@ -1733,23 +1735,29 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 9. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
    in the same pass as item 7; both are about how an environment gets its database, and
    rotating the password before this change just re-exposes the new one
-10. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
+10. Item 25 — **option 1, publish deploy scripts on merge.** Option 2 landed 2026-08-19 and
+    caught three stale scripts on the very next deploy, so the drift is no longer silent — but
+    it is still a `::warning::` somebody has to read, on a step that is `continue-on-error` by
+    design. Option 1 is a `push`-triggered workflow doing one `gsutil cp`, and it removes the
+    manual dispatch entirely for every script except the agent itself, which genuinely needs
+    the reboot. Small, and it retires a whole class of "the deploy ran the old script"
+11. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
     reporting a cold start as a broken environment. `staging` first; measure the memory before
     doing it to every `pr-*` site
-11. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
+12. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
     line used to say.** `staging` is already deleted, so there is nothing left to protect by not
     pruning it; what needs protecting is `bump`, `develop-17.6.1` and
     `pilot/pr-test-env-doc-smoke-v1761`, which between them hold the newest remote copy of five
     plugin files and the only copy of two commits — and all three are on that item's own safe-to-prune list. Tag
     them first (the commands are in item 9), or do item 14, before deleting anything
-12. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
+13. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
-13. Item 22 — enable automated backups and PITR on `connect-restore-test` (~5 min of clicking,
-    but read the timing caveat: not while a migration is in flight). Production is already
-    covered; this is the instance staging and every `pr-*` site actually run against, and it has
-    exactly one backup, taken by hand. Do the `storage-auto-increase` flip on both instances in
-    the same pass — it is no-downtime and closes a failure mode nothing alerts on
-14. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
+14. ~~Item 22~~ — **the backup half is done** (2026-08-18, re-verified live 2026-08-19).
+    `connect-restore-test` now matches prod on backups, PITR and retention. What is left is one
+    command: `storage-auto-increase` on **`connect-prod`**, which was missed when the same flip
+    was applied to the sandbox instance. No downtime, and it closes a failure mode — a full disk
+    stops the instance — that nothing alerts on
+15. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
     *next* upgrade, and it is four steps rather than the two this line used to name. The fourth
     was found live on 2026-08-19 with production undeployable, which is the argument for reading
     the item before the next cutover rather than during it
