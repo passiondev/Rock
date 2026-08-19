@@ -1,7 +1,9 @@
 name: Deploy Staging
 
 # Staging is the shared "does it work on a real server" environment. It tracks the
-# trunk branch: whatever is merged into passion-19.3.4 is what staging runs.
+# trunk branch: whatever is merged into the branch named under `push:` below is what
+# staging runs. That name carries the Rock version and is renamed at every upgrade,
+# so read it there rather than trusting a copy of it in prose.
 #
 #   https://staging.rock-dev.connect.passion.team
 #
@@ -10,25 +12,33 @@ name: Deploy Staging
 #
 # Its database depends on whether the repository variable STAGING_DB_NAME is set:
 #
-#   set    -- staging and every pr-* site move together onto that catalog, which is
-#             ours to keep. Intended state.
-#   unset  -- everything falls back to secrets.DB_NAME, the prod-derived sandbox
-#             catalog. How this ran until the staging catalog was provisioned.
+#   set    -- staging runs on that catalog and nothing else does. The pr-* fleet is
+#             unaffected and stays on secrets.DB_NAME. Current state, and the
+#             intended one.
+#   unset  -- staging falls back to secrets.DB_NAME too, landing it on the same
+#             prod-derived sandbox catalog the whole fleet shares. How this ran
+#             until staging was given a catalog of its own.
 #
-# PR environments deliberately share this catalog rather than getting their own
-# (decided 2026-08-17): what makes a shared catalog dangerous is sharing it across
-# two Rock *versions*, not sharing it. Rock applies EF and plugin migrations at
-# Application_Start, so two minors on one schema migrate it out from under each
-# other -- that is what put pr-3 on a permanent HTTP 500 on 2026-08-11. Every pr-*
-# site builds from a PR based on the branch this workflow deploys, so they are the
-# same minor by construction, and test_base_branch_config.py fails if that drifts.
+# An earlier plan had staging and the fleet moving together onto one catalog we
+# owned. That is not what was built: staging was split off on its own instead,
+# because staging is the environment that goes to the next Rock minor first and
+# that is exactly the move a shared catalog cannot survive.
 #
-# The fallback is not a safe steady state, it is a migration path: the shared catalog
-# is the one the prod restore owns, and it is shared with anything else pointed at
-# secrets.DB_NAME. Note that no restore is actually running -- measured 2026-08-17,
-# the sandbox has had no data load since 2026-04-14 -- so the fallback does not eat a
-# Rock upgrade the way this comment used to claim. See open item 7 in
-# Documentation/Training/DevOps-Open-Items-Rock-CICD.md.
+# The pr-* sites do still share one catalog with each other, deliberately. What
+# makes a shared catalog dangerous is sharing it across two Rock *versions*, not
+# sharing it. Rock applies EF and plugin migrations at Application_Start, so two
+# minors on one schema migrate it out from under each other -- that is what put
+# pr-3 on a permanent HTTP 500 on 2026-08-11. Every pr-* site builds from a PR
+# based on the branch this workflow deploys, so they are the same minor by
+# construction, and test_base_branch_config.py fails if that drifts.
+#
+# The fallback is therefore not a safe steady state but a migration path, and the
+# guard below refuses to walk back down it: with STAGING_DB_NAME unset, a deploy
+# carrying a different Rock minor than the pinned base branch fails rather than
+# migrating the fleet's catalog. Note that no restore is actually running --
+# measured 2026-08-17, the sandbox has had no data load since 2026-04-14 -- so the
+# fallback does not eat a Rock upgrade the way this comment used to claim. See open
+# item 7 in Documentation/Training/DevOps-Open-Items-Rock-CICD.md.
 
 "on":
   push:
