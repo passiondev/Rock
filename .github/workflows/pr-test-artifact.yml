@@ -521,7 +521,10 @@ jobs:
           elseif ((Get-Item $tablerIcons).Length -lt 50KB) {
             # Test-Path is satisfied by an empty file, and an empty icon sheet
             # compiles cleanly -- it just renders every icon as nothing.
-            $failures += "$tablerIcons is only $((Get-Item $tablerIcons).Length) bytes; it is truncated or empty (291,210 bytes is the real size)"
+            # Deliberately not naming one "correct" size: the sheet is 291,210 bytes as
+            # committed on 18.4.1, production serves 314,234, and the 19.x build generates
+            # 342,986. All three are healthy. 50KB separates any of them from a stub.
+            $failures += "$tablerIcons is only $((Get-Item $tablerIcons).Length) bytes; it is truncated or empty (a healthy sheet is 250KB-350KB depending on the Rock line)"
           }
 
           # A build that emits the one gated file and nothing else would pass the

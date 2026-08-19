@@ -205,6 +205,15 @@ Measured, staging against production:
 Both themes short by about the same amount is the tell: one shared import failing, not a
 theme-specific fault.
 
+**Do not read any one of these as "the correct size" — added 2026-08-19,** because three
+different numbers for `tabler-icon.css` are in circulation and all three are healthy. It is
+**291,210** bytes as committed on `passion-18.4.1`, **314,234** as production serves it (that
+box's `bin` is a patchwork of 18.1.0/18.3.1/18.4.1 assemblies, so its copy came from an older
+build), and **342,986** as the 19.x `Rock.Frontend.Styles` build generates it. The artifact gate
+therefore checks for a stub with a floor well below all three rather than comparing against an
+expected value; a Rock upgrade moves these numbers and an exact-match check would fail on the
+first one.
+
 **Fixed in PR #19** — `pr-test-artifact.yml` now builds `Rock.Frontend.Styles`, guarded on its
 lockfile so the step no-ops on the 18.4.1 line the `pr-*` fleet still builds. All three deploy
 paths reach the build through that one reusable workflow, so production's eventual v19 cutover
