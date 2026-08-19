@@ -24,7 +24,18 @@ class PrTestStatusCommentScriptTests(unittest.TestCase):
         # A slow first request is migrations running, not a hang.
         self.assertIn("migrations", text)
 
-        self.assertIn("shared sanitized sandbox database", text)
+        self.assertIn("shared sandbox database", text)
+
+        # This comment described the catalog as a "shared sanitized sandbox
+        # database" until 2026-08-19. No sanitization step exists or ever has --
+        # the catalog is a straight copy of a production backup, served on a
+        # world-open URL behind nothing but Rock's login (open item 24). The
+        # assertion that used to live here pinned the literal phrase, so the test
+        # defended the false claim for as long as it stood. Assert the claim the
+        # reader needs instead, and fail if the reassuring word comes back.
+        self.assertNotIn("sanitized sandbox", text)
+        self.assertIn("not a sanitized one", text)
+        self.assertIn("live congregant data", text)
         self.assertIn("rock:start", text)
         self.assertIn("rock:stop", text)
         self.assertIn("rock:destroy", text)

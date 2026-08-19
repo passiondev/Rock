@@ -24,10 +24,18 @@ class RunbookTests(unittest.TestCase):
             'rock:auto',
             'VPN',
             '159.63.145.194',
-            'shared sanitized sandbox database',
+            'shared sandbox database',
             'shared sandbox file storage',
             're-add `rock:start`',
         ], "developer runbook no longer covers the commands, access or shared data")
+
+        # The runbook called the catalog "sanitized" until 2026-08-19. It is not,
+        # and never was -- see open item 24. Pinning the old phrase in the list
+        # above is what kept the misstatement alive through several reviews, so
+        # assert the correction and refuse the reassuring wording.
+        text = DEV_RUNBOOK.read_text()
+        self.assertNotIn('sanitized sandbox', text)
+        self.assertIn('not sanitized', text)
 
     def test_operator_runbook_covers_infrastructure_and_recovery(self):
         self.assertCovers(OP_RUNBOOK, [

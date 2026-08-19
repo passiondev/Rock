@@ -69,7 +69,9 @@ This URL is reachable from anywhere — no VPN needed. Port 443 on the test VM i
 
 The first request after a deploy is slow, sometimes minutes: Rock applies its EF and plugin migrations at startup. Reload once before concluding anything is broken.
 
-This environment uses a shared sanitized sandbox database and shared sandbox file storage, so it isolates code and runtime, **not data**. Every PR environment and staging point at the same catalog — treat the data as disposable and shared, and don't rely on it to prove anything about a data change.
+This environment uses a shared sandbox database and shared sandbox file storage, so it isolates code and runtime, **not data**. Every PR environment points at the same catalog, so treat the data as disposable and shared and don't rely on it to prove anything about a data change. Staging is the exception — it has its own catalog, so a data change you make here will not show up there.
+
+**That catalog is a straight copy of production, not a sanitized one.** Real names, addresses and giving history, on a public URL behind nothing but Rock's login. Treat what you see here as live congregant data: don't paste screenshots into tickets and don't share the URL outside the team.
 `;
 }
 

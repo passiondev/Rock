@@ -407,7 +407,7 @@ a PR based on the branch staging deploys, so they are the same minor by construc
 and `staging-deploy.yml`'s push filter ever name different branches. GitHub Actions cannot read a
 JSON file to build `on: push: branches:`, so a test is the only thing that can hold that pin
 together. What the move buys is that no environment of ours is left on the catalog the prod
-restore owns. What it costs, on paper: `pr-*` sites stop getting fresh sanitized prod data from
+restore owns. What it costs, on paper: `pr-*` sites stop getting fresh prod data from
 that restore, so they drift from production indefinitely and need an occasional deliberate
 re-seed. In practice the restore never runs, so the drift and the re-seed are both pre-existing
 conditions this decision inherits rather than creates.
@@ -791,6 +791,25 @@ nothing but Rock's own login. The `pr-*` fleet is the same data through `RockCon
 directly. This was less alarming when the sandbox was thought of as scratch; it is not
 scratch, and the catalog split is what made the exposure worth writing down, not what caused
 it.
+
+**And the docs said the opposite, in the place developers actually read.** Corrected
+2026-08-19. The sticky PR comment posted on every pull request described the catalog as a
+"shared **sanitized** sandbox database", as did the developer runbook. There is no
+sanitization step and there never has been: the PRD's own status note records that the
+"existing sanitization/sync process" the requirement assumed does not exist, and
+`-RefreshCommand` on `Invoke-SandboxRefreshWithPrEnvironments.ps1` still has no caller
+anywhere. So the one sentence a developer read before opening a public URL full of real
+giving history told them it had been scrubbed.
+
+Two tests were holding the word in place — `test_status_comment_script.py` and
+`test_runbooks.py` both asserted the literal string `shared sanitized sandbox database`.
+That is the same failure this document keeps recording in other forms: **a test that pins
+the wording rather than the claim will defend a false statement as readily as a true one.**
+Both now assert that the copy tells the reader the data is unsanitized, and fail if the
+reassuring phrasing comes back.
+
+Nothing about the exposure changed here — only that it is no longer contradicted by the
+copy. Options 1–3 below are still the decision.
 
 It also quietly contradicts the pipeline's own story elsewhere: item 5's health check was
 reworked specifically because *the VM cannot reach its own public address*, which reads as

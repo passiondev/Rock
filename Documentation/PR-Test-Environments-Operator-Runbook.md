@@ -43,7 +43,7 @@
 
 ## Sandbox DB refresh coordination
 
-Run the refresh through `Invoke-SandboxRefreshWithPrEnvironments.ps1` on the Windows VM. Provide the existing sanitized DB refresh command via `-RefreshCommand`. Optional hooks:
+Run the refresh through `Invoke-SandboxRefreshWithPrEnvironments.ps1` on the Windows VM. `-RefreshCommand` is where the restore command goes. There is no existing one to pass -- see the measurement at the end of this section -- so whoever wires this up is writing it, sanitization included. Optional hooks:
 
 - `-PostRefreshCommand` for post-refresh sanitization/configuration.
 - `-SharedFileStorageCommand` for shared sandbox file storage refresh.

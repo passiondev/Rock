@@ -32,7 +32,9 @@ The bot maintains state labels such as `rock:queued`, `rock:building`, `rock:dep
 
 ## Data model
 
-PR environments isolate code/runtime only. They share one shared sanitized sandbox database and shared sandbox file storage, so data can change underneath a PR environment at any time -- another environment's activity is the usual cause. The sandbox is **not** refreshed on a schedule: measured 2026-08-17, it was seeded once on 2026-04-14 and has had no data load since, so nothing resets what accumulates there.
+PR environments isolate code/runtime only. They share one shared sandbox database and shared sandbox file storage, so data can change underneath a PR environment at any time -- another environment's activity is the usual cause. The sandbox is **not** refreshed on a schedule: measured 2026-08-17, it was seeded once on 2026-04-14 and has had no data load since, so nothing resets what accumulates there.
+
+**The catalog is not sanitized.** It is a straight copy of a production backup -- real names, addresses and giving history -- and every PR environment serves it on a public URL behind nothing but Rock's login. The runbooks called it "sanitized" until 2026-08-19; the sanitization step that word referred to has never existed (see open item 24). Treat what you see in a PR environment as live congregant data.
 
 ## Status comment
 
