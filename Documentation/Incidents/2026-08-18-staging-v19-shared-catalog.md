@@ -163,10 +163,14 @@ recovery position here would have been considerably worse. See open item 22.
   with a rollback rather than a prerequisite blocking the cutover. Running the finder against
   production stays worthwhile for the same reason — to know what is there — but it is no
   longer something the cutover waits on.
-- **Open — one line, blocked on PR #10.** `test_powershell_edition_compatibility.py` scans
-  `Deployment/PrTestEnvironments` for PowerShell 7-only syntax and now misses
-  `Deployment/Database`. Point it at both directories once that PR lands; duplicating its
-  table onto this branch would only create a merge conflict for the sake of it.
+- **Done 2026-08-18 — `ba0c90cfc8`.** This was written as blocked on PR #10, and it was not:
+  that PR merged the same day, and the scanner now lists both `Deployment/PrTestEnvironments`
+  and `Deployment/Database` in `SCRIPT_DIRS`. It also went further than this entry asked for.
+  A second test, `test_the_scan_reads_real_files`, asserts a `.ps1` file exists under **each**
+  directory rather than counting the total — because a single count is satisfied by one
+  directory alone, so `Deployment/Database` could be dropped from `SCRIPT_DIRS` and the scan
+  would stay green on the strength of the other. That is the failure this entry was really
+  guarding against, and a count would not have caught it.
 
 
 ## What the cutover surfaced next (2026-08-19)

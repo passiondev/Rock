@@ -984,6 +984,44 @@ because between them they are the only copy of some of this code. The branch nam
 misleading enough to be worth renaming once that is done: `develop` is a v19 branch and
 `staging` is a v17 branch, and neither name says so.
 
+**A second, easier class of branch, added 2026-08-19.** Everything above is a branch stale
+since January. The week of the v19 cutover added ten more, and they are not the same problem:
+each was a short-lived working branch, none carries a file under `RockWeb/Plugins/`, and none
+is entangled with the deleted `staging`. Nine are fully merged — zero commits ahead of the
+trunk they targeted — and can be deleted without reconciling anything:
+
+| Merged into | Branches |
+|---|---|
+| `passion-18.4.1` | `fix/pr-env-teardown-tooling`, `docs/staging-catalog-disk-check`, `fix/commit-verify-artifact-script`, `feat/pr-env-agent-hardening`, `fix/staging-shared-catalog-version-guard`, `fix/scan-database-scripts-for-ps7` |
+| `passion-19.3.4` | `fix/pr-env-tooling-v19`, `fix/forward-port-to-19`, `fix/v19-icon-cursor-type-guard` |
+
+Confirm with the same shape of check the table above uses:
+
+```bash
+git fetch origin --prune
+for b in fix/pr-env-teardown-tooling docs/staging-catalog-disk-check \
+         fix/commit-verify-artifact-script feat/pr-env-agent-hardening \
+         fix/staging-shared-catalog-version-guard fix/scan-database-scripts-for-ps7; do
+  echo "$b -> $(git rev-list --count origin/passion-18.4.1..origin/$b)"
+done
+```
+
+`fix/pr-env-teardown-tooling` is worth a note because it reads as unmerged and is not. It sits
+one commit ahead of `passion-19.3.4`, which looks like a forward-port that never happened. The
+forward-port did happen — the same change is on the trunk as `fe94885237` rather than the
+branch's `b84e255c86`, because it was re-applied on the v19 line instead of merged across.
+Count against the branch's own base, not against the current trunk, or every 18.4.1 branch
+looks unmerged.
+
+**The tenth one is a hazard, and it should be deleted rather than left to be found.**
+`fix/ci-frontend-styles-build` is an abandoned first attempt at the CSS fix, cut from
+`passion-18.4.1` when the fix belonged on the v19 line; the work shipped instead as PR #19 from
+`fix/v19-frontend-styles-ci`. It is behind=1/ahead=1 against its base, and the commit it is
+behind is the app-pool ACL grant in `Deploy-RockEnvironment.ps1`. **Merging it would revert
+that grant** — silently, because the symptom is stale CSS served with a 200 and every health
+check still passing. Nothing flags it: it is a green branch whose diff happens to delete a
+fix that landed after it was cut. Delete it; the CSS work it was for is already on the trunk.
+
 ### 10. `GCP_COMPUTE_PROJECT_ID` is a dead secret
 
 No workflow references it. Remove it so the secret list reflects reality; an unused secret is
