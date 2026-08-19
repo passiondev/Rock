@@ -37,7 +37,12 @@
 - `Set-PrEnvironmentRuntimeConfiguration.ps1` writes sandbox DB/runtime config and disables outbound integrations/background jobs.
 - `Stop-PrEnvironment.ps1` stops a PR site/app pool without deleting files.
 - `Destroy-PrEnvironment.ps1` removes PR IIS resources and files.
-- `Invoke-PrEnvironmentCleanup.ps1` stops deployed environments after 6 idle hours and destroys stale stopped environments after 7 days. Use `-WhatIf` for manual verification.
+- `Invoke-PrEnvironmentCleanup.ps1` stops deployed environments after 6 idle hours and
+  destroys stale stopped environments after 7 days — **when something runs it, and as of
+  2026-08-19 nothing does.** There is no `schedule:` trigger for it and no scheduled task;
+  the only task the VM installs is the command queue, every minute. Treat the 6h/7d policy
+  as what you get if you run this by hand, not as something the fleet does on its own. Use
+  `-WhatIf` first. See open item 6.
 - `Invoke-SandboxRefreshWithPrEnvironments.ps1` stops PR app pools before DB refresh and restarts only previously running app pools afterward.
 - `Invoke-PrEnvironmentCertificateRenewal.ps1` issues/renews Let's Encrypt certs for deployed PR environments and rebinds IIS HTTPS bindings. Run through the scheduled/manual certificate renewal workflow so the `pr-test-acme-http` network tag is present only during ACME validation.
 

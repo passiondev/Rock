@@ -277,6 +277,23 @@ PR closed more than a week ago.
 
 > Note: earlier revisions of the training doc claimed a 6-hour idle stop and a 7-day destroy
 > already existed. **They never did.** Both claims have been corrected in the handout.
+>
+> Corrected in the handout was not corrected everywhere — found 2026-08-19. The same claim
+> was still live in two other places, stated as fact:
+> `Documentation/PR-Test-Environments-Operator-Runbook.md` described the policy in its script
+> list, and `Discussion Docs/PR-Test-Environments-Issues/08-scheduled-idle-cleanup.md` had
+> every acceptance criterion ticked under the title "Add scheduled idle cleanup". Both now say
+> plainly that nothing runs the script.
+>
+> Why it reads as wired up: `Invoke-PrEnvironmentCleanup.ps1` is real, is tested by
+> `test_cleanup_script.py`, and the bootstrap workflow copies it to the VM with the other nine
+> deploy scripts. What is missing is only the trigger. Nothing calls `Register-ScheduledTask`
+> or `schtasks` for it, and the single task the VM installs is "Rock PR Environment Command
+> Queue" running every minute. `test_nothing_schedules_the_cleanup.py` now fails if a trigger
+> appears, so whoever adds one is told which documents currently promise it does not exist.
+>
+> Switching it on is a decision, not a missing commit: it starts destroying PR environments
+> after 7 idle days, and the fleet is managed by hand today.
 
 ### 7. Staging and every PR environment share one database catalog — staging split out 2026-08-18
 
