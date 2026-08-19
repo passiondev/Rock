@@ -45,6 +45,17 @@ name: Deployment Pipeline Tests
       - 'RockWeb/Styles/**'
       - 'RockWeb/Bin/**'
       - 'RockWeb/packages.config'
+      # Trap 7 of the engineering guide states live counts of these four trees --
+      # tracked plugins, themes, WebForms blocks, Obsidian blocks -- and a Rock upgrade
+      # moves all of them at once. test_trap7_counts_match_the_tree.py re-derives each
+      # count from the checkout, so it has to run when the trees change or it is
+      # checking yesterday's tree against yesterday's prose. They are large directories
+      # but the suite is seconds of Python with no build behind it, which is the
+      # trade this workflow was set up to make.
+      - 'RockWeb/Plugins/**'
+      - 'RockWeb/Themes/**'
+      - 'RockWeb/Blocks/**'
+      - 'Rock.JavaScript.Obsidian.Blocks/**'
       # Both read by test_environment_deploy.py, which checks the production version
       # guard against whichever file this checkout actually declares its version in,
       # rather than against a fixture that can drift from it. 18.x uses the first;
@@ -70,6 +81,10 @@ name: Deployment Pipeline Tests
       - 'RockWeb/Styles/**'
       - 'RockWeb/Bin/**'
       - 'RockWeb/packages.config'
+      - 'RockWeb/Plugins/**'
+      - 'RockWeb/Themes/**'
+      - 'RockWeb/Blocks/**'
+      - 'Rock.JavaScript.Obsidian.Blocks/**'
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
   workflow_dispatch:

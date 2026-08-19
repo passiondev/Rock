@@ -509,15 +509,22 @@ Practically: **check staging, then report it** with your PR number. If both are 
 
 `RockWeb/Plugins/.gitignore` consists of exactly one rule — `*/*` — so every plugin subfolder
 is ignored. That is an upstream Rock convention: plugins are treated as installed packages,
-not as source. Verified 2026-08-10: on the trunk git tracks precisely two files under
-that directory (`.gitignore` and `readme.txt`) and **zero** paths matching `org_passion` or
-`team_passion`. (They do exist on the old `develop` branch — 78 of them — which is why that
-branch cannot be deleted yet. They are just not on the branch you work from.) The 448 core
-blocks under `RockWeb/Blocks/` are tracked normally.
+not as source. Verified 2026-08-19 on the `passion-19.3.4` trunk: git tracks precisely two
+files under that directory (`.gitignore` and `readme.txt`) and **zero** paths matching
+`org_passion` or `team_passion`. (They do exist on the old `develop` branch — 78 of them — which
+is why that branch cannot be deleted yet. They are just not on the branch you work from.) The
+353 core WebForms blocks under `RockWeb/Blocks/` are tracked normally.
+
+**That block count moves with every Rock upgrade, so do not treat it as a constant.** It was 448
+on `passion-18.4.1`, and the blocks did not disappear — Obsidian blocks went the
+other way over the same span, 1,122 to 1,294. Each release converts more WebForms `.ascx` blocks
+to `.obs` components, which is worth knowing before you go looking for a block under
+`RockWeb/Blocks/` and conclude it was deleted.
 
 **The same is true of our themes, which is the part that catches people out.** Verified
-2026-08-11: `RockWeb/Themes/` tracks 13 themes and every one is a stock Rock theme. `CONNECT`
-and `Checkin-Guest` — the themes that actually draw Passion's pages — are not there. So the
+2026-08-19: `RockWeb/Themes/` tracks 14 themes on the current trunk and every one is a stock Rock
+theme. (13 on `passion-18.4.1`; 19.3.4 adds `RockManagerNextGen`.) `CONNECT` and `Checkin-Guest`
+— the themes that actually draw Passion's pages — are not there. So the
 sign-in page at `/page/3` and the kiosk at `/checkin` are rendered by files this branch does
 not contain, and neither does your branch. **Every page a signed-out visitor can reach on a
 test site comes from a file outside version control**, with one exception: `Http404Error.aspx`,
