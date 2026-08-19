@@ -219,6 +219,38 @@ lockfile so the step no-ops on the 18.4.1 line the `pr-*` fleet still builds. Al
 paths reach the build through that one reusable workflow, so production's eventual v19 cutover
 is covered by the same change.
 
+**Verified on staging, deploy run `32282066731`, 2026-08-19.** Measured the same way as the
+table above, so the numbers are comparable:
+
+| | staging before | staging after |
+|---|---|---|
+| `/Styles/styles-v2/icons/tabler-icon.css` | **404** | 200, 342,986 bytes |
+| `Themes/Rock/Styles/theme.css` | 430,153 bytes | 785,825 bytes |
+| — occurrences of `ti-` in it | **0** | 6,062 |
+| `Themes/RockManager/Styles/theme.css` | 393,455 bytes | 757,243 bytes |
+| — occurrences of `ti-` in it | **0** | 6,062 |
+
+Both themes recovered together and by about the same amount, which is the same tell as the
+break: one shared import, not a per-theme fault. Staging's `theme.css` is now *larger* than
+production's 721,458 because the 19.x `tabler-icon.css` it inlines is larger than the copy
+production serves — see the paragraph above on why no single number here is "the correct size".
+
+**Two things about verifying this that cost time, and will again:**
+
+*The deploy log cannot show you the ACL grant.* The plan was to confirm the fix by grepping the
+Actions log for `Granted IIS AppPool\rock-staging modify rights`. That line is written on the VM,
+and the GitHub Actions log carries no VM-side output at all — the runner drops a command on a
+queue the VM polls every minute, and the job reports on the enqueue, not the execution. There is
+no arrangement of `grep` that makes that criterion observable from the log. Measuring the served
+CSS is the check; the log is not a substitute for it.
+
+*Count occurrences, not lines.* `grep -c '\.ti-'` on the fixed `theme.css` returns **4**, against
+5,780 in the table for a healthy production file, which reads unambiguously as "still broken".
+It is not: `grep -c` counts matching *lines*, dotless minifies `theme.css` onto 100 of them, and
+`tabler-icon.css` ships unminified at 24,158 lines. The two figures were never the same metric.
+`grep -o 'ti-' | wc -l` gives 6,062 and is what the table records. A minified file makes
+line-based counting meaningless, and the failure mode is a false negative on a fix that worked.
+
 **The generalisable lesson, which is the reason this is written down:** a Rock upgrade can move
 a directory from *committed* to *generated*, and nothing in a diff makes that obvious — the
 files simply stop being listed. The `Rock.JavaScript.Obsidian.Blocks` step in the same workflow

@@ -929,6 +929,22 @@ thing that would have turned three hours of diagnosis into one line of log.
 > **Options 1 and 3 are still open**, and option 2 does not substitute for either. This tells you
 > the scripts are stale; it does not publish them, and it does not stop the deploy. Somebody still
 > has to dispatch the bootstrap and deploy again.
+>
+> **First live catch, on the very next deploy — run `32282066731`, 2026-08-19 17:31 UTC.** It
+> warned, correctly, that three scripts on the VM are not the ones in the commit being deployed:
+> `Invoke-PrEnvironmentCommandQueue.ps1`, `Convert-LegacyTextColumns.ps1` and
+> `Find-LegacyTextColumns.ps1`. The check works. Two things follow from *which* three:
+>
+> - The queue agent is one of them, and it is the file the sync cannot replace while Windows
+>   holds it open. That one needs the bootstrap's restart, not just an upload — the distinction
+>   drawn above, now with a concrete instance.
+> - `Find-LegacyTextColumns.ps1` is stale, and the operator runbook's legacy-column step was
+>   rewritten this same day to tell operators to dispatch that finder. **A runbook step can be
+>   correct about which workflow to dispatch and still run a stale script on the far side.** The
+>   drift warning is the only thing that would say so, and it prints on deploys, not on a
+>   `workflow_dispatch` of the finder.
+>
+> Nothing on the ACL fix's path was stale, which is consistent with it being live.
 
 **How to apply, generally:** verify at the receiving end, not the publishing end. Both existing
 tests around the bootstrap assert that the upload step exists, and both were green throughout.
