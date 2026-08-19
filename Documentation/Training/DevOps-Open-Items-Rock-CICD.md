@@ -835,6 +835,60 @@ happens again.
 
 ---
 
+### 25. Merging a deploy-script fix does nothing until someone dispatches the bootstrap
+
+**Found 2026-08-19, and it is why the app-pool ACL fix appeared to be merged while staging
+stayed broken.** The deploy scripts do not execute from the repository. They execute from
+`C:\RockDeploy` on `connect-srv-test`, and the agent's `Sync-DeploymentScripts` refreshes that
+directory from `gs://<bucket>/pr-environments/bootstrap/latest/*.ps1` at the top of every poll.
+So the VM does track the bucket closely. The gap is one step earlier: **the only thing that
+publishes to that prefix is `pr-test-bootstrap-command-queue.yml`, and it is
+`workflow_dispatch`-only.** Merging to `Deployment/PrTestEnvironments/*.ps1` therefore has no
+effect on any deploy until a human remembers to dispatch it.
+
+The measurement:
+
+| | |
+|---|---|
+| ACL grant merged (`71064b2e61`, PR #18) | 2026-08-19 14:36 UTC |
+| Last bootstrap before that | 2026-08-18 19:35 UTC, from `passion-18.4.1` |
+| `icacls` occurrences in the copy the VM was running | **0** |
+| Staging `theme.css` after a successful deploy | still the 2026-01-22 build, 430,153 bytes, 0 `ti-` rules |
+
+The staging deploy that ran in between reported success at every step, because nothing in it
+looks at the script version it just executed.
+
+**What makes it hard to see.** The failure is silent in both directions. A deploy using a stale
+script still succeeds, and a theme that fails to compile still serves the previous `theme.css`
+with HTTP 200 — so the health check passes, the run is green, and the only symptom is that the
+site looks wrong to a human. That is the same shape as item 24's wording problem and item 23's
+oracle problem: the check passes because it is not measuring the thing that broke.
+
+**Worth separating from a related fact**, or the fix will be aimed wrong: the agent cannot
+update *itself* (`Invoke-PrEnvironmentCommandQueue.ps1` is the one file the sync cannot replace,
+because Windows holds it open), and that genuinely needs the bootstrap's VM restart. Every other
+script only needs the *upload*. So this item is about publishing, not about rebooting.
+
+**Options, cheapest first:**
+
+1. **Publish on merge.** Give the upload step its own workflow triggered by `push` on
+   `Deployment/PrTestEnvironments/**`, doing the `gsutil cp` and nothing else — no metadata
+   change, no stop/start. The bootstrap keeps the reboot path for agent changes.
+2. **Report the version at deploy time.** Have the deploy print the hash of each script it is
+   about to run alongside the hash in the repo at that commit, and warn on mismatch. Does not
+   fix the drift, but makes it visible in the run log rather than in the rendered page.
+3. **Fail closed on drift.** As above but `exit 1`. Correct in principle; risks blocking a
+   deploy for a script change that has nothing to do with it, so probably only worth it for
+   `Deploy-RockEnvironment.ps1`.
+
+Option 1 is the actual fix and is small. Option 2 is worth doing regardless, because it is the
+thing that would have turned three hours of diagnosis into one line of log.
+
+**How to apply, generally:** verify at the receiving end, not the publishing end. Both existing
+tests around the bootstrap assert that the upload step exists, and both were green throughout.
+
+---
+
 ### 22. `connect-restore-test` had no automated backups — fixed 2026-08-18
 
 > **Done.** Automated backups, point-in-time recovery with 7-day log retention, and unlimited
