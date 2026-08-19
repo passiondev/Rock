@@ -865,16 +865,28 @@ re-diagnosing them. All verified 2026-08-10.
    deploy will build, gate, queue, and then time out. Being done with DevOps rather than
    unattended.
 
-3. **Production deploys from the trunk, and only the trunk.** Each branch declares its own Rock
-   version: the trunk is **18.4.1**, `develop` is **19.0.3**, `staging` is **17.6.1**.
-   Production's own assemblies are 18.x — a mix of 18.1.0, 18.3.1, and 18.4.1 — so a trunk
-   deploy brings the older ones forward, which is what production needs. Deploying `develop`
-   would be a jump to Rock 19 whose database migrations cannot be walked back; the workflow
-   should refuse any ref but the trunk. The remaining real risk is narrower than the branch
-   question: production's `Rock.Migrations.dll` is 18.3.1 and the trunk's is 18.4.1, so the
-   first deploy runs the 18.3.1 → 18.4.1 migrations at startup. That needs a verified database
-   backup taken immediately beforehand, which is why the production path is built and proven
-   but deliberately unfired.
+3. **Production deploys from the production branch, and only that.** Note the wording: it read
+   "from the trunk, and only the trunk" until 2026-08-19, and the cutover made that wrong.
+   Each branch declares its own Rock version — `passion-18.4.1` is **18.4.1**, the trunk
+   `passion-19.3.4` is **19.3.4**, `develop` is **19.0.3**, `staging` is **17.6.1** — and
+   production's own assemblies are 18.x, a mix of 18.1.0, 18.3.1, and 18.4.1. So production's
+   branch is `passion-18.4.1`, not the trunk, and deploying the trunk today would be the same
+   irreversible jump to Rock 19 that deploying `develop` would be.
+
+   That pin is now written down rather than inferred: `productionBranch` in
+   `.github/pr-test-environments.json`, which is what `production-deploy.yml`'s two guards
+   measure against. **Both guards read the repository's default branch until 2026-08-19**, on
+   the reasoning that the trunk and production's branch were the same thing — and when the
+   cutover separated them, the branch guard began refusing `passion-18.4.1` as `diverged` with
+   no override, so production could not be deployed at all, rollback included. Worth knowing
+   as a pattern rather than as one bug: the guard was correct, its tests were green, and the
+   assumption underneath both had quietly stopped being true.
+
+   The remaining real risk is narrower than the branch question: production's
+   `Rock.Migrations.dll` is 18.3.1 and `passion-18.4.1`'s is 18.4.1, so the first deploy runs
+   the 18.3.1 → 18.4.1 migrations at startup. That needs a verified database backup taken
+   immediately beforehand, which is why the production path is built and proven but
+   deliberately unfired.
 
 4. **`GCP_COMPUTE_PROJECT_ID` is a dead secret** — no workflow references it. Worth removing
    so the secret list reflects reality.

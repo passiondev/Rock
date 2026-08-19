@@ -10,7 +10,9 @@ done, ordered by what it blocks. Most of these were found by auditing the pipeli
 the last section records what has already been fixed so nobody re-diagnoses it.
 
 Read item 7 first if you only read one. It is the shared dependency underneath every
-"isolated" test site, and it is the most likely cause of two sites failing at once.
+"isolated" test site, and it is the most likely cause of two sites failing at once. Half of it
+is now fixed — staging has its own catalog — and the half that remains is the `pr-*` fleet
+sharing one catalog with itself.
 
 ---
 
@@ -276,7 +278,7 @@ PR closed more than a week ago.
 > Note: earlier revisions of the training doc claimed a 6-hour idle stop and a 7-day destroy
 > already existed. **They never did.** Both claims have been corrected in the handout.
 
-### 7. Staging and every PR environment share one database catalog
+### 7. Staging and every PR environment share one database catalog — staging split out 2026-08-18
 
 > **Half fixed on 2026-08-18: staging is out.** `STAGING_DB_NAME` is now set to `RockStaging`,
 > a full copy taken by Cloud SQL export/import from `RockConnectProd` and probed read-only
@@ -880,10 +882,11 @@ gcloud sql instances patch connect-prod --project=passioncitychurch-com --storag
 gcloud sql instances patch connect-restore-test --project=passioncitychurch-com --storage-auto-increase
 ```
 
-### 23. Every trunk cutover has two repo-side steps that are easy to miss
+### 23. Every trunk cutover has repo-side steps that are easy to miss
 
-**Done for the 19.3.4 cutover on 2026-08-19.** Kept here because both steps recur verbatim at
-the next upgrade, and both are cheap in advance and expensive to discover live.
+**Done for the 19.3.4 cutover on 2026-08-19.** Kept here because each step recurs verbatim at
+the next upgrade, and all are cheap in advance and expensive to discover live. The fourth
+was not caught in advance — it was found on 2026-08-19 with production already undeployable.
 
 **`.github/pr-test-environments.json` pins `baseBranch` to the outgoing trunk.**
 `pr-test-lifecycle.yml` compares `pull.base.ref` against it and quietly sets `should_run=false`
@@ -907,6 +910,41 @@ Today that costs nothing because there is no protection to lose (item 3, verifie
 the first cutover that happens *after* somebody sets the rules up. Re-point the ruleset in the
 same change that flips the default, and re-check with
 `gh api repos/passiondev/Rock/branches/$(gh api repos/passiondev/Rock --jq .default_branch)/protection`.
+
+**A fourth one, and this one bit: moving the trunk broke the production deploy outright.**
+`production-deploy.yml` has two guards — is this ref on the branch production deploys from, and
+does it declare the Rock minor production runs — and both read
+`github.event.repository.default_branch` as their oracle. That was deliberate. The reasoning,
+written into the test that asserted it: a pin is one more thing to flip at cutover, and a missed
+one would refuse every legitimate deploy. What it assumed was that the default branch and the
+branch production runs are the same branch.
+
+They stopped being on 2026-08-19. The trunk moved to `passion-19.3.4`; production stayed on
+`passion-18.4.1`. GitHub's compare API calls those two `diverged`, which lands in the branch
+guard's catch-all:
+
+> Refused. `passion-18.4.1` is `diverged` relative to the trunk. There is no override for this
+> one — merge the change into `passion-19.3.4` and deploy that.
+
+So **production could not be deployed at all**, including an emergency rollback, and the only
+documented way out was to ship v19 to production. The version guard was inverted the same way:
+it would have waved the dangerous deploy through and demanded `acknowledge_version_change` for
+the safe one — a guard that fires on routine work is one that gets ticked without being read.
+
+Nothing reported it. `production-deploy.yml` is `workflow_dispatch`-only and has never been
+fired, so there was no run to fail, and `test_production_deploy.py` was green the whole time
+because it asserted *that the guard reads the default branch* — the mechanism, which was intact
+— rather than *that the guard accepts the ref the workflow itself offers*, which was not.
+
+Fixed by giving production its own pin: `productionBranch` in
+`.github/pr-test-environments.json`, read over the API from the default branch rather than from
+the checkout — the checkout is `ref: inputs.ref`, so reading it there would let a branch ship a
+config naming itself and approve its own production deploy. Both guards use it. The lesson
+generalises past this one workflow: **an oracle that is correct because two things happen to be
+equal needs a test that fails when they stop being.** That test is now
+`test_the_workflows_own_default_ref_is_one_the_guard_accepts`, and it compares the workflow's
+own `ref` default against the pin, so a half-done cutover fails CI rather than waiting to be
+discovered during an incident.
 
 ## P2 — hygiene
 

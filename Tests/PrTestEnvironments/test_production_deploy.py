@@ -1,3 +1,4 @@
+import json
 import pathlib
 import re
 import unittest
@@ -7,8 +8,9 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 PRODUCTION_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "production-deploy.yml"
+CONFIG_PATH = REPO_ROOT / ".github" / "pr-test-environments.json"
 
-REF_GUARD_STEP = "Refuse a ref that is not on the trunk"
+REF_GUARD_STEP = "Refuse a ref that is not on the production branch"
 VERSION_GUARD_STEP = "Refuse a ref from a different Rock version"
 
 
@@ -55,15 +57,85 @@ class ProductionRefGuardTests(unittest.TestCase):
         )
         self.script = _without_comments(self.step.get("run", ""))
 
-    def test_the_guard_compares_against_the_default_branch(self):
-        """The same oracle the version guard uses. Branch names in this repository do
-        not tell you the Rock version, so the trunk has to be read from the repo
-        rather than hardcoded -- otherwise the guard is one more pin to flip at
-        cutover, and a missed one would refuse every legitimate deploy."""
-        self.assertIn(
-            "default_branch",
+    def test_the_guard_compares_against_the_production_branch_pin(self):
+        """The same oracle the version guard uses, and NOT the repository's default
+        branch.
+
+        This test used to assert the opposite -- that the guard read the default
+        branch -- on the reasoning that a pin is one more thing to flip at cutover
+        and a missed one would refuse every legitimate deploy. The reasoning was
+        sound and the premise was not: it assumed the default branch and the branch
+        production runs are the same branch. On 2026-08-19 the trunk moved to
+        passion-19.3.4 while production stayed on passion-18.4.1. The compare API
+        calls those two `diverged`, the guard's catch-all refused it with "there is
+        no override for this one", and production became undeployable -- including
+        for a rollback. The test stayed green throughout, because it was asserting
+        the mechanism rather than the outcome.
+
+        Hence the pair: this names the oracle, and
+        test_the_workflows_own_default_ref_is_one_the_guard_accepts below checks the
+        outcome the oracle exists to produce."""
+        # Matched as the jq extraction rather than as the bare word. The word also
+        # appears in this step's fallback warning, so a guard that had been reverted
+        # to the default-branch oracle but kept its warning text would still satisfy
+        # `assertIn("productionBranch", ...)` -- the assertion would be reading the
+        # error message rather than the code that produces it.
+        self.assertRegex(
             self.script,
-            "the ref guard does not read the trunk from the default branch",
+            r"jq -r '\.productionBranch",
+            "the ref guard does not extract productionBranch from the config, so it "
+            "will refuse every deploy whenever the trunk is ahead of production",
+        )
+        # And the extracted value has to be the one the compare actually uses.
+        self.assertRegex(
+            self.script,
+            r"compare/\$production_branch\.\.\.",
+            "the ref guard extracts the pin but compares against something else",
+        )
+
+    def test_the_guard_reads_the_pin_from_the_default_branch_not_the_checkout(self):
+        """The job checks out `ref: inputs.ref` -- the ref being judged. Reading the
+        pin off that checkout would let a branch ship a config naming itself and
+        approve its own production deploy. That is the `pull.base.ref` mistake the PR
+        gate already made, and the fix is the same: read config over the API from the
+        branch nobody can push to without review."""
+        self.assertRegex(
+            self.script,
+            r"contents/\$config_path\?ref=\$DEFAULT_BRANCH",
+            "the ref guard does not fetch the pin from the default branch over the "
+            "API, so the ref being judged may be supplying its own verdict",
+        )
+
+    def test_the_workflows_own_default_ref_is_one_the_guard_accepts(self):
+        """The outcome, not the mechanism.
+
+        `ref` defaults to the branch an operator deploying production will accept
+        without thinking about it, and the guard decides whether that ref survives.
+        If those two disagree, the workflow refuses its own default -- which is
+        precisely what happened between the trunk cutover on 2026-08-19 and the pin
+        landing: `ref` defaulted to passion-18.4.1, the guard measured against the
+        default branch passion-19.3.4, and the compare API called them `diverged`.
+
+        Asserted statically against the pin rather than by calling the compare API,
+        so it holds with no network and no credentials. The pin is what the guard
+        measures against, so ref-default == pin is exactly the condition under which
+        the compare returns `identical`."""
+        config = json.loads(CONFIG_PATH.read_text())
+        pinned = config.get("productionBranch")
+        self.assertIsNotNone(
+            pinned,
+            f"{CONFIG_PATH.name} has no 'productionBranch'; the guard falls back to "
+            f"the default branch and will refuse every production deploy whenever "
+            f"the trunk is ahead of production",
+        )
+
+        workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+        ref_default = workflow["on"]["workflow_dispatch"]["inputs"]["ref"]["default"]
+        self.assertEqual(
+            ref_default,
+            pinned,
+            f"production-deploy.yml defaults `ref` to {ref_default!r} but the guard "
+            f"measures against {pinned!r}; the workflow would refuse its own default",
         )
 
     def test_the_guard_allows_a_rollback_to_an_earlier_trunk_commit(self):

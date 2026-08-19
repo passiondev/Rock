@@ -185,6 +185,7 @@ BASE_BRANCH_PIN_SITES = [
 # list above so the completeness sweep below can cover both as one set.
 PRODUCTION_PIN_SITES = [
     PinSite("production-deploy.yml: workflow_dispatch ref default", PRODUCTION_WORKFLOW, _dispatch_ref_defaults),
+    PinSite("pr-test-environments.json: productionBranch", CONFIG_PATH, lambda p: [json.loads(p.read_text())["productionBranch"]]),
 ]
 
 

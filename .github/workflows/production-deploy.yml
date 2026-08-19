@@ -26,7 +26,11 @@ name: Deploy Production
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or SHA to deploy. Use the trunk branch unless you are rolling back.
+        description: >-
+          Branch, tag or SHA to deploy. Use the production branch --
+          `productionBranch` in .github/pr-test-environments.json, which is NOT the
+          repository's default branch while an upgrade is in flight -- unless you are
+          rolling back, in which case use an earlier commit on it.
         required: true
         default: passion-18.4.1
         type: string
@@ -38,7 +42,7 @@ name: Deploy Production
       acknowledge_version_change:
         description: >-
           Only for a real Rock upgrade. Confirms you intend to ship a different Rock
-          minor version than the default branch declares, and that a verified database
+          minor version than `productionBranch` declares, and that a verified database
           backup exists. Migrations run on first request and cannot be walked back.
         required: false
         default: false
@@ -105,7 +109,7 @@ jobs:
             echo "| Requested by | @${{ github.actor }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Refuse a ref that is not on the trunk
+      - name: Refuse a ref that is not on the production branch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -117,7 +121,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Production deploys the trunk. `develop` is the 19.0 line and `staging`
+          # Production deploys the production line. `develop` is the 19.0 line and `staging`
           # is 17.6.1 -- these are different Rock majors, not points on one line.
           # The last production *build* ran from `develop` on 2026-05-06 and the
           # only reason no 19.x assembly is on the box is that the artifact was
@@ -129,51 +133,94 @@ jobs:
           # a legitimate purpose cannot also be the thing holding `develop` back.
           #
           # Ancestry, not equality. The `ref` input's own description says to use
-          # the trunk "unless you are rolling back", so demanding ref == trunk
-          # would break the one exception the workflow already documents. The
+          # the production branch "unless you are rolling back", so demanding
+          # ref == branch tip would break the one exception it documents. The
           # compare API answers this directly and needs no git history, which
           # matters because this job checks out at fetch-depth 1 and a full clone
           # of Rock is not cheap.
           #
-          #   identical -- the ref IS the trunk tip
-          #   behind    -- the ref is an earlier trunk commit: a rollback
-          #   ahead     -- built on the trunk but carrying unmerged commits
-          #   diverged  -- another line entirely: develop, staging
+          #   identical -- the ref IS the production branch tip
+          #   behind    -- an earlier commit on that branch: a rollback
+          #   ahead     -- built on it but carrying unmerged commits
+          #   diverged  -- another line entirely: develop, staging, and since
+          #                2026-08-19 the trunk itself
           #
           # `ahead` is refused deliberately. Production ships what was reviewed
           # and merged, not what is about to be.
-          default_branch="$DEFAULT_BRANCH"
+          #
+          # The anchor is `productionBranch` from .github/pr-test-environments.json,
+          # NOT the repository's default branch. This guard used to read the default
+          # branch on the reasoning that a pin is one more thing to flip at cutover
+          # and a missed one refuses every legitimate deploy. That reasoning assumed
+          # the default branch and the branch production runs are the same branch.
+          # On 2026-08-19 they stopped being: the trunk moved to passion-19.3.4 while
+          # production stayed pinned to passion-18.4.1, the two are `diverged` by the
+          # compare API, and this guard began refusing its own `ref` input default
+          # with "there is no override for this one" -- so production could not be
+          # deployed at all, rollback included. Avoiding the pin produced exactly the
+          # failure the pin was avoided to prevent.
+          #
+          # So the pin exists, and it lives in the file the cutover checklist already
+          # edits rather than in a repo variable, which makes it reviewable in the
+          # same PR that moves the trunk. A Rock upgrade repoints `productionBranch`;
+          # that is the deliberate act, and it is the moment a verified database
+          # backup has to exist.
+          #
+          # Read from the DEFAULT BRANCH over the API, never from the checkout. The
+          # checkout above is `ref: inputs.ref` -- the very ref being judged -- so a
+          # branch that shipped its own pr-test-environments.json naming itself would
+          # approve its own deploy. That is the `pull.base.ref` mistake the PR gate
+          # already made once, and the same fix applies: config comes from the branch
+          # nobody can push to without review.
+          config_path=".github/pr-test-environments.json"
+          production_branch="$(
+            gh api "repos/$REPOSITORY/contents/$config_path?ref=$DEFAULT_BRANCH" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null \
+              | jq -r '.productionBranch // empty' 2>/dev/null || true
+          )"
+
+          if [ -z "$production_branch" ]; then
+            # Falling back to the default branch is what this guard did before the pin
+            # existed, and it is correct only while trunk and production are the same
+            # branch. Warn rather than refuse: an unreadable config should not be the
+            # thing that blocks an emergency rollback, and the block below still holds
+            # for anything genuinely off-line.
+            production_branch="$DEFAULT_BRANCH"
+            echo "::warning::Could not read 'productionBranch' from $config_path on '$DEFAULT_BRANCH'; falling back to the default branch. That is only correct while production runs the trunk."
+          fi
+
+          echo "Production branch: $production_branch (read from $config_path on '$DEFAULT_BRANCH')."
           sha='${{ steps.resolve.outputs.sha }}'
 
           # Keep gh's stderr. A 404, a permissions problem and a rate limit all fail
           # this call and all need different responses from whoever is reading the
           # run; discarding the message leaves them with "could not compare" and no
           # way to tell which of the three happened.
-          if ! status="$(gh api "repos/$REPOSITORY/compare/$default_branch...$sha" --jq '.status' 2>compare-error.txt)"; then
-            echo "::error::Could not compare '$REF' against the trunk ('$default_branch'). Refusing to deploy a ref whose relationship to the trunk cannot be established."
+          if ! status="$(gh api "repos/$REPOSITORY/compare/$production_branch...$sha" --jq '.status' 2>compare-error.txt)"; then
+            echo "::error::Could not compare '$REF' against the production branch ('$production_branch'). Refusing to deploy a ref whose relationship to it cannot be established."
             echo "::group::gh output"
             cat compare-error.txt
             echo "::endgroup::"
             exit 1
           fi
 
-          echo "Ref '$REF' is '$status' relative to '$default_branch'."
+          echo "Ref '$REF' is '$status' relative to '$production_branch'."
 
           case "$status" in
             identical)
-              echo "| Trunk check | at the tip of \`$default_branch\` |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| Branch check | at the tip of \`$production_branch\` |" >> "$GITHUB_STEP_SUMMARY"
               ;;
             behind)
-              echo "::warning::Deploying an earlier commit on '$default_branch' -- this is a rollback. File contents roll back; database migrations already applied do not."
-              echo "| Trunk check | **rollback** -- an earlier commit on \`$default_branch\` |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::Deploying an earlier commit on '$production_branch' -- this is a rollback. File contents roll back; database migrations already applied do not."
+              echo "| Branch check | **rollback** -- an earlier commit on \`$production_branch\` |" >> "$GITHUB_STEP_SUMMARY"
               ;;
             *)
-              echo "::error::Ref '$REF' is not on the trunk: it is '$status' relative to '$default_branch'. Production deploys the trunk, or an earlier commit on it for a rollback. Merge this into '$default_branch' first."
+              echo "::error::Ref '$REF' is not on the production branch: it is '$status' relative to '$production_branch'. Production deploys that branch, or an earlier commit on it for a rollback. Merge this into '$production_branch' first."
               {
                 echo ""
-                echo "> **Refused.** \`$REF\` is \`$status\` relative to the trunk (\`$default_branch\`)."
-                echo "> Production deploys the trunk, or an earlier commit on it when rolling back."
-                echo "> There is no override for this one -- merge the change into \`$default_branch\`"
+                echo "> **Refused.** \`$REF\` is \`$status\` relative to the production branch (\`$production_branch\`)."
+                echo "> Production deploys that branch, or an earlier commit on it when rolling back."
+                echo "> There is no override for this one -- merge the change into \`$production_branch\`"
                 echo "> and deploy that."
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -191,8 +238,9 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           # Branch names in this repository do not tell you the Rock version, and
-          # two of them are actively misleading: `develop` declares 19.0.3 and
-          # `staging` declares 17.6.1, while the trunk declares 18.4.1. Production's
+          # several are actively misleading: `develop` declares 19.0.3, `staging`
+          # declares 17.6.1, and since 2026-08-19 the trunk declares 19.3.4 while
+          # production still runs the 18.x line. Production's
           # bin is a patchwork inside the 18.x line. Rock applies its EF and plugin
           # migrations on the first request after a deploy, so a ref from another
           # minor line migrates the production database with no way back short of a
@@ -200,9 +248,26 @@ jobs:
           # a 19.0 artifact -- and the only reason that was not an incident is that
           # nobody installed it. This step replaces that luck with a control.
           #
-          # The expected version is read from the repository's default branch rather
-          # than hardcoded, so this needs no editing at upgrade time: promote the new
-          # trunk to default and deploys of that line begin passing on their own.
+          # The expected version comes from `productionBranch` in
+          # .github/pr-test-environments.json -- the same pin the branch guard above
+          # uses -- read from the default branch so the ref being judged cannot supply
+          # its own answer.
+          #
+          # It used to come from the default branch itself, on the reasoning that this
+          # then needed no editing at upgrade time. That held only while the trunk and
+          # production were the same branch. When the trunk moved to passion-19.3.4 on
+          # 2026-08-19 the expected version moved with it, so every ordinary 18.x
+          # production deploy suddenly mismatched and demanded the acknowledgement --
+          # a guard that fires on routine work is one that gets ticked without being
+          # read, which is worse than no guard.
+          #
+          # What this means for a real upgrade: repointing `productionBranch` moves the
+          # expected version too, so it will not by itself demand the checkbox. That
+          # repoint is a reviewed commit on the default branch, and the runbook's
+          # cutover checklist is where the backup requirement is attached to it. The
+          # checkbox now covers the other case -- shipping a ref whose minor differs
+          # from the pin, which is the straddle and the emergency.
+          #
           # Rolling back to an older commit on the same minor still passes.
           #
           # Rock declares its version in two different places depending on the line,
@@ -242,11 +307,21 @@ jobs:
             exit 1
           fi
 
-          default_branch="$DEFAULT_BRANCH"
+          config_path=".github/pr-test-environments.json"
+          version_branch="$(
+            gh api "repos/$REPOSITORY/contents/$config_path?ref=$DEFAULT_BRANCH" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null \
+              | jq -r '.productionBranch // empty' 2>/dev/null || true
+          )"
+          if [ -z "$version_branch" ]; then
+            version_branch="$DEFAULT_BRANCH"
+            echo "::warning::Could not read 'productionBranch' from $config_path on '$DEFAULT_BRANCH'; taking the expected version from the default branch instead."
+          fi
+
           for candidate in $VERSION_FILES; do
             # A default branch on the other line simply will not have one of these
             # paths, so a 404 here is an expected outcome and not a failure.
-            if ! gh api "repos/$REPOSITORY/contents/$candidate?ref=$default_branch" \
+            if ! gh api "repos/$REPOSITORY/contents/$candidate?ref=$version_branch" \
                  --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > default-version-file 2>/dev/null; then
               rm -f default-version-file
               continue
@@ -254,12 +329,12 @@ jobs:
             expected_version="$(version_of default-version-file)"
             rm -f default-version-file
             if [ -n "$expected_version" ]; then
-              echo "Read expected Rock $expected_version from $candidate on '$default_branch'."
+              echo "Read expected Rock $expected_version from $candidate on '$version_branch'."
               break
             fi
           done
           if [ -z "$expected_version" ]; then
-            echo "::error::Could not read the Rock version from the default branch ($default_branch) (looked in: $VERSION_FILES)."
+            echo "::error::Could not read the Rock version from the production branch ($version_branch) (looked in: $VERSION_FILES)."
             exit 1
           fi
 
@@ -268,7 +343,7 @@ jobs:
 
           {
             echo "| Rock version of ref | \`$ref_version\` |"
-            echo "| Expected (from \`$default_branch\`) | \`$expected_version\` |"
+            echo "| Expected (from \`$version_branch\`) | \`$expected_version\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$ref_minor" = "$expected_minor" ]; then
@@ -282,7 +357,7 @@ jobs:
             exit 0
           fi
 
-          echo "::error::Ref '$REF' declares Rock $ref_version, but production is expected to run $expected_minor (per the default branch '$default_branch'). Rock migrates the database on first request after a deploy and that is not reversible. If this is a deliberate upgrade, take a verified database backup and re-run with 'acknowledge_version_change' checked."
+          echo "::error::Ref '$REF' declares Rock $ref_version, but production is expected to run $expected_minor (per the production branch '$version_branch'). Rock migrates the database on first request after a deploy and that is not reversible. If this is a deliberate upgrade, take a verified database backup and re-run with 'acknowledge_version_change' checked."
           {
             echo ""
             echo "> **Refused.** \`$REF\` is Rock \`$ref_version\`; production expects \`$expected_minor\`."
