@@ -1706,10 +1706,13 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 ## Suggested order
 
 1. Item 2 — the Environment now exists and the gate is real (verified against the API on
-   2026-08-11: one required reviewer, `can_admins_bypass: false`). What's left is adding the
+   2026-08-11 and unchanged when re-read on 2026-08-19: one required reviewer
+   `justinpbarnett`, `can_admins_bypass: false`, `prevent_self_review: false`). What's left is adding the
    DevOps engineer as a second reviewer and then flipping `prevent_self_review` to `true`
    (~5 min, and only then is production two-person)
-2. Item 3 — protect the trunk (~10 min, makes the training true)
+2. Item 3 — protect the trunk (~10 min, makes the training true). Still unprotected: the
+   branch protection API returned `404 Branch not protected` for `passion-19.3.4` on
+   2026-08-19, so the cutover carried the gap across rather than closing it
 3. Item 15 — the source branch is settled (production is pinned, and during an upgrade it
    deliberately lags the trunk). What's left: add the ref guard so `develop` can never be
    deployed, re-confirm production's assembly inventory, and plan production's next version
