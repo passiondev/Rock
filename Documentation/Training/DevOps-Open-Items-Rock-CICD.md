@@ -1235,7 +1235,7 @@ knowingly.
 > ```
 >
 > **And `develop` is not the backstop it is being treated as.** Comparing blobs rather than
-> commit dates, the four plugin files sit at three different versions, and `develop` holds the
+> commit dates, the five plugin files sit at two or three versions each, and `develop` holds the
 > oldest of them in every case:
 >
 > | File | `bump` | `develop-17.6.1`, `pilot/…` | `develop` |
@@ -1244,12 +1244,14 @@ knowingly.
 > | `org_passion/RSVP/RsvpResponse.ascx.cs` | `9db5b4b36` | **`a5b64c4b0`** | `5efd2ccef` |
 > | `org_passion/RSVP/RsvpResponseBETA.ascx.cs` | `6b88881e1` | **`b0c637db0`** | `b1a6af931` |
 > | `org_secc/Authentication/Arena.cs` | `dad198cc0` | `dad198cc0` | `1df50645c` |
+> | `org_secc/Authentication/org.secc.Authentication.csproj` | `5687c33d0` | `5687c33d0` | `211bd5436` |
 >
-> The two bolded blobs are the current content of those files and they exist on
+> Every row's newest blob is one `develop` does not have. The two bolded ones are the starkest —
+> the current content of those files, existing on
 > **`develop-17.6.1` and `pilot/pr-test-env-doc-smoke-v1761` only** — not on `bump`, and not on
 > the branch this item spends a paragraph telling you to protect. Pruning the list as written
-> destroys the newest copy of two plugin files and keeps a January copy on `develop` that will
-> look plausible to whoever finds it next.
+> destroys the newest copy of all five and keeps January copies on `develop` that will look
+> plausible to whoever finds them next.
 >
 > That is the actual correction here: **"do not delete `develop`" was aimed at the wrong
 > branch.** `develop` is worth keeping for the reasons given below, but it is not what is
@@ -1695,26 +1697,29 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 8. Item 14 — decide whether test sites should render plugin pages (a config line, then a
    decision about version control that is bigger than this pipeline), and reconcile it with
    item 15 — they are the same reconciliation seen from two ends
-8. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
+9. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
    in the same pass as item 7; both are about how an environment gets its database, and
    rotating the password before this change just re-exposes the new one
-9. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
-   reporting a cold start as a broken environment. `staging` first; measure the memory before
-   doing it to every `pr-*` site
-10. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
+10. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
+    reporting a cold start as a broken environment. `staging` first; measure the memory before
+    doing it to every `pr-*` site
+11. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
     line used to say.** `staging` is already deleted, so there is nothing left to protect by not
     pruning it; what needs protecting is `bump`, `develop-17.6.1` and
-    `pilot/pr-test-env-doc-smoke-v1761`, which between them hold the only remote copy of four
-    plugin files and two commits — and all three are on that item's own safe-to-prune list. Tag
+    `pilot/pr-test-env-doc-smoke-v1761`, which between them hold the newest remote copy of five
+    plugin files and the only copy of two commits — and all three are on that item's own safe-to-prune list. Tag
     them first (the commands are in item 9), or do item 14, before deleting anything
-11. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
+12. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
-12. Item 22 — enable automated backups and PITR on `connect-restore-test` (~5 min of clicking,
+13. Item 22 — enable automated backups and PITR on `connect-restore-test` (~5 min of clicking,
     but read the timing caveat: not while a migration is in flight). Production is already
     covered; this is the instance staging and every `pr-*` site actually run against, and it has
     exactly one backup, taken by hand. Do the `storage-auto-increase` flip on both instances in
     the same pass — it is no-downtime and closes a failure mode nothing alerts on
-13. Item 23 — the two v19 cutover steps. Do them *before* the cutover, not during it
+14. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
+    *next* upgrade, and it is four steps rather than the two this line used to name. The fourth
+    was found live on 2026-08-19 with production undeployable, which is the argument for reading
+    the item before the next cutover rather than during it
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
