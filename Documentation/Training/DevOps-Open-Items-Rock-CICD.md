@@ -1070,14 +1070,26 @@ branch's `b84e255c86`, because it was re-applied on the v19 line instead of merg
 Count against the branch's own base, not against the current trunk, or every 18.4.1 branch
 looks unmerged.
 
-**The tenth one is a hazard, and it should be deleted rather than left to be found.**
-`fix/ci-frontend-styles-build` is an abandoned first attempt at the CSS fix, cut from
-`passion-18.4.1` when the fix belonged on the v19 line; the work shipped instead as PR #19 from
-`fix/v19-frontend-styles-ci`. It is behind=1/ahead=1 against its base, and the commit it is
-behind is the app-pool ACL grant in `Deploy-RockEnvironment.ps1`. **Merging it would revert
-that grant** — silently, because the symptom is stale CSS served with a 200 and every health
-check still passing. Nothing flags it: it is a green branch whose diff happens to delete a
-fix that landed after it was cut. Delete it; the CSS work it was for is already on the trunk.
+**The tenth one is stale and should be deleted.** `fix/ci-frontend-styles-build` is an
+abandoned first attempt at the CSS fix, cut from `passion-18.4.1` when the fix belonged on the
+v19 line; the work shipped instead as PR #19, from the since-deleted
+`fix/v19-frontend-styles-ci`. Its single commit is already on the v19 trunk in patch-equivalent
+form as `dad41842df` — `git cherry origin/passion-19.3.4 origin/fix/ci-frontend-styles-build
+origin/passion-18.4.1` reports it `-`. Nothing is lost by deleting it.
+
+**Correcting what this item said until 2026-08-19:** it claimed merging the branch would
+silently revert the app-pool ACL grant, on the grounds that the branch is behind=1 against its
+base and that one commit is the grant. The first half is true and the conclusion does not
+follow. The branch's diff touches exactly one file, `.github/workflows/pr-test-artifact.yml`;
+a three-way merge leaves `Deploy-RockEnvironment.ps1` untouched, because being *behind* a
+commit is not the same as reverting it. Verified with
+`git diff --name-only origin/passion-18.4.1...origin/fix/ci-frontend-styles-build`.
+
+There is a real risk in the vicinity, and it is a different one: the branch's *tree* predates
+the grant, so **deploying from this branch** — not merging it — puts a `Deploy-RockEnvironment.ps1`
+without the `icacls` call on the box and reproduces the theme-compile failure. That is a
+plausible mistake to make with a branch named for the CSS build while debugging CSS, which is
+the other reason to delete it rather than leave it discoverable.
 
 ### 10. `GCP_COMPUTE_PROJECT_ID` is a dead secret
 
