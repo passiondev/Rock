@@ -35,17 +35,21 @@ This document is for changes to **files**: themes, stylesheets, images, and bloc
 
 Everything else in this document is detail. This is the part that matters:
 
-> **Your work starts from the branch named `passion-18.4.1`, and it goes back to
-> `passion-18.4.1`. Never into anything else, and never directly into it.**
+> **Your work starts from the repository's default branch, and it goes back to the same
+> branch. Never into anything else, and never directly into it.**
 
 Get either half wrong and nothing happens. You get no error message, no warning, and no test
 site. It looks exactly like the system is broken. It is working; it simply ignored you.
 
-**That name will change.** It is named after the version of Rock we run, so when we upgrade
-to Rock 19 it becomes something like `passion-19.3.4`. Do not memorise it. Instead:
+**Do not memorise the name.** The branch is named after the version of Rock we run, in the
+form `passion-<version>`, so it is replaced by a new one at every upgrade. Read it instead of
+remembering it:
 
 - Open <https://github.com/passiondev/Rock>
 - Whatever branch name the page shows you by default **is** the right one.
+
+That is the only lookup you need, and it is right the day after an upgrade too. Everywhere
+below, "the default branch" means the name you just read.
 
 ---
 
@@ -87,8 +91,8 @@ You do this once and never think about it again.
 
 7. When it finishes, click **Open**.
 
-You are now on the `passion-18.4.1` branch, because that is the repository's default. You can
-see the branch name in the **bottom left corner** of the VS Code window. Get used to looking
+You are now on the default branch, because that is what a fresh clone gives you. You can
+see its name in the **bottom left corner** of the VS Code window. Get used to looking
 there. It is the single most useful thing on the screen.
 
 ---
@@ -97,8 +101,8 @@ there. It is the single most useful thing on the screen.
 
 Steps 1 to 3 are the ones people skip, and they are the reason changes go wrong.
 
-1. **Look at the bottom left corner.** Click the branch name. A list drops down. Choose
-   **`passion-18.4.1`**.
+1. **Look at the bottom left corner.** Click the branch name. A list drops down. Choose the
+   **default branch** — the name you read off GitHub above.
 
 2. **Pull.** Next to the branch name there is a small circular-arrows icon. Click it. This
    pulls down everything the team has done since you last looked. If you skip this, you are
@@ -131,8 +135,8 @@ Steps 1 to 3 are the ones people skip, and they are the reason changes go wrong.
 
    Your branch is now on GitHub. Nothing else in this document can happen until you do this.
 
-> **Before every commit, look at the bottom left corner.** If it still says
-> `passion-18.4.1`, stop. Committing and publishing there skips review entirely and deploys
+> **Before every commit, look at the bottom left corner.** If it still shows the default
+> branch, stop. Committing and publishing there skips review entirely and deploys
 > straight to staging. Nothing protects you from this yet, so the check is yours to make.
 >
 > If you have already done it, tell Global Engineering. It is fixable, and it is much easier
@@ -154,10 +158,10 @@ This part happens on the GitHub website.
    request**.
 
 2. **Look at the top of the page.** It shows two branch names with an arrow, like
-   `base: passion-18.4.1 ← compare: fix-giving-typo`.
+   `base: passion-<version> ← compare: fix-giving-typo`.
 
-   The **left** one is where your change is going. It must say **`passion-18.4.1`**. If it
-   says `develop`, `develop-17.6.1`, `staging`, or anything else, click it and change it now.
+   The **left** one is where your change is going. It must be the **default branch**. If it
+   says `develop`, `develop-17.6.1`, or anything else, click it and change it now.
    This is the single most common mistake and it is the one that fails silently.
 
 3. Fill in the description. A template is already there. Answer what it asks; it is short.
@@ -222,8 +226,8 @@ is up to; leave them alone.
 
 4. When they approve, click **Merge pull request**, then **Delete branch** when GitHub offers.
 
-5. **Back in VS Code**, click the branch name in the bottom left, choose `passion-18.4.1`, and
-   click the circular-arrows icon to pull. Your change is now in there along with everyone
+5. **Back in VS Code**, click the branch name in the bottom left, choose the default branch,
+   and click the circular-arrows icon to pull. Your change is now in there along with everyone
    else's, and your machine is back in step with the team. Do this before you start your next
    change, not when you remember.
 
@@ -254,7 +258,7 @@ people, and it is the only path to the live site.
 
    | Field | What to put |
    | --- | --- |
-   | Branch, tag or SHA to deploy | Leave it. It defaults to `passion-18.4.1`, which is what you want unless you are rolling back. |
+   | Branch, tag or SHA to deploy | Leave it. It defaults to the branch production is pinned to, which is what you want unless you are rolling back. Note this is **not** always the repository default: during a Rock upgrade production deliberately lags. |
    | Actually deploy | **Leave this unchecked the first time.** |
    | Only for a real Rock upgrade | Leave unchecked. This is only for a Rock version upgrade. |
 
@@ -321,8 +325,8 @@ bottom of this page.
 
 **I added the label and nothing happened at all.**
 Almost certainly the branch. Open your pull request and look at the two names at the top: the
-left-hand one must be `passion-18.4.1`. If it is wrong, you can change it on an existing pull
-request: click it, pick the right one, then re-apply `rock:start`.
+left-hand one must be the repository's default branch. If it is wrong, you can change it on an
+existing pull request: click it, pick the right one, then re-apply `rock:start`.
 
 **GitHub does not offer me a pull request, and my branch is not in the list.**
 You committed but did not publish. Go back to VS Code, open Source Control, and look for a
@@ -404,7 +408,7 @@ can say.
 | --- | --- |
 | Is this a file change or a database change? | Ask before you start. Cheapest question here. |
 | Something committed that should not have been | DevOps, immediately |
-| A commit that went onto `passion-18.4.1` directly | Global Engineering, immediately |
+| A commit that went onto the default branch directly | Global Engineering, immediately |
 | A pull request with conflicts | Global Engineering |
 | A database change in a pull request | DevOps, before you apply the label |
 | A production deploy | DevOps and Global Engineering, together |
@@ -423,7 +427,7 @@ This page is deliberately the short one. In the repository:
 
 ---
 
-*Facts on this page that will go stale: the branch name `passion-18.4.1` changes at every Rock
-upgrade (read the repository's default branch instead), the warning that nothing yet stops a
-commit going onto that branch directly, and the production-agent status note in Part 5. Last
-checked 11 August 2026.*
+*This page deliberately names no branch, so it survives a Rock upgrade unedited — read the
+repository's default branch instead. Facts here that can still go stale: the warning that
+nothing yet stops a commit going onto the default branch directly, and the production-agent
+status note in Part 5. Last checked 19 August 2026.*

@@ -165,24 +165,25 @@ local build. (For bigger work, see [Appendix A](#appendix-a--working-from-a-loca
 **Do this every time.** Only PRs targeting one specific branch get a test environment, and
 that branch changes when Rock is upgraded.
 
-Open this file on the default branch and read it:
+Open this file and read it. The `HEAD` in the URL always resolves to whatever the default
+branch is today, so the link never needs updating:
 
-<https://github.com/passiondev/Rock/blob/passion-18.4.1/.github/pr-test-environments.json>
+<https://github.com/passiondev/Rock/blob/HEAD/.github/pr-test-environments.json>
 
 ```json
 {
-  "baseBranch": "passion-18.4.1",
+  "baseBranch": "passion-<version>",
   "environmentDomain": "rock-dev.connect.passion.team"
 }
 ```
 
-As of 2026-08-10 the eligible base branch is **`passion-18.4.1`**. Whatever `baseBranch`
-says is what you must branch **from** and target **into**. If you target anything else, the
-robot will quietly do nothing — no error, no comment.
+Whatever `baseBranch` says is what you must branch **from** and target **into**. If you
+target anything else, the robot will quietly do nothing — no error, no comment.
 
-`passion-18.4.1` is also the repository's **default branch**, so it is what you get by
-default when you open the repo, and it is the Rock version production runs. Re-read the file
-rather than trusting your memory — this value changes on every Rock upgrade.
+That value is also the repository's **default branch**, so it is what you get by default when
+you open the repo. The two are kept in step deliberately, and a test asserts it. Re-read the
+file rather than trusting your memory — the value is replaced at every Rock upgrade, and it
+is named after the Rock version, not after the environment.
 
 ### Step 2 — Find the file
 
@@ -190,8 +191,8 @@ Go to <https://github.com/passiondev/Rock>, press <kbd>t</kbd>, and type part of
 filename to search. Or navigate the folders using the map in Part 1.
 
 Make sure you are viewing the file **on the base branch from Step 1**. The branch selector
-is the button at the top-left of the file list. It should say `passion-18.4.1`; if it says
-anything else, click it and switch.
+is the button at the top-left of the file list. It should already show that branch, because
+it is the repository default; if it shows anything else, click it and switch.
 
 ### Step 3 — Edit it
 
@@ -328,7 +329,7 @@ Then either:
 1. Add a reviewer in the sidebar. They can open the same PR URL and check your work.
 2. Once approved, click **Merge pull request**.
 
-**Merging your PR into `passion-18.4.1` deploys it to staging automatically.** It does not
+**Merging your PR into the default branch deploys it to staging automatically.** It does not
 touch production, it does not reboot anything, and it does not need anyone's permission —
 but roughly 40 minutes later your change is live on
 <https://staging.rock-dev.connect.passion.team> for the whole team to see. That is the
@@ -508,7 +509,7 @@ Practically: **check staging, then report it** with your PR number. If both are 
 
 `RockWeb/Plugins/.gitignore` consists of exactly one rule — `*/*` — so every plugin subfolder
 is ignored. That is an upstream Rock convention: plugins are treated as installed packages,
-not as source. Verified 2026-08-10: on `passion-18.4.1` git tracks precisely two files under
+not as source. Verified 2026-08-10: on the trunk git tracks precisely two files under
 that directory (`.gitignore` and `readme.txt`) and **zero** paths matching `org_passion` or
 `team_passion`. (They do exist on the old `develop` branch — 78 of them — which is why that
 branch cannot be deleted yet. They are just not on the branch you work from.) The 448 core
@@ -577,7 +578,7 @@ change the base branch dropdown.
 
 > ### ⚠️ The one thing to remember
 >
-> **Merging to `passion-18.4.1` deploys to staging automatically. Nothing deploys to
+> **Merging to the default branch deploys to staging automatically. Nothing deploys to
 > production without a person choosing it and a named reviewer approving it.**
 >
 > There is no way to reach production by merging, by pushing, or by adding a label. The
@@ -588,7 +589,7 @@ Code reaches a live server by three routes. Two are self-service; the third is n
 
 | | Trigger | Target | Who | Downtime |
 | --- | --- | --- | --- | --- |
-| **Path A** | merge to `passion-18.4.1` | staging | anyone | none |
+| **Path A** | merge to the default branch | staging | anyone | none |
 | **Path B** | manual + approval | production | DevOps / Global Eng | app pool recycle |
 | **Path C** | operator, by hand | production | operator only | app domain recycle |
 
@@ -599,7 +600,7 @@ Workflow: `.github/workflows/staging-deploy.yml`, shown in Actions as **"Deploy 
 ```yaml
 on:
   push:
-    branches: [passion-18.4.1]
+    branches: [passion-<version>]   # the trunk — renamed at every Rock upgrade
   workflow_dispatch:
 ```
 
@@ -628,7 +629,9 @@ schedule, no label.
 Running it:
 
 1. Actions tab → **Deploy Production** → **Run workflow**.
-2. **Ref** — leave it at `passion-18.4.1` unless you are rolling back to an older commit.
+2. **Ref** — leave it at the default it offers unless you are rolling back to an older
+   commit. Note the production workflow is pinned to the branch **production** runs, which
+   during a Rock upgrade is deliberately *not* the repository default.
 3. **Apply** — leave it **unchecked** the first time. Unchecked is a dry run: it reports
    exactly what it would copy and changes nothing.
 4. The run builds first, then **stops at an approval gate** and waits. The `production`
@@ -881,12 +884,17 @@ re-diagnosing them. All verified 2026-08-10.
    unchallenged. Needs: Environment `production` with required reviewers, plus variables
    `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`, `PRODUCTION_SITE_NAME`.
 
-6. **Stale branches.** `develop-17.6.1`, `deploy/ptp-14803-18.4.1`, `bump`, `fix/group-sync`,
-   and `pilot/pr-test-env-doc-smoke-v1761` are superseded by `passion-18.4.1`. Pruning them
-   removes several ways to target the wrong base branch. `develop` and `staging` are **not**
-   in that set and must not be pruned — between them they hold the only copy of some plugin
-   code, including five RSVP and authentication files where `staging`'s version is newer than
-   `develop`'s.
+6. **Stale branches — do not prune this list yet.** `develop-17.6.1`,
+   `deploy/ptp-14803-18.4.1`, `bump`, `fix/group-sync`, and `pilot/pr-test-env-doc-smoke-v1761`
+   are all superseded by the current trunk, and pruning them would remove several ways to
+   target the wrong base branch. **But the branch that made that safe is gone.** The `staging`
+   branch was deleted from `origin` on 2026-08-18, and it held the only copy of five plugin
+   files — three RSVP (`RsvpDetailBETA.ascx`, `RsvpResponse.ascx.cs`, `RsvpResponseBETA.ascx.cs`)
+   and two SECC authentication (`Arena.cs`, `org.secc.Authentication.csproj`). Those five are
+   still reachable, but only from `feat/PTP-16122` plus three of the branches listed above, so
+   the current prune list would take the safety margin down to a single feature branch.
+   Land those files somewhere durable first; then prune. `develop` is separate and must not be
+   pruned regardless — it carries the other 78 plugin files.
 
 7. **The pilot doc is stale.** `Documentation/Discussion Docs/PR-Test-Environments-Issues/12-pilot-rollout.md`
    still says deployment fails at an SSH step. That was fixed by the Cloud Storage command
@@ -938,7 +946,7 @@ Re-verify these before trusting this document:
 
 | Fact | Value as of 2026-08-10 | Where to check |
 | --- | --- | --- |
-| Eligible base branch / repo default branch | `passion-18.4.1` | `.github/pr-test-environments.json` |
+| Eligible base branch / repo default branch | read it, don't memorise it — named `passion-<version>` | `.github/pr-test-environments.json` |
 | Environment domain | `rock-dev.connect.passion.team` | same file |
 | Staging URL | `staging.rock-dev.connect.passion.team` | `.github/workflows/staging-deploy.yml` |
 | Office allowlisted IP — **RDP (3389) and SQL (1433) only**, never HTTPS | `159.63.145.194` | GCP firewall rules |

@@ -667,8 +667,8 @@
     <div class="eyebrow"><span class="eyebrow-num">01</span><span class="eyebrow-text">Git in five minutes</span></div>
     <div class="body">
       <h2>Branching strategy: one trunk, many short branches.</h2>
-      <div class="graph" role="img" aria-label="Branch diagram: short-lived feature branches off the passion-18.4.1 trunk, merging back in">
-        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">the trunk &middot; matches production &middot; repo default</span></div>
+      <div class="graph" role="img" aria-label="Branch diagram: short-lived feature branches off the trunk, merging back in">
+        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-&lt;version&gt;</span><span class="graph-note">the trunk &middot; repo default &middot; what staging runs</span></div>
         <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&#9586;___&#9679;___&#9585;</span><span class="graph-name">fix/homepage-typo</span><span class="graph-note">2 days</span></div>
         <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;___&#9679;___&#9679;___&#9585;</span><span class="graph-name">feat/rsvp-copy</span><span class="graph-note">4 days</span></div>
         <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;___&#9679;___&#9585;</span><span class="graph-name">fix/checkin-label</span><span class="graph-note">1 day</span></div>
@@ -754,22 +754,22 @@
     <div class="eyebrow"><span class="eyebrow-num">03</span><span class="eyebrow-text">Version branches</span></div>
     <div class="body">
       <h2>The trunk is named after the Rock version it runs.</h2>
-      <div class="graph" role="img" aria-label="Diagram: the passion-18.4.1 trunk continues from Spark's 18.4.1 tag, while our older develop branch diverged from a shared commit in January 2026">
-        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9670;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-18.4.1</span><span class="graph-note">Spark's tag 18.4.1 (&#9670;, July) + this pipeline</span></div>
+      <div class="graph" role="img" aria-label="Diagram: our trunk continues from Spark's release tag, while the older develop branch diverged from a shared commit in January 2026">
+        <div class="graph-row"><span class="graph-track">&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9670;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name graph-live">passion-&lt;version&gt;</span><span class="graph-note">Spark's release tag (&#9670;) + this pipeline</span></div>
         <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9586;</span></div>
         <div class="graph-row"><span class="graph-track">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9472;&#9679;&#9472;&#9472;&#9654;</span><span class="graph-name">develop</span><span class="graph-note">diverged Jan 2026 &middot; holds our 78 plugin files</span></div>
       </div>
-      <p class="lede">Read the fork from the left: we share history with Spark up to January, they carried on to the <strong>18.4.1</strong> tag in July, and our trunk continues from that tag. <code>develop</code> is the older line that kept going in parallel.</p>
+      <p class="lede">Read the fork from the left: we share history with Spark up to January, they carried on releasing, and our trunk continues from whichever release tag we have taken. <code>develop</code> is the older line that kept going in parallel.</p>
       <div class="cols cols-2">
         <div class="card">
           <h3>Why the version is in the name</h3>
           <p>A Rock upgrade moves thousands of files at once, so it never behaves like a normal change. Naming the trunk after the version turns "what is production running?" into something you can read instead of something you have to ask.</p>
-          <p style="margin-top:.5rem">The cost of <em>not</em> doing that is already in this repo: <code>develop</code> is really Rock <strong>19.0.3</strong> and <code>staging</code> is really Rock <strong>17.6.1</strong>. Neither name says so. You have to open a source file to find out.</p>
+          <p style="margin-top:.5rem">The cost of <em>not</em> doing that is already in this repo: <code>develop</code> is really a Rock <strong>19</strong> line, and nothing in the name says so. You have to open a source file to find out.</p>
         </div>
         <div class="card card-server">
           <h3>What the pipeline builds today</h3>
-          <p><span class="mono">passion-18.4.1</span> is the repository's default branch, so it's what you land on when you open the repo, and it's what staging builds from.</p>
-          <p style="margin-top:.5rem">Production runs Rock 18.4 at its core and was last touched <strong>by hand, in July.</strong> Pointing this pipeline at it is the next step, and it happens with DevOps in the room rather than from a laptop.</p>
+          <p>The trunk is the repository's <strong>default branch</strong>, so it is what you land on when you open the repo, and it is what staging builds from. Whatever GitHub shows you first <em>is</em> the answer &mdash; there is no name to remember.</p>
+          <p style="margin-top:.5rem">Production is pinned separately and, during an upgrade, deliberately lags the trunk. It moves with DevOps in the room rather than from a laptop, so "what the trunk is" and "what production runs" are two questions with two answers.</p>
         </div>
       </div>
     </div>
@@ -779,20 +779,20 @@
   <section class="slide" id="s9">
     <div class="eyebrow"><span class="eyebrow-num">03</span><span class="eyebrow-text">Version branches</span></div>
     <div class="body">
-      <h2>How the move to Rock 19 happens.</h2>
-      <p class="lede">Our next upgrade is Rock 19. You will not run this yourself. It's here so the branch names make sense when they change under you.</p>
+      <h2>How an upgrade moves the trunk under you.</h2>
+      <p class="lede">You will not run this yourself. It's here so the branch names make sense when they change &mdash; and they change at every Rock upgrade.</p>
       <ol>
-        <li>Fetch from <code>upstream</code> so we have Spark's tags for the 19 release we're taking.</li>
-        <li>Cut the new trunk from that tag and name it after it. Spark's newest 19 tag today is <code>19.3.4</code>, so it would be <code>passion-19.3.4</code>.</li>
+        <li>Fetch from <code>upstream</code> so we have Spark's tags for the release we're taking.</li>
+        <li>Cut the new trunk from that tag and name it after it: <code>passion-&lt;version&gt;</code>, the same convention every time.</li>
         <li>Replay our own work onto it and fix what conflicts.</li>
         <li>Point <code>.github/pr-test-environments.json</code> at the new branch. <strong>One file decides which base branch gets test environments.</strong></li>
         <li>Make it the repo default. Deploy it to staging. Live on staging until it's boring.</li>
         <li>Deploy to production. Retire the old trunk.</li>
       </ol>
       <div class="card card-note">
-        <p><strong>Whether Rock 19 actually goes through this pipeline is still open.</strong> The steps above are what it looks like if it does. It could equally be done by hand, the way Rock 18.4 was, and that's a call to make with DevOps rather than assume here.</p>
-        <p style="margin-top:.5rem">Worth knowing before someone asks: <code>develop</code> is already a 19 line (19.0.3), and it's where our 78 plugin files live. So the Rock 19 move and the <code>develop</code> reconciliation from the fork slide overlap. Whether that's one job or two is a real decision, not a detail.</p>
-        <p style="margin-top:.5rem">Either way the consequence for you is the same: <strong>the branch you target changes on every upgrade.</strong> Don't memorize <code>passion-18.4.1</code>. Read the default branch, or read that one config file.</p>
+        <p><strong>The trunk and production come apart on purpose while this is happening.</strong> Staging goes to the new version first and sits there for a while; production stays on the old one until DevOps says otherwise. For that stretch, "what the trunk is" and "what's live" have two different answers, and that is the intended state rather than a mistake.</p>
+        <p style="margin-top:.5rem">Worth knowing before someone asks: <code>develop</code> is a separate older line that also moved to Rock 19, and it's where our 78 plugin files live. So an upgrade and the <code>develop</code> reconciliation from the fork slide overlap. Whether that's one job or two is a real decision, not a detail.</p>
+        <p style="margin-top:.5rem">Either way the consequence for you is the same: <strong>the branch you target changes on every upgrade.</strong> Don't memorize a branch name. Read the default branch, or read that one config file.</p>
       </div>
     </div>
   </section>
@@ -805,7 +805,7 @@
       <div class="cols cols-2">
         <div class="card now">
           <h3>Right</h3>
-          <p>Branch <strong>from</strong> <code>passion-18.4.1</code>, and open the PR <strong>into</strong> <code>passion-18.4.1</code>.</p>
+          <p>Branch <strong>from</strong> the repo's default branch, and open the PR <strong>into</strong> that same branch.</p>
           <p class="card-note" style="margin-top:.6rem">You get a review, a build, and a private test site.</p>
         </div>
         <div class="card was">
@@ -821,7 +821,7 @@
           <span class="flow-arrow" aria-hidden="true">&rarr;</span>
           <div class="flow-step"><strong>Commit to a new branch</strong><span class="mono">fix/what-you-did</span></div>
           <span class="flow-arrow" aria-hidden="true">&rarr;</span>
-          <div class="flow-step"><strong>Open the PR</strong><span class="mono">base: passion-18.4.1</span></div>
+          <div class="flow-step"><strong>Open the PR</strong><span class="mono">base: the default branch</span></div>
           <span class="flow-arrow" aria-hidden="true">&rarr;</span>
           <div class="flow-step"><strong>Add a label</strong><span class="mono">rock:start</span></div>
           <span class="flow-arrow" aria-hidden="true">&rarr;</span>
@@ -966,7 +966,7 @@
             </tr>
             <tr>
               <td><strong>Staging</strong><br><span class="mono card-note">staging.rock-dev.connect.passion.team</span></td>
-              <td>merge into <code>passion-18.4.1</code><br><span class="card-note">automatic, no button</span></td>
+              <td>merge into the default branch<br><span class="card-note">automatic, no button</span></td>
               <td>anyone who can merge</td>
               <td>shared sandbox</td>
             </tr>

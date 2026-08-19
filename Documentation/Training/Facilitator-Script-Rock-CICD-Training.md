@@ -38,7 +38,7 @@ correctly.
 | 0:04 | 8 | Git in five minutes | 3–5 | A branch is a copy you can't break. |
 | 0:12 | 6 | The fork | 6–7 | We didn't write Rock. We keep our changes next to theirs. Repo is **public**. |
 | 0:18 | 4 | Version branches | 8–9 | The trunk is named after the version production runs. |
-| 0:22 | 8 | Making changes | 10–12 | Base branch `passion-18.4.1`, or nothing happens. |
+| 0:22 | 8 | Making changes | 10–12 | Base branch must be the repo default, or nothing happens. |
 | 0:30 | 5 | Why GitHub builds it | 13–14 | Half an hour of compiling on a Windows machine none of us owns. |
 | 0:35 | 7 | Three doors | 15–16 | Merging deploys **staging**. Production takes a deliberate run *and* an approval. |
 | 0:42 | 10 | **Demo** | 17 | It's real, and here's the URL. |
@@ -162,21 +162,20 @@ and on the servers — never in the code.
 
 ### 0:18 — Version branches (slides 8–9, 4 min)
 
-Short segment. The one thing they must take away: **don't memorize `passion-18.4.1`.** Read
+Short segment. The one thing they must take away: **don't memorize the trunk's name.** Read
 the default branch, or read `.github/pr-test-environments.json`. It changes at every upgrade.
 
-Slide 9 is cuttable. It exists so the branch names aren't a surprise when the trunk moves to
-Rock 19.
+Slide 9 is cuttable. It exists so the branch names aren't a surprise the next time the trunk
+moves.
 
-**Do not let slide 9 imply the Rock 19 upgrade is a decided plan running through this
-pipeline.** It isn't, and the slide says so. If it comes up, the honest answer is: Rock 19 is
-the next upgrade, Spark's newest 19 tag today is `19.3.4`, and whether we take it through
-this repo or by hand the way 18.4 was done is still open. Point that question at DevOps and
-the Technology Director rather than answering it in the room.
+**Check the current state before you deliver this segment** — where the trunk is, where
+production is, and whether the two currently match. During an upgrade they deliberately don't,
+and a room that spots the gap will ask about it. `git remote show origin` and the Actions tab
+answer both questions in under a minute; don't reconstruct it from memory or from this script.
 
-The related thing worth saying out loud, because someone will spot it: `develop` is *already*
-a 19 line (19.0.3) and it holds our 78 plugin files. So the Rock 19 move and the `develop`
-reconciliation are not independent. Don't design that on the fly here.
+The related thing worth saying out loud, because someone will spot it: `develop` is a separate
+older line that also moved to Rock 19, and it holds our 78 plugin files. So a Rock upgrade and
+the `develop` reconciliation are not independent. Don't design that on the fly here.
 
 ### 0:22 — Making changes (slides 10–12, 8 min)
 
@@ -350,7 +349,7 @@ you wait on is a pipeline that is doing real work.
 
 **If you show only one thing, show the PR.** <https://github.com/passiondev/Rock/pull/4> is the
 whole hour in one page, and it needs no live site and no network beyond GitHub: four changed
-files against `passion-18.4.1`, the label you applied, the labels the robot applied back, a bot
+files against the trunk, the label you applied, the labels the robot applied back, a bot
 comment carrying the live URL and the deployed SHA, and a Checks tab where every build step is
 named. Steps 1–4 below are that page. Steps 5 and 6 open live sites, which is stronger but
 depends on a warm app pool; step 7 is the only one that starts anything, and it is optional.
@@ -364,7 +363,7 @@ rest — the argument survives intact.
 
 `aaceb67c8e` is a merge of the trunk into the demo branch, not one of the three demo commits
 below. That is deliberate and worth a sentence if anyone asks: the branch was brought up to
-date with `passion-18.4.1` and redeployed, which is the same thing they will do to any branch
+date with the trunk and redeployed, which is the same thing they will do to any branch
 that has fallen behind. **Files changed** still shows only the four demo files, because GitHub
 diffs against the merge base rather than the branch tip.
 
@@ -404,8 +403,8 @@ running on that host.
 **Sequence:**
 
 1. **The PR page.** Files changed → four files. One is a one-line Vue change, two are the theme
-   `Site.Master` layouts, one is `Http404Error.aspx`. Point out the base branch reads
-   `passion-18.4.1`.
+   `Site.Master` layouts, one is `Http404Error.aspx`. Point out that the base branch reads the
+   repository's default branch — that is the whole rule from slide 10, visible on a real PR.
 2. **The sidebar.** The label *you* added, and the state labels the robot set in response.
 3. **The bot comment.** Status table: `deployed`, the URL, the SHA, the artifact path. Note
    it also lists the commands — the PR documents itself. The "Access and data notes" section

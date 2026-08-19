@@ -269,7 +269,7 @@
 
   <div class="rule">
     <span class="rule-label">The one rule</span>
-    <span class="rule-text">Branch from <code>passion-18.4.1</code> and open your PR <strong>into</strong> <code>passion-18.4.1</code>. Any other base branch and the robot silently ignores you: no error, no test site.</span>
+    <span class="rule-text">Branch from the <strong>default branch</strong> and open your PR <strong>into</strong> it. That is whatever GitHub shows you when you open the repo, and whatever <code>.github/pr-test-environments.json</code> names as <code>baseBranch</code> &mdash; the two always agree. Any other base branch and the robot silently ignores you: no error, no test site.</span>
   </div>
 
   <div class="cols">
@@ -279,7 +279,7 @@
       <p class="flow">
         <b>1.</b> Find the file (press <code>t</code>) <span class="arrow">&rarr;</span>
         <b>2.</b> Edit, commit to a <em>new</em> branch <span class="arrow">&rarr;</span>
-        <b>3.</b> Open PR, base <code>passion-18.4.1</code> <span class="arrow">&rarr;</span>
+        <b>3.</b> Open PR, base = the default branch <span class="arrow">&rarr;</span>
         <b>4.</b> Add <span class="tag tag-do">rock:start</span> <span class="arrow">&rarr;</span>
         <b>5.</b> Wait ~30 min <span class="arrow">&rarr;</span>
         <b>6.</b> Open the URL in the robot's comment <span class="arrow">&rarr;</span>
@@ -357,7 +357,7 @@
     <section>
       <h2>Before you say it's broken</h2>
       <ol>
-        <li>Is the PR's base branch <code>passion-18.4.1</code>?</li>
+        <li>Is the PR's base branch the repo's current default branch?</li>
         <li>Every page 500ing? Open staging. If it's broken too, it isn't your change.</li>
         <li>Is the file in your PR's <strong>Files changed</strong> tab?</li>
         <li>Changed LESS? Recompile: <em>Admin &rarr; CMS &rarr; Themes</em>. Then hard-refresh.</li>
@@ -386,7 +386,7 @@
   </div>
 
   <div class="foot">
-    <span>Trunk branch: <code>passion-18.4.1</code>, the repo default and what staging builds from</span>
+    <span>Trunk branch: the repo default, and what staging builds from. It is renamed at every Rock upgrade &mdash; read it, do not memorise it</span>
     <span>Base branch is set by <code>.github/pr-test-environments.json</code></span>
     <span>Never open a PR against <code>develop</code>. It is our older line, not a mirror of upstream</span>
     <span>Verified 2026-08-10</span>

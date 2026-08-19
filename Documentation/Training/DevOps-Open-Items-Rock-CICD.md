@@ -1,7 +1,9 @@
 # Rock CI/CD — open items for DevOps
 
 **Audience:** DevOps engineer + Global Engineering. Not part of the training handout.
-**As of:** 2026-08-18 · **Repo:** `passiondev/Rock` (public) · **Trunk:** `passion-18.4.1`
+**As of:** 2026-08-19 · **Repo:** `passiondev/Rock` (public) · **Trunk:** the repository's
+default branch, named `passion-<version>` and replaced at every Rock upgrade — read it from
+GitHub or from `.github/pr-test-environments.json` rather than from this line
 
 The pull-request path is working and proven end to end. This is the list of what is *not*
 done, ordered by what it blocks. Most of these were found by auditing the pipeline this week;
@@ -78,12 +80,17 @@ first real run** rather than trusting the defaults.
 
 ### 3. The trunk branch has no protection at all
 
-`passion-18.4.1` is the default branch, it is what production runs, and **merging into it
-auto-deploys staging**. It currently has `protected: false` and the repo has **0 rulesets**.
-Anyone with write access can push directly to it — no PR, no review, no build check.
+The trunk is the default branch and **merging into it auto-deploys staging**. It currently has
+`protected: false` and the repo has **0 rulesets**. Anyone with write access can push directly
+to it — no PR, no review, no build check.
+
+(It is *not* always what production runs: during a Rock upgrade the trunk leads and production
+deliberately lags. That widens the window this item is about rather than narrowing it — an
+unreviewed push to the trunk goes straight onto a staging environment the whole team is using
+to qualify the upgrade.)
 
 The training we're delivering tells people "open a PR and get a review." Nothing enforces
-that today. Recommended ruleset on `passion-18.4.1`:
+that today. Recommended ruleset, re-pointed at the new trunk at every upgrade:
 
 - Require a pull request before merging (1 approval)
 - Require the build status check to pass
@@ -295,9 +302,12 @@ written, and the result is a broken environment that the pipeline reports as goo
 **The version split is now measured, not inferred.** `Rock.Version/AssemblySharedInfo.cs` —
 one of the two files `production-deploy.yml`'s version guard reads — declares:
 
+Measured 2026-08-10; the trunk has moved since, so read these as a snapshot of the split, not
+as current values.
+
 | Ref | Rock version |
 | --- | --- |
-| `passion-18.4.1` (trunk, staging) | **18.4.1** |
+| `passion-18.4.1` (trunk at the time) | **18.4.1** |
 | `demo/ptp-cicd-training-walkthrough` (PR #4) | **18.4.1** |
 | `pilot/pr-test-env-doc-smoke-v1761` (PR #3) | **17.6.1** |
 | `develop` | 19.0.3 |
@@ -772,32 +782,44 @@ gcloud sql instances patch connect-prod --project=passioncitychurch-com --storag
 gcloud sql instances patch connect-restore-test --project=passioncitychurch-com --storage-auto-increase
 ```
 
-### 23. The v19 cutover has two repo-side steps that are easy to miss
+### 23. Every trunk cutover has two repo-side steps that are easy to miss
 
-Both are cheap to do in advance and expensive to discover live.
+**Done for the 19.3.4 cutover on 2026-08-19.** Kept here because both steps recur verbatim at
+the next upgrade, and both are cheap in advance and expensive to discover live.
 
-**`.github/pr-test-environments.json` pins `baseBranch` to `passion-18.4.1`.**
+**`.github/pr-test-environments.json` pins `baseBranch` to the outgoing trunk.**
 `pr-test-lifecycle.yml` compares `pull.base.ref` against it and quietly sets `should_run=false`
-on a mismatch — it logs and exits successfully. So the morning PRs start targeting the v19
+on a mismatch — it logs and exits successfully. So the morning PRs start targeting the new
 branch, every stop and destroy silently stops working and nothing reports an error. The same
-value gates the deploy path. Flip it in the same change that moves the trunk.
+value gates the deploy path. Flip it in the same change that moves the trunk, and flip the
+`push:` trigger and the `workflow_dispatch` ref default in `staging-deploy.yml` with it.
 
-**Anything merged to `passion-18.4.1` after the v19 branch was cut is lost unless it is carried
-over.** That currently includes the teardown fixes and the agent self-update. They are based on
-`passion-18.4.1` deliberately — `workflow_dispatch` runs the workflow file from the *default*
-branch, so a fix that only exists on the v19 branch fixes nothing until the cutover — but that is
-exactly what makes them easy to leave behind.
+**Anything merged to the outgoing trunk after the new branch was cut is lost unless it is
+carried over.** For this cutover that was the teardown fixes and the app-pool ACL fix
+(`71064b2e61`, cherry-picked). Such fixes are based on the *outgoing* trunk deliberately —
+`workflow_dispatch` and `schedule` both run the workflow file from the **default** branch, so a
+fix that only exists on the incoming branch fixes nothing until the cutover — but that is
+exactly what makes them easy to leave behind. Diff the two trunks before flipping the default.
 
 ## P2 — hygiene
 
 ### 9. Stale branches — but two of them are not safe to delete
 
 `develop-17.6.1`, `deploy/ptp-14803-18.4.1`, `bump`, `fix/group-sync`, and
-`pilot/pr-test-env-doc-smoke-v1761` are superseded by `passion-18.4.1`. Pruning them removes
+`pilot/pr-test-env-doc-smoke-v1761` are superseded by the trunk. Pruning them removes
 several ways to target the wrong base branch. Confirm `fix/group-sync` is genuinely abandoned
-before deleting; the rest are safe.
+before deleting.
 
-**Do not delete `develop` or `staging`.** An earlier revision of this list called `develop` a
+> **Escalated 2026-08-19 — this prune list is no longer safe as written.** `staging` was
+> deleted from `origin` on 2026-08-18 (a `DeleteEvent` at 09:17 UTC; the branch survives only
+> in local clones). Its five unique plugin files and its two unique commits — `d3119b5103`
+> "fix datetime issue in plugin" and `0fe0175651` "Optimizations" — are still reachable, but
+> only from `feat/PTP-16122` **and from `bump`, `develop-17.6.1`, and
+> `pilot/pr-test-env-doc-smoke-v1761`, three of the branches listed directly above as safe to
+> prune.** Deleting the list today leaves one feature branch as the sole remote copy.
+> **Do item 14 first,** or tag the content, before any pruning happens.
+
+**Do not delete `develop`.** An earlier revision of this list called it a
 "pristine upstream mirror" and put `staging` in the safe-to-prune set. Both were wrong, and
 measurably so:
 
@@ -808,8 +830,8 @@ measurably so:
   upgrade. It is also the branch the last production build came from — 2026-05-06 from
   `dd6d189b`, which is `origin/develop` HEAD today. See item 15 for why that build must never
   be installed on production.
-- `staging` declares **Rock 17.6.1** and is 73 commits ahead of `develop`, holding **five
-  plugin files newer than `develop`'s copies** — `org_passion/RSVP/RsvpDetailBETA.ascx`,
+- `staging` (now deleted from `origin`, see above) declares **Rock 17.6.1** and is 73 commits
+  ahead of `develop`, holding **five plugin files newer than `develop`'s copies** — `org_passion/RSVP/RsvpDetailBETA.ascx`,
   `org_passion/RSVP/RsvpResponse.ascx.cs`, `org_passion/RSVP/RsvpResponseBETA.ascx.cs` (all
   2026-02-24 vs. develop's 2026-01-09), plus `org_secc/Authentication/Arena.cs` and
   `org.secc.Authentication.csproj` (2026-01-28 vs. 2026-01-09). Two of its commits
@@ -869,7 +891,7 @@ is the open question at the end, which is a decision rather than a defect.
 `RockWeb/Plugins/.gitignore` is a single rule, `*/*`, so every plugin subfolder is ignored.
 That is upstream Rock's convention — plugins are installed packages, not source. The
 consequence for *us* is that Passion's own customizations are not on the trunk:
-measured 2026-08-10, `passion-18.4.1` tracks two files under `RockWeb/Plugins/` (`.gitignore`,
+measured 2026-08-10, the trunk tracks two files under `RockWeb/Plugins/` (`.gitignore`,
 `readme.txt`) and **zero** paths matching `org_passion` or `team_passion`, against 448 tracked
 core blocks under `RockWeb/Blocks/`.
 
@@ -967,9 +989,15 @@ revisions and the cross-references above keep working. Opened as "nothing establ
 branch production deploys from." Measured and answered on 2026-08-10; what remains is one
 migration step that has to be taken deliberately, and one guard to add to the workflow.
 
-`production-deploy.yml` defaults its `ref` input to `passion-18.4.1`. Nothing in the repository
-stated *why* that is the right source, so it was measured. **The default is correct**, and the
-reason is worth writing down, because the obvious alternative is actively dangerous.
+`production-deploy.yml` defaults its `ref` input to the branch **production** runs — currently
+`passion-18.4.1`. Nothing in the repository stated *why* that is the right source, so it was
+measured. **The default is correct**, and the reason is worth writing down, because the obvious
+alternative is actively dangerous.
+
+Note this pin is deliberately *separate* from the repository default. During a Rock upgrade the
+trunk moves first and production stays put, so folding the two together would hand a no-argument
+production dispatch a newer artifact than production is qualified for. `Tests/PrTestEnvironments/
+test_base_branch_config.py` asserts them separately for exactly that reason.
 
 Each branch declares its own Rock version — in `Rock.Version/AssemblySharedInfo.cs` through
 18.x, and in `Directory.Build.props` as `<Version>` from 19.x, which deleted the older file.
@@ -977,7 +1005,7 @@ They are not three points on one line — they are three different Rock majors:
 
 | Branch | Declares | Descends from upstream tag `18.4.1`? | Commits the tag has that it lacks | Files under `RockWeb/Plugins/` |
 | --- | --- | --- | --- | --- |
-| `passion-18.4.1` (trunk) | **18.4.1** | yes | 0 | 2 |
+| `passion-18.4.1` (trunk when measured; production's pin today) | **18.4.1** | yes | 0 | 2 |
 | `develop` | **19.0.3** | no — diverged 2026-01-07 | 218 | 276 |
 | `staging` | **17.6.1** | no | 2,238 | 276 |
 
@@ -1105,7 +1133,7 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    2026-08-11: one required reviewer, `can_admins_bypass: false`). What's left is adding the
    DevOps engineer as a second reviewer and then flipping `prevent_self_review` to `true`
    (~5 min, and only then is production two-person)
-2. Item 3 — protect `passion-18.4.1` (~10 min, makes the training true)
+2. Item 3 — protect the trunk (~10 min, makes the training true)
 3. Item 15 — the source branch is settled (the trunk). What's left: add the ref guard so
    `develop` can never be deployed, re-confirm production's assembly inventory, and plan the
    18.3.1 → 18.4.1 migration with a verified backup. This gates the first real production deploy
