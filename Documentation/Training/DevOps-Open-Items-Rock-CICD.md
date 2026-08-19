@@ -1259,37 +1259,47 @@ They are not three points on one line — they are three different Rock majors:
 | `develop` | **19.0.3** | no — diverged 2026-01-07 | 218 | 276 |
 | `staging` | **17.6.1** | no | 2,238 | 276 |
 
+**Read "trunk" below as "the production branch" -- corrected 2026-08-19.** This section was
+written when production's source branch *was* the trunk, and it used the two words
+interchangeably. The cutover moved the trunk to `passion-19.3.4` and left production on
+`passion-18.4.1`, so every "trunk deploy" sentence here would now send Rock 19 to production.
+The branch is named explicitly below wherever it matters; the pin itself is `productionBranch`
+in `.github/pr-test-environments.json`.
+
 Production's own `bin`, inventoried 2026-07-30, is a patchwork within the 18.x line: 17
 assemblies at 18.1.0, 8 at 18.3.1, and 3 at 18.4.1 (`Rock.dll`, `Rock.Blocks.dll`,
 `Rock.Version.dll`, hot-swapped 2026-07-20). Nothing on the box is 19.x. So:
 
 1. **Production is 18.4.1 at the core and behind it everywhere else.** `Rock.dll` and
    `Rock.Version.dll` are 18.4.1, which is why Rock's own about-page reports 18.4 — but most of
-   the site is still 18.1.0/18.3.1. A trunk deploy builds every assembly at 18.4.1, so it
-   brings the stragglers *forward*. That is the reconciliation production needs, not a risk to
-   avoid.
+   the site is still 18.1.0/18.3.1. A `passion-18.4.1` deploy builds every assembly at 18.4.1,
+   so it brings the stragglers *forward*. That is the reconciliation production needs, not a
+   risk to avoid.
 2. **`develop` must never be deployed to production.** It is the 19.0 line. A v19 artifact on
    production is a major-version jump whose migrations run at startup and cannot be walked
    back. The last production *build* ran 2026-05-06 from `develop` (`dd6d189b`) — and the
    absence of any 19.x assembly on the box is the evidence that artifact was never actually
-   installed. That was luck, not a control. `production-deploy.yml` should reject any ref that
-   is not the trunk.
+   installed. That was luck, not a control. **Done 2026-08-19:** `production-deploy.yml`
+   refuses any ref that is not on `productionBranch`. It measured against the *default* branch
+   until then, which broke the moment the trunk moved -- see item 23.
 3. **Production cannot lose its plugins.** The `InPlace` path uses `robocopy /E` with no `/MIR`
    and no `/PURGE` (`Deploy-RockEnvironment.ps1:647-659`), so server-only files survive. Trunk
    carries 2 plugin files and production carries hundreds; the deploy leaves them alone.
-   Verified by reading the script, not by deploying.
+   Verified by reading the script, not by deploying. (The 2-file count is `passion-18.4.1`'s;
+   the trunk's is not what this deploy would copy.)
 
 **The one real risk, and it is specific:** `Rock.Migrations.dll` on production is **18.3.1**,
-and trunk builds it at **18.4.1**. Rock runs pending migrations on first startup, so the first
-trunk deploy will apply the 18.3.1 → 18.4.1 migrations against the production database. That is
-a normal patch-level upgrade, but it is a one-way door. It needs a verified database backup
+and `passion-18.4.1` builds it at **18.4.1**. Rock runs pending migrations on first startup, so
+the first deploy from that branch will apply the 18.3.1 → 18.4.1 migrations against the
+production database. That is a normal patch-level upgrade, but it is a one-way door.
+Deploying the *trunk* instead is not a patch-level anything -- it is the Rock 19 jump described
+in point 2, which is why the guard now measures against the pin rather than the default branch. It needs a verified database backup
 taken immediately before, and it should be the *only* change in that deploy.
 
 **What to do, in order:** re-confirm the assembly inventory on `connect-srv-prod` (the numbers
 above are from 2026-07-30 and predate any 18.4.1 work since); take and *verify* a database
-backup; deploy the trunk to production during a window, with DevOps present; then reconcile the
-plugin files (item 14) so one branch holds all of it. Add the ref guard from point 2 before the
-first real run.
+backup; deploy `passion-18.4.1` to production during a window, with DevOps present; then reconcile the
+plugin files (item 14) so one branch holds all of it. The ref guard from point 2 is in place.
 
 This is why the production path is deliberately unfired — not because the source branch was
 unknown, but because the migration step above has to happen deliberately and with a backup.
