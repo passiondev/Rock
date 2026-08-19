@@ -143,8 +143,26 @@ recovery position here would have been considerably worse. See open item 22.
   blocker was 2 columns and 24 rows in tables Rock does not own — not core schema drift.
   **This changes the production forecast:** production is only exposed if it carries the same
   scratch tables, which is a question about one prefix rather than a catalog-wide audit.
-  Still worth running the finder against production before its cutover; the `RESTORE_*` tables
-  should be dropped either way.
+- **Superseded 2026-08-19 — the blocker is fixed in code, so production no longer depends on
+  the state of its catalog here.** `aead938018` narrows the migration's cursor to
+  `TYPE_NAME( c.system_type_id ) IN ( 'nvarchar', 'varchar', 'nchar', 'char' )` and
+  `t.is_ms_shipped = 0`, so a `text` column named `IconCssClass` is skipped rather than joined
+  to `__IconTransition.FontAwesomeFull` and throwing. That matters more than a data cleanup
+  would: every table's UPDATE is concatenated into one batch and run by a single
+  `sp_executesql`, so one bad column failed the whole statement for every table.
+
+  Staging then migrated 18.4.1 → 19.3.4 against `RockStaging` — a faithful copy of the
+  prod-derived catalog, carrying all 67 legacy columns and all four `RESTORE_*` tables — and
+  came up clean. That is the same catalog shape production will present, so the guard has been
+  exercised against the real case rather than a reduced one.
+
+  Two things this does **not** retire. It is a local edit to an upstream Rock migration, the
+  only one in the fork, so it has to survive the next upgrade's merge — see the fork-diff
+  count in the facilitator script, which exists to make that visible. And the `RESTORE_*`
+  tables are still scratch that nobody owns and should still be dropped; that is now hygiene
+  with a rollback rather than a prerequisite blocking the cutover. Running the finder against
+  production stays worthwhile for the same reason — to know what is there — but it is no
+  longer something the cutover waits on.
 - **Open — one line, blocked on PR #10.** `test_powershell_edition_compatibility.py` scans
   `Deployment/PrTestEnvironments` for PowerShell 7-only syntax and now misses
   `Deployment/Database`. Point it at both directories once that PR lands; duplicating its
