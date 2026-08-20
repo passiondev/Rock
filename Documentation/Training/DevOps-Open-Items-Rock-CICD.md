@@ -1136,6 +1136,17 @@ copy of what production already serves as its internal site logo — binary file
 sidebar needs. CSS overrides are emitted *after* the `:root` variable block, so the rule wins
 whatever the Site Logo field holds.
 
+**Verified on staging 2026-08-20** after the deploy that carried the file: the asset serves 200 at
+3516 bytes, the corner shows the Passion "P" on Passion blue, and the theme's three values
+survived a `DedicatedSite` deploy that wipes the site directory — which is the database-backed
+customization doing exactly what v19 intended.
+
+One symptom does remain on staging, and it is item 29's, not this one's. `PageNav.lava`'s sidebar
+logo is a real `<img>` pointed at `GetImage.ashx`, and staging cannot retrieve that file, so the
+element is broken there — hidden at desktop width, visible as a gap when the side nav is expanded.
+Production retrieves it fine. Do not "fix" it with a staging-only CSS rule: it is the storage gap
+showing through, and masking it removes the signal.
+
 One thing worth knowing before it surprises someone: at 150x150 that file is smaller than v19 asks
 of it. The old `Rock` theme drew it at 42x42 and never upscaled it, but `RockNextGen` paints it at
 200px on the login page, where it will look soft. `theme.json` asks for "a white SVG file".
