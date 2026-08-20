@@ -1375,6 +1375,80 @@ equal needs a test that fails when they stop being.** That test is now
 own `ref` default against the pin, so a half-done cutover fails CI rather than waiting to be
 discovered during an incident.
 
+**Most of the above is now a command rather than advice.** `Deployment/Repository/upgrade_diff.py`
+takes the two refs and reports what the upgrade removed; the `Upgrade Diff` workflow is the same
+thing with a dispatch button. It answers the three questions this item kept asking people to
+remember:
+
+```bash
+python3 Deployment/Repository/upgrade_diff.py cutover origin/passion-18.4.1 origin/passion-19.3.4
+```
+
+Run against that real pair it independently finds all three of the v19 incidents, none of which
+was found this way at the time:
+
+- **`Rock.Version/AssemblySharedInfo.cs`** — deleted, and still named by
+  `deployment-pipeline-tests.yml`, `pr-test-artifact.yml`, `production-deploy.yml`,
+  `staging-deploy.yml`, `test_environment_deploy.py`, and this document. Four workflows, a
+  test and a runbook all pointing at a file that is not there.
+- **`RockWeb/Styles/styles-v2/`** — 178 tracked files to 1, and separately the 177 deleted paths
+  a new ignore rule now covers. That pairing is what separates "upstream deleted this" from
+  "upstream generates this now". It also reports two more that nobody had noticed:
+  `RockWeb/Themes/RockNextGen` 62 → 1 and `RockWeb/Themes/NextGenCheckin` 10 → 1, both generated
+  the same way. See item 28.
+- **`202602092251477_UpdateCheckinManagerToNextGen`** — repoints the Check-in Manager site's theme,
+  the same class of change as the internal-site repoint in item 28 and equally unannounced.
+
+Three things about reading it. Findings are decisions, not defects — two of the deleted-path
+findings are the artifact gate legitimately checking that the build emitted `styles-v2/core.css`,
+and the report marks those as build output rather than leaving them looking broken. And a plain
+ref-to-ref run answers a narrower question than it appears to: *migrations added between the
+refs* is not *migrations that will run*. The internal-site repoint shipped inside 18.4.1 and had
+simply never run here, so no ref diff would ever have shown it. Pass `--since-migration` with the
+target's highest `__MigrationHistory` id — read-only, from whichever database is being upgraded —
+to ask the question that actually matters.
+
+And the migration check is deliberately narrow: it watches `Site`, `Theme` and `Layout` only.
+Across the 65 migrations this upgrade added, those three are written twice in total, while
+`LavaShortcode` is written 59 times, `DefinedValue` 16 and `Page` 10. Widening it to `Attribute`,
+`AttributeValue` and `Block` — all defensible on paper — turns two findings into roughly thirty,
+and a thirty-line report of routine migration activity is one that gets skimmed. If an upgrade
+ever proves the tight set missed something, widen `CONFIGURATION_TABLES` and move the note in the
+file with it. Until then, a migration that rewrites configuration through some other table is
+still a human read.
+
+**The first step still entirely human: fork-local edits.** A merge resolves those *for* you, and
+"take theirs" on one silently reverts a fix or deletes a feature with every test still green.
+`Documentation/Fork-Local-Changes.md` is the register, derived rather than hand-collected, and
+deriving it on 2026-08-20 immediately corrected the record: the belief that the icon migration's
+narrowed cursor was the only place this fork changes Rock's behaviour was wrong. There are six
+files across two unrelated changes, and the second — a FormBuilder header-image feature spanning
+a C# block, a view model and three Obsidian components — has no test coverage at all. Nothing but
+that page stands between it and a bad merge.
+
+**The second: state that only exists on the VM.** `upgrade_diff.py` compares two git refs, so
+anything not in git is invisible to it by construction — and a surprising amount of what makes
+this a Passion install rather than a stock Rock install is in that category. Verified from this
+checkout:
+
+- **`RockWeb/Plugins/` is almost entirely untracked.** Its `.gitignore` is `*/*` — "ignore all
+  subfolders" — so version control holds exactly two files there, `readme.txt` and the ignore rule
+  itself. The working copy has five vendor directories under it (`cc_newspring`,
+  `com_firetreedesign`, `org_secc`, `team_passion`, `tech_triumph`) and git knows about none of
+  them. A deploy that lays down a fresh tree does not carry any of it.
+- **No Passion theme is tracked.** `RockWeb/Themes/` holds Rock's own fourteen and nothing else.
+  The themes the sites actually run are on the VM only.
+
+Recorded from earlier investigation but **not re-verified here** — check each on the VM before a
+cutover rather than trusting this list: the Pillars S3 plugin, the `CONNECT`, `PassionCityChurch`
+and `PassionTeam` themes, and production's `bin`, which is a mixed-version assembly set rather
+than the output of any single build.
+
+The decision this asks for is per item, and it is one of two: bring it into the repository, or
+write down that it is VM-owned and how to restore it. What is not an option is leaving it
+undecided, because the failure mode is a deploy that succeeds and a site that comes back missing
+something nobody listed.
+
 ## P2 — hygiene
 
 ### 9. Stale branches — but two of them are not safe to delete
@@ -1963,10 +2037,14 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     command: `storage-auto-increase` on **`connect-prod`**, which was missed when the same flip
     was applied to the sandbox instance. No downtime, and it closes a failure mode — a full disk
     stops the instance — that nothing alerts on
-17. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
-    *next* upgrade, and it is four steps rather than the two this line used to name. The fourth
-    was found live on 2026-08-19 with production undeployable, which is the argument for reading
-    the item before the next cutover rather than during it
+17. Item 23 — the cutover checklist, now mostly executable. Run
+    `Deployment/Repository/upgrade_diff.py` (or the `Upgrade Diff` workflow) against the two
+    trunks before flipping anything: it finds deleted paths the tooling still names, directories
+    that emptied because upstream started generating them, and migrations that repoint site
+    configuration. Against the real 18.4.1 → 19.3.4 pair it rediscovers all three v19 incidents,
+    every one of which was originally found in production by symptom. Two steps stay human —
+    reviewing each config-writing migration, and checking `Documentation/Fork-Local-Changes.md`
+    survived the merge
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that

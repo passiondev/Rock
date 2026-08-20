@@ -103,6 +103,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # test_upgrade_diff.py compares two long-lived trunks, and checkout@v4 fetches only
+      # the ref that triggered the run -- so without this step every one of its
+      # real-cutover assertions hits its SkipTest branch and the suite reports OK having
+      # checked nothing. A test that always skips is the same thing as a test that does
+      # not exist, which is the failure this whole workflow was created to stop.
+      #
+      # A shallow fetch of the two tips is all it needs: ls-tree wants the trees, and
+      # `git diff A..B` compares the commits directly rather than through a merge base.
+      # Full history of a repository this size would cost minutes per run.
+      #
+      # Branch names come from the config rather than being written here, so the cutover
+      # that flips those pins moves this too. Failure is tolerated on purpose -- a fork,
+      # or the window after an old trunk is finally deleted, should skip those tests
+      # rather than fail the whole suite.
+      - name: Fetch both trunks for the upgrade-diff tests
+        continue-on-error: true
+        run: |
+          branches=$(python3 -c "import json; c = json.load(open('.github/pr-test-environments.json')); print('\n'.join(c[k] for k in ('baseBranch', 'productionBranch') if c.get(k)))")
+          for branch in $branches; do
+            git fetch --depth=1 origin "$branch:refs/remotes/origin/$branch" || true
+          done
+
+      # The fork-local register is checked by re-deriving it against the upstream release
+      # it names, which needs a tag origin does not carry. Without this the two derivation
+      # tests skip and the register's claim to be derived holds only on a laptop.
+      #
+      # Both the tag and the remote come out of the register itself, so there is no second
+      # place to update at a cutover. Failure is tolerated here because the tests are the
+      # real guard: _require_ref fails rather than skips when GITHUB_ACTIONS is set, so a
+      # fetch that silently stops working shows up as a red test and not as a quiet skip.
+      - name: Fetch the upstream release the fork-local register names
+        continue-on-error: true
+        run: |
+          read -r remote tag <<<"$(python3 -c "
+          import pathlib, re
+          register = pathlib.Path('Documentation/Fork-Local-Changes.md').read_text()
+          tag = re.search(r'\*\*Measured against upstream\*\* \`([^\`]+)\`', register).group(1)
+          remote = re.search(r'\*\*Upstream remote\*\* \`([^\`]+)\`', register).group(1)
+          print(remote, tag)
+          ")"
+          git fetch --depth=1 "$remote" "refs/tags/$tag:refs/tags/$tag" || true
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
