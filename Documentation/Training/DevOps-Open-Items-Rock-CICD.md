@@ -1,7 +1,7 @@
 # Rock CI/CD — open items for DevOps
 
 **Audience:** DevOps engineer + Global Engineering. Not part of the training handout.
-**As of:** 2026-08-19 · **Repo:** `passiondev/Rock` (public) · **Trunk:** the repository's
+**As of:** 2026-08-20 · **Repo:** `passiondev/Rock` (public) · **Trunk:** the repository's
 default branch, named `passion-<version>` and replaced at every Rock upgrade — read it from
 GitHub or from `.github/pr-test-environments.json` rather than from this line
 
@@ -1107,13 +1107,47 @@ and 11, `PassionCityChurch` by 13, `PassionTeam` by 16, `Agency` by 17 — so th
 theme free to hand to the internal site wholesale. Setting the colour on `RockNextGen` is the only
 option that produces Passion branding.
 
-**Still open: the logo.** `RockNextGen` also exposes a Site Logo (`logo-image`, default
-`~/Assets/Images/rock-logo-circle-white.svg`) and it is still Rock's mark, on staging and in the
-production window alike. Upload Passion's or accept Rock's deliberately.
+**Also set: the link colour.** Production's `Rock` theme compiles `--link-color` to `#599AC2`
+rather than Bootstrap's `#006DCC`, so `RockNextGen`'s Link Color is set to `#599AC2` to match. On
+`RockNextGen` the variable is named `base-link` and resolves to `--base-link` / `--color-link`;
+`--link-color` is a LESS-theme name and reads empty there, which makes for a confusing probe.
+
+**Resolved on staging 2026-08-20 — the logo, by way of a file in the artifact rather than an
+upload.** The corner brand is not conditional. `Site.Master` emits
+`<a class="navbar-brand-corner no-logo">` with that class hardcoded, and `.no-logo::after` paints
+`var(--logo-image)`, so the theme variable is required even on a site that already has a
+`SiteLogoBinaryFileId`. Only the sidebar reads the binary file (`PageNav.lava` branches on
+`Site.Layout.Site.SiteLogoBinaryFileId`); the corner never does, and the login page's
+`#logo::before` paints the variable too. Setting the site logo alone leaves Rock's mark in the
+corner.
+
+The theme's own Site Logo field could not supply it on staging, for a reason that is its own entry
+below — the uploader targets the `Unsecured` binary file type, which is backed by a storage
+provider this server does not have. What works in both environments, and needs no upload during
+the production window, is a file in the artifact plus a CSS override:
+
+```css
+:root { --logo-image: url('/Assets/Images/passion-logo-white.png'); }
+```
+
+`RockWeb/Assets/Images/passion-logo-white.png` is committed to the repository and is a byte-for-byte
+copy of what production already serves as its internal site logo — binary file 124872,
+`pcc_logo.png`, 150x150, the Passion "P" in pure white on transparency, which is what a coloured
+sidebar needs. CSS overrides are emitted *after* the `:root` variable block, so the rule wins
+whatever the Site Logo field holds.
+
+One thing worth knowing before it surprises someone: at 150x150 that file is smaller than v19 asks
+of it. The old `Rock` theme drew it at 42x42 and never upscaled it, but `RockNextGen` paints it at
+200px on the login page, where it will look soft. `theme.json` asks for "a white SVG file".
+Replacing the PNG with a vector is a branding decision rather than a deploy one, and nothing is
+blocked on it.
 
 **Production inherits none of this.** `AdditionalSettingsJson` is a row in the production
-database and the staging edit does not touch it, so the same one-field change has to be made in
-the production window, after the migration has run.
+database and the staging edit does not touch it, so all three settings have to be made again in
+the production window, after the migration has run: Primary Color `#00B8E4`, Link Color `#599AC2`,
+and the `--logo-image` CSS override above. The logo file itself arrives with the artifact.
+Production could also upload through the Site Logo field, because its storage provider works —
+but the override behaves identically in both environments and costs no manual step.
 
 **Two measurement traps here, both of which produce a confident wrong answer.** Check-in themes
 compile `checkin-theme.less`, not `theme.less`, so probing `Themes/<name>/Styles/theme.css`
@@ -1127,6 +1161,68 @@ Check the configuration, not the files:
 await ( await fetch( '/api/Sites?$select=Id,Name,Theme' ) ).json()
 await ( await fetch( '/api/Themes?$select=Name,AdditionalSettingsJson' ) ).json()
 ```
+
+---
+
+### 29. On staging, only database-backed files work — every image in cloud storage 404s, and new uploads fail
+
+**Found 2026-08-20, while trying to upload a logo through the theme editor** (item 28). The upload
+returned "A storage provider has not been registered for this file type or the current storage
+provider is inactive." That string comes from `BinaryFile.SaveHook`, which throws it when
+`Entity.StorageProvider` resolves to null.
+
+These look like one fault and are two, with different causes and different fixes.
+
+**Reads fail because the bytes are in cloud buckets staging cannot read.** Every `BinaryFile` row
+carries its own `StorageEntityTypeId` — deliberately, so a file stays retrievable after its type
+is repointed. Probing `GetImage.ashx?guid=` across a sample of each:
+
+| Per-file provider | Result |
+|---|---|
+| `Rock.Storage.Provider.Database` (51) | **200** — bytes are in the catalog, so they came with the restore |
+| `Rock.Storage.Provider.GoogleCloudStorageProvider` (758) | **404** |
+| `rocks.pillars.AmazonStorageProvider.S3BlobStorage` (900) | **404** |
+
+The catalog is a copy of production's, so it references objects in production's buckets. Whether
+staging is missing credentials, is pointed at a bucket it has no permission on, or both, was not
+determined — that needs the server's `ExceptionLog`, and it does not change the conclusion.
+
+**Writes fail for a separate reason: the provider component does not exist in the build.** 19 of
+staging's 22 binary file *types* point at entity type 900,
+`rocks.pillars.AmazonStorageProvider.S3BlobStorage`. That is a third-party plugin, and
+`git ls-files | grep -i pillars` returns nothing — it is not in the repository, so it is not in the
+artifact. `ProviderContainer.GetComponent` cannot resolve it, `StorageProvider` is null, and the
+save hook throws. `Unsecured` is one of the 19, and `Unsecured` is what the Obsidian
+`ImageUploader` targets whenever a block does not name a type — which is why an unrelated theme
+field could not accept a file.
+
+**Why production is not in this state, and the part of that worth watching.**
+`Deploy-RockEnvironment.ps1` behaves differently in its two modes. Staging is `DedicatedSite`:
+`Remove-Item $SitePath -Recurse -Force`, then the artifact is moved into place, so anything on the
+server that is not in the artifact is gone — the Pillars assembly included. `$PreservedDirectories`
+is `Content, App_Data, Logs, Uploads`; `Bin` is not on it. Production is `InPlace`: robocopy over
+the existing tree with no `/MIR` and no `/PURGE`, so files the server owns survive.
+
+That asymmetry cuts both ways, and the second direction is the one to watch:
+
+- **Production keeps its plugin through a deploy.** The v19 upgrade will not break production's
+  images. Worth stating plainly, because the staging symptom invites exactly the opposite
+  conclusion.
+- **Production does not keep its theme edits.** `InPlace` still *overwrites* every file the
+  artifact does contain, and `RockWeb/Themes/Rock/Styles/_variables.less` is one of them.
+  Production's copy carries Passion's blue; the artifact's carries `@brand-color: #ee7725`. Any
+  deploy reverts it, with nothing reporting that it did. For the v19 window this is moot — the
+  migration moves the internal site off that theme anyway — but a site left on any git-tracked
+  theme loses its branding on the next deploy. This is the same mechanism that made staging's
+  `Rock` theme orange while production's stayed blue, and it is the reason item 28 puts the fix in
+  the database rather than in a `.less` file.
+
+**What this costs as a rehearsal.** Anything touching a binary file behaves differently on
+staging: person photos, uploaded documents, check-in labels, merge templates, and any block that
+uploads. A production rehearsal there cannot exercise those paths. Two honest options — put the
+plugin in the repository so the artifact carries it and give staging its own bucket, or record
+that staging is knowingly image-blind so a broken image there stops being re-investigated as a
+finding.
 
 ---
 
@@ -1798,55 +1894,65 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    deliberately lags the trunk). What's left: add the ref guard so `develop` can never be
    deployed, re-confirm production's assembly inventory, and plan production's next version
    move with a verified backup. This gates the first real production deploy
-4. Item 28 — set the internal site's Primary Color in the production window, right after the
-   migration runs. The decision is made and proven on staging: keep `RockNextGen` and set
-   Primary Color to `#00B8E4`. It is one field in Admin Tools → CMS Configuration → Themes, it
-   does not carry over from staging because it is a row in each database, and skipping it leaves
-   every staff member looking at stock Rock orange on the morning after the cutover
-5. Item 7 — **the staging half is done** (`RockStaging`, split 2026-08-18). What's left is the
+4. Item 28 — restore the internal site's branding in the production window, right after the
+   migration runs. The decision is made and proven on staging: keep `RockNextGen` and set three
+   things in Admin Tools → CMS Configuration → Themes → RockNextGen → Edit — Primary Color
+   `#00B8E4`, Link Color `#599AC2`, and a CSS override of
+   `:root { --logo-image: url('/Assets/Images/passion-logo-white.png'); }`. None of it carries
+   over from staging, because it is a row in each database. The logo file itself ships in the
+   artifact. Skipping this leaves every staff member looking at stock Rock orange, under Rock's
+   logo, on the morning after the cutover
+5. Item 29 — decide what staging is worth as a rehearsal. Only database-backed files work
+   there: everything in Google Cloud Storage or behind the Pillars S3 plugin 404s, and new
+   uploads fail outright because that plugin is not in the repository and so not in the
+   artifact. Either fix it (ship the plugin, give staging its own bucket) or write down that
+   staging is image-blind, so the next person does not re-investigate a broken image as a
+   finding. Worth settling before the production window, because it bounds what a rehearsal
+   there can actually prove
+6. Item 7 — **the staging half is done** (`RockStaging`, split 2026-08-18). What's left is the
    `pr-*` fleet, which still shares one catalog with itself: decide whether to give the fleet
    `PR_TEST_DB_NAME` too, or to accept the risk while only one PR site runs at a time
-6. Item 24 — decide the test fleet's network exposure. It is a decision plus, if the answer
+7. Item 24 — decide the test fleet's network exposure. It is a decision plus, if the answer
    is option 1, a single firewall rule and a tag; the reason it sits this high is that the
    data behind it became prod-derived on 2026-08-18 and the decision has never actually been
    made by anyone
-7. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window).
+8. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window).
    Do item 21's `automaticRestart` flip on `connect-srv-prod` in the same window: it needs the
    same stop/start, takes about a minute, and until it is done an unplanned host failure leaves
    production off until a human notices and starts it
-8. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
+9. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
    and both hosts were re-measured on real certificates *after* a subsequent deploy and a VM
    restart. Nothing left but to let the weekly schedule run. Read item 4 anyway before touching
    either deploy script — the bug existed in two places and only one of them was obvious
-9. Item 14 — decide whether test sites should render plugin pages (a config line, then a
-   decision about version control that is bigger than this pipeline), and reconcile it with
-   item 15 — they are the same reconciliation seen from two ends
-10. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
+10. Item 14 — decide whether test sites should render plugin pages (a config line, then a
+    decision about version control that is bigger than this pipeline), and reconcile it with
+    item 15 — they are the same reconciliation seen from two ends
+11. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
    in the same pass as item 7; both are about how an environment gets its database, and
    rotating the password before this change just re-exposes the new one
-11. Item 25 — **option 1, publish deploy scripts on merge.** Option 2 landed 2026-08-19 and
+12. Item 25 — **option 1, publish deploy scripts on merge.** Option 2 landed 2026-08-19 and
     caught three stale scripts on the very next deploy, so the drift is no longer silent — but
     it is still a `::warning::` somebody has to read, on a step that is `continue-on-error` by
     design. Option 1 is a `push`-triggered workflow doing one `gsutil cp`, and it removes the
     manual dispatch entirely for every script except the agent itself, which genuinely needs
     the reboot. Small, and it retires a whole class of "the deploy ran the old script"
-12. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
+13. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
     reporting a cold start as a broken environment. `staging` first; measure the memory before
     doing it to every `pr-*` site
-13. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
+14. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
     line used to say.** `staging` is already deleted, so there is nothing left to protect by not
     pruning it; what needs protecting is `bump`, `develop-17.6.1` and
     `pilot/pr-test-env-doc-smoke-v1761`, which between them hold the newest remote copy of five
     plugin files and the only copy of two commits — and all three are on that item's own safe-to-prune list. Tag
     them first (the commands are in item 9), or do item 14, before deleting anything
-14. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
+15. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
-15. ~~Item 22~~ — **the backup half is done** (2026-08-18, re-verified live 2026-08-19).
+16. ~~Item 22~~ — **the backup half is done** (2026-08-18, re-verified live 2026-08-19).
     `connect-restore-test` now matches prod on backups, PITR and retention. What is left is one
     command: `storage-auto-increase` on **`connect-prod`**, which was missed when the same flip
     was applied to the sandbox instance. No downtime, and it closes a failure mode — a full disk
     stops the instance — that nothing alerts on
-16. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
+17. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
     *next* upgrade, and it is four steps rather than the two this line used to name. The fourth
     was found live on 2026-08-19 with production undeployable, which is the argument for reading
     the item before the next cutover rather than during it
