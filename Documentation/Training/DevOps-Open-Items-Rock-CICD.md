@@ -1011,7 +1011,8 @@ It failed the first build it ever gated, on output that was complete and correct
 |---|---|
 | Guard merged (`6df00c490d`) | 2026-08-19 16:49 UTC |
 | Next staging deploy (`32279379727`) | 2026-08-19 17:02 UTC — **failed**, `styles-v2 holds only 7 files` |
-| Builds the guard has passed | 0 of 1 |
+| Rewritten to measure bytes (`d4cde07c55`) | 2026-08-19 17:30 UTC |
+| The first two builds it gated after that (`32282066731`, `32286995341`) | both **passed** — `All essential assemblies present ✓`, `styles-v2 files: 7` |
 
 **Why 7 is right.** `Rock.Frontend.Styles/src/styles/styles-v2` holds 189 SCSS partials, one
 non-partial entry point (`core.scss`), and five plain `.css` files. Partials compile *into*
