@@ -1053,8 +1053,8 @@ entry point — so the day someone adds a second one, the gate is told to name i
 ### 28. Rock 19 moved theme customization into the database, and the upgrade repoints the internal site
 
 **Found 2026-08-20 on staging, after the CSS work above was already verified green.** The
-dashboard renders in stock Rock orange with none of Passion's branding while the login page is
-correctly branded. Nothing is broken, no stylesheet is stale, and no deploy needs repeating —
+dashboard rendered in stock Rock orange with none of Passion's branding while the login page was
+correctly branded. Nothing was broken, no stylesheet was stale, and no deploy needed repeating —
 two upstream changes combine to produce it, and both land on production at cutover.
 
 **The upgrade repoints the internal site.** `202508051740308_Rollup_20250805`, in a region
@@ -1072,8 +1072,8 @@ production.
 **And v19 moved where customization lives.** `ThemeService.BuildTheme` is
 `[RockObsolete( "19.0" )]`, annotated "Themes are no longer compiled on disk, they will be
 processed at request time". The values come from `Theme.AdditionalSettingsJson` and are injected
-per request instead. On staging **all 26 theme rows have an empty `AdditionalSettingsJson`**, so
-`RockNextGen` serves its `theme.json` defaults — the computed `--color-primary` is `#FF791D`,
+per request instead. On staging **all 26 theme rows had an empty `AdditionalSettingsJson`**, so
+`RockNextGen` served its `theme.json` defaults — the computed `--color-primary` was `#FF791D`,
 exactly the default that file declares.
 
 **Why the login page looks fine, which is the part that misleads.** The themes that kept their
@@ -1084,10 +1084,36 @@ cannot hold customization on disk and has none in the database. Login is served 
 CONNECT site, the dashboard by the internal one: same instance, two different mechanisms. Anyone
 checking "is the CSS deployed" will find it deployed and correct, because it is.
 
-**The decision to make before the production window**, not during it: either point the internal
-site back at the `Rock` theme — still in use by "Portal | CONNECT Admin", so it is known-good on
-this instance — or keep `RockNextGen` and configure Passion's colour and logo on it. Either is
-configuration, not code.
+**Resolved on staging 2026-08-20 — Passion's blue, set on `RockNextGen`.** The internal site keeps
+Rock 19's new admin theme and takes Passion's brand colour from the database. Admin Tools → CMS
+Configuration → Themes → RockNextGen → Edit → Primary Color, set to `#00B8E4` — the blue the
+`CONNECT` theme already compiles to. `Theme.AdditionalSettingsJson` now reads
+
+```json
+{"ThemeCustomizationSettings":{"CustomOverrides":"","EnabledIconSets":3,
+"DefaultFontAwesomeWeight":0,"AdditionalFontAwesomeWeights":[],
+"VariableValues":{"base-primary":"#00B8E4"}}}
+```
+
+and the dashboard's computed `--base-primary` and `--color-primary` are both `#00B8E4`. Because
+that lives in the database rather than on disk, it survives every deploy — which is the whole
+point of the v19 change.
+
+**Do not reach for the `Rock` theme as the "restore the old look" lever.** It is stock orange too:
+`RockWeb/Themes/Rock/Styles/_variables.less` sets `@brand-color: #ee7725`, and the deployed copy
+compiles to exactly that, so swapping `RockNextGen` → `Rock` trades one orange for another. Every
+Passion theme that *is* branded is already claimed by a public-facing site — `CONNECT` by sites 9
+and 11, `PassionCityChurch` by 13, `PassionTeam` by 16, `Agency` by 17 — so there is no branded
+theme free to hand to the internal site wholesale. Setting the colour on `RockNextGen` is the only
+option that produces Passion branding.
+
+**Still open: the logo.** `RockNextGen` also exposes a Site Logo (`logo-image`, default
+`~/Assets/Images/rock-logo-circle-white.svg`) and it is still Rock's mark, on staging and in the
+production window alike. Upload Passion's or accept Rock's deliberately.
+
+**Production inherits none of this.** `AdditionalSettingsJson` is a row in the production
+database and the staging edit does not touch it, so the same one-field change has to be made in
+the production window, after the migration has run.
 
 **Two measurement traps here, both of which produce a confident wrong answer.** Check-in themes
 compile `checkin-theme.less`, not `theme.less`, so probing `Themes/<name>/Styles/theme.css`
@@ -1772,11 +1798,11 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    deliberately lags the trunk). What's left: add the ref guard so `develop` can never be
    deployed, re-confirm production's assembly inventory, and plan production's next version
    move with a verified backup. This gates the first real production deploy
-4. Item 28 — decide the internal site's theme before the production window. The upgrade
-   migration repoints `SITE_ROCK_INTERNAL` to `RockNextGen` unconditionally, and v19 reads
-   customization from the database rather than from disk, where production's branding lives
-   today. Either point the site back at `Rock` or configure `RockNextGen`; both are
-   configuration, and either is far cheaper decided now than discovered during the cutover
+4. Item 28 — set the internal site's Primary Color in the production window, right after the
+   migration runs. The decision is made and proven on staging: keep `RockNextGen` and set
+   Primary Color to `#00B8E4`. It is one field in Admin Tools → CMS Configuration → Themes, it
+   does not carry over from staging because it is a row in each database, and skipping it leaves
+   every staff member looking at stock Rock orange on the morning after the cutover
 5. Item 7 — **the staging half is done** (`RockStaging`, split 2026-08-18). What's left is the
    `pr-*` fleet, which still shares one catalog with itself: decide whether to give the fleet
    `PR_TEST_DB_NAME` too, or to accept the risk while only one PR site runs at a time
