@@ -1050,6 +1050,60 @@ entry point — so the day someone adds a second one, the gate is told to name i
 
 ---
 
+### 28. Rock 19 moved theme customization into the database, and the upgrade repoints the internal site
+
+**Found 2026-08-20 on staging, after the CSS work above was already verified green.** The
+dashboard renders in stock Rock orange with none of Passion's branding while the login page is
+correctly branded. Nothing is broken, no stylesheet is stale, and no deploy needs repeating —
+two upstream changes combine to produce it, and both land on production at cutover.
+
+**The upgrade repoints the internal site.** `202508051740308_Rollup_20250805`, in a region
+named "JE: Rock Theme Change", runs
+
+```sql
+UPDATE [Site] SET [Theme] = 'RockNextGen'
+WHERE [Guid] = 'c2d29296-6a87-47a9-a753-ee4e9159c4c4'
+```
+
+and that Guid is `SystemGuid.Site.SITE_ROCK_INTERNAL`. Site 1, "Rock RMS", is on `RockNextGen`
+now rather than `Rock`. The statement is unconditional, so it will do the same thing to
+production.
+
+**And v19 moved where customization lives.** `ThemeService.BuildTheme` is
+`[RockObsolete( "19.0" )]`, annotated "Themes are no longer compiled on disk, they will be
+processed at request time". The values come from `Theme.AdditionalSettingsJson` and are injected
+per request instead. On staging **all 26 theme rows have an empty `AdditionalSettingsJson`**, so
+`RockNextGen` serves its `theme.json` defaults — the computed `--color-primary` is `#FF791D`,
+exactly the default that file declares.
+
+**Why the login page looks fine, which is the part that misleads.** The themes that kept their
+branding — `CONNECT`, `PassionCityChurch`, `PassionTeam`, `Agency` — are LESS themes whose
+customization sits in their own on-disk `_variables.less`, and the build never regenerates those
+folders. `RockNextGen` is generated from `Rock.Frontend.Styles/src/themes/` on every build, so it
+cannot hold customization on disk and has none in the database. Login is served by the external
+CONNECT site, the dashboard by the internal one: same instance, two different mechanisms. Anyone
+checking "is the CSS deployed" will find it deployed and correct, because it is.
+
+**The decision to make before the production window**, not during it: either point the internal
+site back at the `Rock` theme — still in use by "Portal | CONNECT Admin", so it is known-good on
+this instance — or keep `RockNextGen` and configure Passion's colour and logo on it. Either is
+configuration, not code.
+
+**Two measurement traps here, both of which produce a confident wrong answer.** Check-in themes
+compile `checkin-theme.less`, not `theme.less`, so probing `Themes/<name>/Styles/theme.css`
+returns 404 for all six and reads as a fleet of broken themes; they are healthy at roughly 260 KB
+each under the right filename. And the three NextGen themes are legitimately ~30 KB, because Sass
+leaves an `@import` of a `.css` file as a literal CSS `@import` rather than inlining it — the
+browser then fetches the 824 KB `core.css` separately. Neither size means what it appears to.
+Check the configuration, not the files:
+
+```js
+await ( await fetch( '/api/Sites?$select=Id,Name,Theme' ) ).json()
+await ( await fetch( '/api/Themes?$select=Name,AdditionalSettingsJson' ) ).json()
+```
+
+---
+
 ### 22. `connect-restore-test` had no automated backups — fixed 2026-08-18
 
 > **Done.** Automated backups, point-in-time recovery with 7-day log retention, and unlimited
@@ -1718,50 +1772,55 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    deliberately lags the trunk). What's left: add the ref guard so `develop` can never be
    deployed, re-confirm production's assembly inventory, and plan production's next version
    move with a verified backup. This gates the first real production deploy
-4. Item 7 — **the staging half is done** (`RockStaging`, split 2026-08-18). What's left is the
+4. Item 28 — decide the internal site's theme before the production window. The upgrade
+   migration repoints `SITE_ROCK_INTERNAL` to `RockNextGen` unconditionally, and v19 reads
+   customization from the database rather than from disk, where production's branding lives
+   today. Either point the site back at `Rock` or configure `RockNextGen`; both are
+   configuration, and either is far cheaper decided now than discovered during the cutover
+5. Item 7 — **the staging half is done** (`RockStaging`, split 2026-08-18). What's left is the
    `pr-*` fleet, which still shares one catalog with itself: decide whether to give the fleet
    `PR_TEST_DB_NAME` too, or to accept the risk while only one PR site runs at a time
-5. Item 24 — decide the test fleet's network exposure. It is a decision plus, if the answer
+6. Item 24 — decide the test fleet's network exposure. It is a decision plus, if the answer
    is option 1, a single firewall rule and a tag; the reason it sits this high is that the
    data behind it became prod-derived on 2026-08-18 and the decision has never actually been
    made by anyone
-6. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window).
+7. Item 1 — install the production agent, together (~1 hour, needs a VM stop/start window).
    Do item 21's `automaticRestart` flip on `connect-srv-prod` in the same window: it needs the
    same stop/start, takes about a minute, and until it is done an unplanned host failure leaves
    production off until a human notices and starts it
-7. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
+8. ~~Item 4~~ — **done 2026-08-11.** Both copies of the selector are fixed, renewal has run,
    and both hosts were re-measured on real certificates *after* a subsequent deploy and a VM
    restart. Nothing left but to let the weekly schedule run. Read item 4 anyway before touching
    either deploy script — the bug existed in two places and only one of them was obvious
-8. Item 14 — decide whether test sites should render plugin pages (a config line, then a
+9. Item 14 — decide whether test sites should render plugin pages (a config line, then a
    decision about version control that is bigger than this pipeline), and reconcile it with
    item 15 — they are the same reconciliation seen from two ends
-9. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
+10. Item 17 — move the database password out of the command JSON and into Secret Manager. Do it
    in the same pass as item 7; both are about how an environment gets its database, and
    rotating the password before this change just re-exposes the new one
-10. Item 25 — **option 1, publish deploy scripts on merge.** Option 2 landed 2026-08-19 and
+11. Item 25 — **option 1, publish deploy scripts on merge.** Option 2 landed 2026-08-19 and
     caught three stale scripts on the very next deploy, so the drift is no longer silent — but
     it is still a `::warning::` somebody has to read, on a step that is `continue-on-error` by
     design. Option 1 is a `push`-triggered workflow doing one `gsutil cp`, and it removes the
     manual dispatch entirely for every script except the agent itself, which genuinely needs
     the reboot. Small, and it retires a whole class of "the deploy ran the old script"
-11. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
+12. Item 20 — the 20-minute cold start. Cheap, and it removes the support burden of people
     reporting a cold start as a broken environment. `staging` first; measure the memory before
     doing it to every `pr-*` site
-12. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
+13. Items 10–13 — cleanup, any time. **Item 9 is not "any time" and no longer says what this
     line used to say.** `staging` is already deleted, so there is nothing left to protect by not
     pruning it; what needs protecting is `bump`, `develop-17.6.1` and
     `pilot/pr-test-env-doc-smoke-v1761`, which between them hold the newest remote copy of five
     plugin files and the only copy of two commits — and all three are on that item's own safe-to-prune list. Tag
     them first (the commands are in item 9), or do item 14, before deleting anything
-13. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
+14. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
-14. ~~Item 22~~ — **the backup half is done** (2026-08-18, re-verified live 2026-08-19).
+15. ~~Item 22~~ — **the backup half is done** (2026-08-18, re-verified live 2026-08-19).
     `connect-restore-test` now matches prod on backups, PITR and retention. What is left is one
     command: `storage-auto-increase` on **`connect-prod`**, which was missed when the same flip
     was applied to the sandbox instance. No downtime, and it closes a failure mode — a full disk
     stops the instance — that nothing alerts on
-15. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
+16. Item 23 — the cutover checklist. The 19.3.4 cutover is done; this is now pre-work for the
     *next* upgrade, and it is four steps rather than the two this line used to name. The fourth
     was found live on 2026-08-19 with production undeployable, which is the argument for reading
     the item before the next cutover rather than during it
