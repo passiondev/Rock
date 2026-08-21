@@ -132,7 +132,9 @@ jobs:
       - name: Check out the await action
         uses: actions/checkout@v4
         with:
-          sparse-checkout: .github/actions/await-vm-command
+          sparse-checkout: |
+            .github/actions/await-vm-command
+            .github/actions/queue-vm-command
           sparse-checkout-cone-mode: false
 
       - name: Authenticate to Google Cloud
@@ -144,16 +146,13 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Queue PR environment lifecycle command
-        shell: pwsh
-        run: |
-          $command = [ordered]@{
-            commandId = $env:COMMAND_ID
-            command = $env:COMMAND
-            prNumber = [int]$env:PR_NUMBER
-            requestedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-          }
-          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-          gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: ${{ env.COMMAND }}
+          payload: |
+            {"prNumber": ${{ env.PR_NUMBER }}}
 
       # Was sixty attempts at ten seconds, with no log download and no error
       # message -- the most degraded of the six copies of this wait. A lifecycle

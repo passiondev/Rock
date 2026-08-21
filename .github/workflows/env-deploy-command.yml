@@ -186,6 +186,7 @@ jobs:
             Deployment/PrTestEnvironments
             Deployment/Database
             .github/actions/await-vm-command
+            .github/actions/queue-vm-command
             .github/actions/verify-public-url
           sparse-checkout-cone-mode: false
 
@@ -259,46 +260,33 @@ jobs:
           "| Deploy scripts | STALE ON THE VM -- $names |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           Write-Host "::warning::The deploy scripts on the VM are not the ones in this commit ($names). This deploy will run the published copies and will report success either way, so a fix you expect to be exercised here may not run at all. Dispatch the 'PR Test - Bootstrap command queue' workflow to publish them, then deploy again."
 
+      # The two target fields are sent only under InPlace. Resolve-DeploymentTarget
+      # rejects them under DedicatedSite rather than ignoring them, and this input
+      # is optional, so a dispatch that sets a site path and then picks the wrong
+      # mode used to be a silent no-op and would otherwise now be a hard failure.
+      # The empty string is dropped by the action, so no branch is needed here.
+      #
+      # toJSON, not a quoted interpolation: target_site_path is a Windows path and
+      # a bare backslash is not a valid JSON escape.
       - name: Queue deploy-environment command
-        run: |
-          $command = [ordered]@{
-            commandId       = $env:COMMAND_ID
-            command         = "deploy-environment"
-            environmentName = $env:ENVIRONMENT_NAME
-            sha             = $env:DEPLOY_SHA
-            hostName        = $env:HOST_NAME
-            artifactGcsPath = $env:ARTIFACT_GCS_PATH
-            mode            = $env:DEPLOY_MODE
-            requestedAtUtc  = (Get-Date).ToUniversalTime().ToString("o")
-          }
-
-          if (![string]::IsNullOrWhiteSpace($env:CONNECTION_STRING)) {
-            $command.connectionString = $env:CONNECTION_STRING
-          }
-          if (![string]::IsNullOrWhiteSpace($env:TARGET_SITE_PATH)) {
-            $command.targetSitePath = $env:TARGET_SITE_PATH
-          }
-          if (![string]::IsNullOrWhiteSpace($env:TARGET_SITE_NAME)) {
-            $command.targetSiteName = $env:TARGET_SITE_NAME
-          }
-          if ($env:APPLY -eq 'true') {
-            $command.apply = $true
-          }
-
-          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-
-          # Echo the command without the connection string so the log is safe to
-          # share in a screenshot or a training session. Rebuilt key by key rather
-          # than regex-scrubbed, so a password containing a quote cannot leak a
-          # fragment past the substitution.
-          $redacted = [ordered]@{}
-          foreach ($key in $command.Keys) {
-            if ($key -eq 'connectionString') { $redacted[$key] = '<redacted>' }
-            else { $redacted[$key] = $command[$key] }
-          }
-          $redacted | ConvertTo-Json -Depth 10
-
-          gsutil cp command.json "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/pending/$env:COMMAND_ID.json"
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: deploy-environment
+          payload: |
+            {
+              "environmentName": ${{ toJSON(env.ENVIRONMENT_NAME) }},
+              "sha": ${{ toJSON(env.DEPLOY_SHA) }},
+              "hostName": ${{ toJSON(env.HOST_NAME) }},
+              "artifactGcsPath": ${{ toJSON(env.ARTIFACT_GCS_PATH) }},
+              "mode": ${{ toJSON(env.DEPLOY_MODE) }},
+              "targetSitePath": ${{ toJSON(env.DEPLOY_MODE == 'InPlace' && env.TARGET_SITE_PATH || '') }},
+              "targetSiteName": ${{ toJSON(env.DEPLOY_MODE == 'InPlace' && env.TARGET_SITE_NAME || '') }},
+              "apply": ${{ env.APPLY == 'true' }}
+            }
+          secret-value: ${{ env.CONNECTION_STRING }}
 
       - name: Wait for the VM to report the result
         id: await

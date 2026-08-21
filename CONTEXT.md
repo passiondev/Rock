@@ -75,6 +75,17 @@ describes it.
 | **producer** | A workflow that writes a command. |
 | **the agent** | `Invoke-PrEnvironmentCommandQueue.ps1`, the scheduled task on the VM that consumes them. |
 | **enqueue** / **poll** | Writing a command, and waiting for its result. The two halves of the protocol. |
+| **the envelope** | The three fields every command carries whatever its verb: `commandId`, `command`, `requestedAtUtc`. Owned by `queue-vm-command`; a payload that sets one is an error. |
+| **the payload** | The fields a particular verb adds on top of the envelope. A field whose value is blank is dropped rather than sent empty. |
+
+Both halves of the protocol are composite actions — `.github/actions/queue-vm-command`
+and `.github/actions/await-vm-command` — and a producer calls them rather than
+carrying its own copy. The enqueue keeps its PowerShell in `Write-VmCommand.ps1`
+beside `action.yml` instead of inline, because PowerShell embedded in YAML is a
+string no test can execute: that is how two producers came to redact a field
+named `connectionString` while the one holding the sandbox password called it
+`sandboxConnectionString`. Redaction keys on the shape of a field name, not a
+list of known ones.
 
 Use **destroy** for removing an environment — it is the command name and the
 chat trigger (`rock:destroy`). *Tear down*, *remove* and *prune* are prose

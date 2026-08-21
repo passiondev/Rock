@@ -40,7 +40,6 @@ class CertificateRenewalTests(unittest.TestCase):
             "schedule:",
             "add-tags", "remove-tags", "pr-test-acme-http",
             "renew-certificate",
-            "commands/pending",
             "Remove temporary ACME HTTP-01 network tag",
             "if: always()"
         ]:
@@ -48,9 +47,10 @@ class CertificateRenewalTests(unittest.TestCase):
         self.assertNotIn("sshpass", text)
         self.assertNotIn("Deploy over SSH", text)
 
-        # Waiting for the result is .github/actions/await-vm-command, shared with
-        # the other five producers; test_local_composite_actions.py asserts both
-        # that this workflow uses it and how it behaves.
+        # Waiting for the result is .github/actions/await-vm-command and queueing is
+        # .github/actions/queue-vm-command, both shared with the other five
+        # producers; test_local_composite_actions.py asserts that this workflow uses
+        # them and how they behave.
 
 
 class CertificateBindResilienceTests(unittest.TestCase):

@@ -30,14 +30,15 @@ class CommandQueueTests(unittest.TestCase):
     def test_workflows_upload_commands_and_poll_results_without_ssh(self):
         for path in [DEPLOY_WORKFLOW, LIFECYCLE_WORKFLOW]:
             text = path.read_text()
-            self.assertIn("commands/pending", text)
-            self.assertIn("gsutil cp", text)
+            self.assertIn("./.github/actions/queue-vm-command", text)
             self.assertNotIn("sshpass", text)
             self.assertNotIn("Deploy over SSH", text)
 
-            # Polling for the result moved to .github/actions/await-vm-command.
-            # test_local_composite_actions.py asserts every producer waits through
-            # it, which is a stronger claim than the string this used to match.
+            # Both halves of the queue protocol moved into shared actions:
+            # queue-vm-command and await-vm-command. test_local_composite_actions.py
+            # asserts every producer uses both and that neither kept a private copy,
+            # which is a stronger claim than the strings this used to match. What is
+            # left here is the property the class is named for: no SSH.
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,7 +35,13 @@ class PrTestLifecycleTests(unittest.TestCase):
         self.assertIn('rock:stop', text)
         self.assertIn('rock:destroy', text)
         self.assertIn('merged', text)
-        self.assertIn('commands/pending', text)
+        # Queueing the command is `.github/actions/queue-vm-command` now. Where it
+        # writes, and that the echo redacts, are asserted once in
+        # test_local_composite_actions.py instead of once per producer -- which is
+        # how two of the six came to redact a field name the third does not use.
+        # What stays here is the verb, because the VM agent only knows the verbs it
+        # shipped with at bootstrap and this workflow picks between two of them.
+        self.assertIn('command: ${{ env.COMMAND }}', text)
         # The wait itself is .github/actions/await-vm-command now, and its
         # behaviour is asserted once in test_local_composite_actions.py rather
         # than once per producer. What stays here is what this workflow chooses.

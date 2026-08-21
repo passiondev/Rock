@@ -202,6 +202,10 @@ jobs:
 
           $targets = @()
           $targets += Get-ChildItem -Path Deployment -Recurse -Filter *.ps1 -File
+          # A composite action can keep its PowerShell in a script beside action.yml
+          # rather than inline in it, which is the only way the Pester suite can
+          # execute it. That puts it outside both Deployment/ and the extractor.
+          $targets += Get-ChildItem -Path .github/actions -Recurse -Filter *.ps1 -File
           $targets += Get-ChildItem -Path "$env:RUNNER_TEMP/powershell-blocks" -Filter *.ps1 -File
 
           if ($targets.Count -lt 1) {

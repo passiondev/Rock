@@ -224,6 +224,7 @@ jobs:
         with:
           sparse-checkout: |
             .github/actions/await-vm-command
+            .github/actions/queue-vm-command
             .github/actions/verify-public-url
           sparse-checkout-cone-mode: false
 
@@ -235,21 +236,24 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      # The connection string goes through secret-value rather than the payload:
+      # this is the producer that holds the sandbox password, and it is the reason
+      # the enqueue became an action. See the action's header.
       - name: Queue PR environment deploy command
-        shell: pwsh
-        run: |
-          $command = [ordered]@{
-            commandId = $env:COMMAND_ID
-            command = "deploy"
-            prNumber = [int]$env:PR_NUMBER
-            sha = $env:HEAD_SHA
-            hostName = $env:HOST_NAME
-            artifactGcsPath = $env:ARTIFACT_GCS_PATH
-            sandboxConnectionString = $env:SANDBOX_CONNECTION_STRING
-            requestedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-          }
-          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-          gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: deploy
+          payload: |
+            {
+              "prNumber": ${{ env.PR_NUMBER }},
+              "sha": ${{ toJSON(env.HEAD_SHA) }},
+              "hostName": ${{ toJSON(env.HOST_NAME) }},
+              "artifactGcsPath": ${{ toJSON(env.ARTIFACT_GCS_PATH) }}
+            }
+          secret-field: sandboxConnectionString
+          secret-value: ${{ env.SANDBOX_CONNECTION_STRING }}
 
       - name: Wait for the VM to report the result
         uses: ./.github/actions/await-vm-command

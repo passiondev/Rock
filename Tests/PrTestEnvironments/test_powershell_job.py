@@ -49,6 +49,30 @@ def yaml_sources():
 
 
 class SyntaxJobTests(unittest.TestCase):
+    def parse_step(self):
+        """The step that runs the PowerShell parser over the tree."""
+        job = harness.workflow("deployment-pipeline-tests.yml")["jobs"].get("powershell")
+        self.assertIsNotNone(job, "The PowerShell job is gone.")
+        parses = [s for s in job["steps"] if "Language.Parser" in (s.get("run") or "")]
+        self.assertEqual(1, len(parses), "Nothing in the job calls the PowerShell parser.")
+        return parses[0]
+
+    def test_the_parse_step_reaches_every_powershell_script_in_the_repository(self):
+        """Derived from the tree rather than restated, so a script added somewhere
+        new fails here instead of quietly never being parsed. That is not
+        hypothetical: the queue action's script sat outside the only glob the job
+        had, and it is the code that decides whether a password reaches a public
+        log."""
+        step = self.parse_step()["run"]
+        roots = set(re.findall(r"Get-ChildItem -Path (\S+) -Recurse -Filter \*\.ps1", step))
+
+        for script in harness.tracked_under(harness.REPO_ROOT / ".github", suffix=".ps1"):
+            self.assertTrue(
+                any(script.startswith(root.strip("'\"") + "/") for root in roots),
+                f"{script} is PowerShell that no glob in the parse step matches, so "
+                f"nothing ever checks that it parses. Globs: {sorted(roots)}",
+            )
+
     def test_the_pipeline_runs_a_parse_over_the_powershell(self):
         workflow = harness.workflow("deployment-pipeline-tests.yml")
         job = workflow["jobs"].get("powershell")
@@ -204,15 +228,28 @@ class PesterJobTests(unittest.TestCase):
         for suite in sorted(PESTER_DIR.glob("*.ps1")):
             for literal in quoted.findall(suite.read_text(encoding="utf-8")):
                 checked += 1
-                script = deployment / pathlib.PurePosixPath(literal).name
+
+                # A literal with a path in it is resolved the way the suite itself
+                # resolves it, relative to $PSScriptRoot. The scripts under test are
+                # no longer all in one directory: the queue action keeps its
+                # PowerShell in .github/actions/ so that action.yml stays a wrapper
+                # and the logic inside it can be executed. A bare filename comes from
+                # a -ForEach table and is still a deploy script.
+                if "/" in literal:
+                    script = (PESTER_DIR / literal).resolve()
+                    where = literal
+                else:
+                    script = deployment / literal
+                    where = "Deployment/PrTestEnvironments/"
+
                 self.assertTrue(
                     script.is_file(),
-                    f"{suite.name} loads {literal}, which is not in Deployment/PrTestEnvironments/.",
+                    f"{suite.name} loads {literal}, which is not at {where}.",
                 )
 
-        # Six references across three suites at the time of writing. The floor is
+        # Nine references across four suites at the time of writing. The floor is
         # there so a regex that stops matching reads as a failure and not as a pass.
-        self.assertGreaterEqual(checked, 6, f"Only found {checked} script references; the suites name more than that.")
+        self.assertGreaterEqual(checked, 9, f"Only found {checked} script references; the suites name more than that.")
 
 
 class GuardTests(unittest.TestCase):

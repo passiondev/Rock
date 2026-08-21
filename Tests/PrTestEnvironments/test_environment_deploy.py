@@ -517,6 +517,24 @@ class ArtifactReuseTests(unittest.TestCase):
 
 
 class CommandWorkflowTests(unittest.TestCase):
+    def queue_step(self):
+        """The step that puts the deploy-environment command on the VM queue.
+
+        Found by the action it calls rather than by name, so renaming the step
+        does not quietly turn the assertions below into a check of nothing.
+        """
+        parsed = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = [
+            step
+            for job in (parsed.get("jobs") or {}).values()
+            for step in (job.get("steps") or [])
+            if (step.get("uses") or "") == "./.github/actions/queue-vm-command"
+        ]
+        self.assertEqual(
+            1, len(steps), "expected exactly one queue step in the deploy command workflow"
+        )
+        return steps[0]
+
     def test_command_workflow_fails_fast_when_the_artifact_is_missing(self):
         text = COMMAND_WORKFLOW.read_text()
         self.assertIn("gsutil -q stat", text)
@@ -528,10 +546,21 @@ class CommandWorkflowTests(unittest.TestCase):
     # asserting it here would have gone on passing while the other five stayed
     # wrong.
 
-    def test_connection_string_is_redacted_from_logs(self):
-        """The repo is public and these logs get screenshotted in training."""
-        text = COMMAND_WORKFLOW.read_text()
-        self.assertIn("<redacted>", text)
+    def test_connection_string_travels_as_a_secret_rather_than_in_the_payload(self):
+        """The repo is public and these logs get screenshotted in training.
+
+        The redaction itself is `.github/actions/queue-vm-command`, executed by
+        Tests/PrTestEnvironments/Pester/QueueCommand.Tests.ps1 and wired up in
+        test_local_composite_actions.py. What is this workflow's own decision is
+        which channel the connection string travels on: `secret-value` keeps it
+        out of the interpolated JSON payload, where a password containing a quote
+        would break the JSON and be written into the expanded workflow text.
+        """
+        step = self.queue_step()
+        supplied = step.get("with") or {}
+
+        self.assertIn("CONNECTION_STRING", str(supplied.get("secret-value") or ""))
+        self.assertNotIn("CONNECTION_STRING", str(supplied.get("payload") or ""))
 
     def test_db_name_is_optional_so_an_environment_that_names_no_catalog_is_unchanged(self):
         """Adding this input must not touch the pr-* sites. An unset caller variable

@@ -96,6 +96,7 @@ jobs:
         with:
           sparse-checkout: |
             .github/actions/await-vm-command
+            .github/actions/queue-vm-command
           sparse-checkout-cone-mode: false
 
       - name: Authenticate to Google Cloud
@@ -133,29 +134,15 @@ jobs:
           "| Sized scan | $env:MEASURE_SIZES |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Queue find-legacy-text-columns command
-        run: |
-          $command = [ordered]@{
-            commandId        = $env:COMMAND_ID
-            command          = "find-legacy-text-columns"
-            connectionString = $env:CONNECTION_STRING
-            requestedAtUtc   = (Get-Date).ToUniversalTime().ToString("o")
-          }
-          if ($env:MEASURE_SIZES -eq 'true') {
-            $command.measureSizes = $true
-          }
-
-          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-
-          # Rebuilt key by key rather than regex-scrubbed, so a password containing a
-          # quote cannot leak a fragment past the substitution.
-          $redacted = [ordered]@{}
-          foreach ($key in $command.Keys) {
-            if ($key -eq 'connectionString') { $redacted[$key] = '<redacted>' }
-            else { $redacted[$key] = $command[$key] }
-          }
-          $redacted | ConvertTo-Json -Depth 10
-
-          gsutil cp command.json "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/pending/$env:COMMAND_ID.json"
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: find-legacy-text-columns
+          payload: |
+            {"measureSizes": ${{ env.MEASURE_SIZES == 'true' }}}
+          secret-value: ${{ env.CONNECTION_STRING }}
 
       - name: Wait for the VM to report the findings
         id: await

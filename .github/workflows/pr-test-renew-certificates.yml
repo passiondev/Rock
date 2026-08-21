@@ -22,6 +22,7 @@ jobs:
           sparse-checkout: |
             Deployment/PrTestEnvironments
             .github/actions/await-vm-command
+            .github/actions/queue-vm-command
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -82,16 +83,13 @@ jobs:
           "VM_NAME=$vmName" | Out-File -FilePath $env:GITHUB_ENV -Append
           "VM_ZONE=$vmZone" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # No payload: the verb is the whole command.
       - name: Queue certificate renewal command
-        shell: pwsh
-        run: |
-          $command = [ordered]@{
-            commandId = $env:COMMAND_ID
-            command = 'renew-certificate'
-            requestedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-          }
-          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-          gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: renew-certificate
 
       # The action prints the VM log on success as well as on failure, which this
       # command needs: the renewal script exits happily when it finds zero deployed
