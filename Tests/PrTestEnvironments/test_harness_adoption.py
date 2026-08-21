@@ -24,7 +24,7 @@ SUITE_DIR = harness.REPO_ROOT / "Tests" / "PrTestEnvironments"
 CI_WORKFLOW = harness.REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
 
 
-def test_sources():
+def suite_sources():
     """(name, text) for every test file in the suite except this one.
 
     This file quotes the patterns it bans -- in its own prose and in its own
@@ -39,7 +39,7 @@ def test_sources():
 
 class OneRepositoryRootTests(harness.HarnessAssertions, unittest.TestCase):
     def test_no_test_file_derives_the_repository_root_for_itself(self):
-        sources = test_sources()
+        sources = suite_sources()
         self.assertNotVacuous(sources, "no test files were found to check")
 
         offenders = [name for name, text in sources if "parents[" in text]
@@ -87,7 +87,7 @@ class ImportBootstrapTests(harness.HarnessAssertions, unittest.TestCase):
         )
 
     def test_no_test_file_edits_the_import_path(self):
-        offenders = [name for name, text in test_sources() if "sys.path" in text]
+        offenders = [name for name, text in suite_sources() if "sys.path" in text]
 
         self.assertEqual(
             [],
@@ -105,7 +105,7 @@ class MixinOrderTests(harness.HarnessAssertions, unittest.TestCase):
         somebody adds a sharper `assertIn` to the mixin, half of them would quietly
         keep the blunt one."""
         offenders = []
-        for name, text in test_sources():
+        for name, text in suite_sources():
             for node in ast.walk(ast.parse(text)):
                 if not isinstance(node, ast.ClassDef):
                     continue
@@ -123,8 +123,44 @@ class MixinOrderTests(harness.HarnessAssertions, unittest.TestCase):
         )
 
     def test_some_class_actually_uses_the_mixin(self):
-        users = [name for name, text in test_sources() if "harness.HarnessAssertions" in text]
+        users = [name for name, text in suite_sources() if "harness.HarnessAssertions" in text]
         self.assertNotVacuous(users, "nothing mixes in HarnessAssertions, so the order check is vacuous")
+
+
+class CollectionSafetyTests(harness.HarnessAssertions, unittest.TestCase):
+    """The suite runs under unittest, but it is not the only runner that can pick it up.
+
+    unittest only collects methods on a TestCase, so a module-level helper named
+    like a test is invisible to it and stays green forever. pytest collects on the
+    name alone, calls the helper with no arguments, and treats whatever it returns
+    as a failing test -- a warning today, an error from pytest 9. This suite had one
+    of those for as long as it had a shared helper module: the function handing every
+    test file to the convention checks was itself named like a test.
+
+    Nothing in CI runs pytest right now. The point is that switching runner should be
+    a decision rather than an incident.
+    """
+
+    def test_no_module_level_helper_is_named_like_a_test(self):
+        own_name = pathlib.Path(__file__).name
+        own_text = pathlib.Path(__file__).read_text(encoding="utf-8")
+        checked = [(own_name, own_text)] + suite_sources()
+        self.assertNotVacuous(checked, "no sources were found to check")
+
+        offenders = []
+        for name, text in checked:
+            for node in ast.parse(text).body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.name.startswith("test"):
+                    offenders.append(f"{name}:{node.lineno} {node.name}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these are module-level helpers whose names make pytest collect them as "
+            "tests and call them with no arguments: " + "\n  ".join(offenders),
+        )
 
 
 if __name__ == "__main__":

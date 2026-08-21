@@ -305,6 +305,59 @@ class WaitCeilingTests(harness.HarnessAssertions, unittest.TestCase):
         )
 
 
+class DeclaredOutputTests(harness.HarnessAssertions, unittest.TestCase):
+    """An output nobody reads is a promise nobody checks.
+
+    `await-vm-command` used to declare two of them. `status` was set to
+    `succeeded` on the success path and `failed` on the failure path -- but the
+    failure path exits non-zero immediately after, so the calling step never runs
+    and the only value a caller could ever observe was `succeeded`. `error` was
+    documented as "the error text the VM reported, empty on success" and was
+    assigned exactly once, on the success path, to the empty string. Neither the
+    failure path nor the timeout path ever populated it.
+
+    Both were wrong in ways that reading them would have surfaced immediately, and
+    both survived because nothing read them. Deleting is the fix; this stops the
+    next one being added.
+    """
+
+    def reads_of(self, name, declaring_action):
+        """Every place outside the declaring action that reads `.outputs.<name>`.
+
+        A composite action forwards its own inner step's output, so its own file
+        always mentions the name. That line is the declaration, not a caller."""
+        own_file = harness.ACTIONS_DIR / declaring_action / "action.yml"
+        pattern = re.compile(r"\.outputs\." + re.escape(name) + r"\b")
+        found = []
+        candidates = sorted(harness.WORKFLOWS_DIR.glob("*.yml")) + sorted(
+            harness.ACTIONS_DIR.glob("*/action.yml")
+        )
+        for path in candidates:
+            if path == own_file:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for match in pattern.finditer(text):
+                found.append(f"{path.name}:{harness.line_of(text, match.start())}")
+        return found
+
+    def test_every_declared_output_is_read_by_a_caller(self):
+        declared, unread = [], []
+        for action in harness.composite_actions():
+            for name in harness.composite_action(action).get("outputs") or {}:
+                declared.append(f"{action}.{name}")
+                if not self.reads_of(name, action):
+                    unread.append(f"{action}.{name}")
+
+        self.assertNotVacuous(declared, "no composite action declares an output")
+        self.assertEqual(
+            [],
+            unread,
+            "these outputs are declared and never read, so nothing would notice if "
+            "they stopped being populated -- delete them or read them: "
+            + ", ".join(unread),
+        )
+
+
 class AwaitActionBehaviourTests(unittest.TestCase):
     """The wait's own behaviour, asserted once.
 

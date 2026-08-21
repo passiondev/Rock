@@ -275,7 +275,7 @@ jobs:
   # a database. This is pure decision logic with the certificate store faked at
   # the seam.
   pester:
-    name: Run the Pester tests
+    name: Check what the PowerShell decides
     strategy:
       # Off, because the two legs answer different questions. A Linux failure
       # cancelling the Windows leg would hide the platform difference that is

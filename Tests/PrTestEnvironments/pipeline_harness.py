@@ -202,7 +202,7 @@ class HarnessAssertions:
         """assertNotIn against a long file prints the whole file into the
         failure. Report the offending lines and nothing else."""
         offenders = [
-            f"line {text.count(chr(10), 0, m.start()) + 1}: {m.group(0)!r}"
+            f"line {line_of(text, m.start())}: {m.group(0)!r}"
             for m in re.finditer(pattern, text, flags)
         ]
         self.assertFalse(offenders, f"{why}:\n  " + "\n  ".join(offenders))

@@ -10,6 +10,11 @@ jobs:
   bootstrap:
     name: Install PR environment command queue on Windows VM
     runs-on: ubuntu-latest
+    env:
+      # Declared here rather than in each step that needs it. Three steps used to
+      # spell the expression out, and three spellings of a bucket name is three
+      # chances for half a bootstrap to publish somewhere the other half never reads.
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,7 +54,7 @@ jobs:
       - name: Ensure Cloud Storage bucket exists
         shell: pwsh
         run: |
-          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          $bucketName = $env:PR_TEST_GCS_BUCKET
           gsutil ls gs://$bucketName *> $null
           if ($LASTEXITCODE -ne 0) {
             gsutil mb -p ${{ secrets.GCP_PROJECT_ID }} gs://$bucketName
@@ -58,7 +63,7 @@ jobs:
       - name: Upload deployment scripts to bootstrap location
         shell: pwsh
         run: |
-          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          $bucketName = $env:PR_TEST_GCS_BUCKET
           # Deployment/Database goes to the same prefix on purpose. The agent's
           # Sync-DeploymentScripts globs *.ps1 out of bootstrap/latest and parse-checks
           # each one, so anything published here reaches C:\RockDeploy within the minute
@@ -72,7 +77,7 @@ jobs:
       - name: Install command queue scheduled task through VM startup script
         shell: pwsh
         run: |
-          $bucketName = "${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}"
+          $bucketName = $env:PR_TEST_GCS_BUCKET
           $vmName = "${{ secrets.GCP_VM_NAME }}"
           $vmZone = "${{ secrets.GCP_ZONE }}"
 

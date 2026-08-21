@@ -20,12 +20,21 @@ block, and neither fails at parse time. A sparse checkout that omits one directo
 gets an "action not found" several minutes into a deploy, and only on the branch
 where somebody added the caller.
 
-The bucket expression is a separate claim from the same card and it still holds.
-Eleven of its fourteen uses sit in a job-level `env:` block, which GitHub evaluates
-before any step runs, so a step output there resolves to the empty string and every
-`gsutil` path silently becomes `gs:///...` -- a deploy that writes nowhere and
-reports success. Those copies stay, and the identity test below is what holds them
-together.
+The bucket expression is a separate claim from the same card, and it holds for
+most of what it covers. All twelve remaining uses sit in a job-level `env:` block,
+which GitHub evaluates before any step runs -- so a step output there resolves to
+the empty string and every `gsutil` path silently becomes `gs:///...`, a deploy
+that writes nowhere and reports success. No accessor can reach those. They stay,
+and the identity test below is what holds them together.
+
+The count was wrong here for a while, and the correction is worth keeping: it read
+"eleven of fourteen" when the real split was ten of fourteen. The other four were
+not load-bearing at all. Three sat in `run:` bodies in the bootstrap workflow and
+one in a `github-script` body in the deploy workflow, and every one of them could
+read a name the job had already declared. They now do, which is where twelve comes
+from. The test below pins the shape rather than the number, so the next copy in a
+`run:` body fails on the spot instead of being counted as one of the unavoidable
+ones.
 """
 
 import re
@@ -80,6 +89,31 @@ def _matches(pattern):
         for match in pattern.finditer(path.read_text(encoding="utf-8")):
             found.append((path.name, match.group(0)))
     return found
+
+
+def _enclosing_keys(lines, index):
+    """The mapping keys enclosing `lines[index]`, outermost first.
+
+    Walks up by indentation, so it does not care how deep a workflow nests. List
+    items are skipped rather than named: a step inside `steps:` reports `steps`,
+    which is all the callers here need."""
+    keys = []
+    indent = len(lines[index]) - len(lines[index].lstrip())
+    for line in reversed(lines[:index]):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        here = len(line) - len(line.lstrip())
+        if here >= indent:
+            continue
+        indent = here
+        stripped = line.lstrip("- ").strip()
+        if stripped.endswith(":"):
+            keys.append(stripped[:-1])
+        elif ":" in stripped:
+            keys.append(stripped.split(":", 1)[0])
+        if indent == 0:
+            break
+    return list(reversed(keys))
 
 
 def _session_jobs():
@@ -198,7 +232,7 @@ class TheCheckoutTheActionRequiresTests(harness.HarnessAssertions, unittest.Test
 
 
 class GcsBucketFallbackTests(harness.HarnessAssertions, unittest.TestCase):
-    """The fourteen copies of the bucket-name expression, which nothing collapses."""
+    """The twelve copies of the bucket-name expression that nothing can collapse."""
 
     def test_every_copy_is_byte_identical(self):
         self.assertOneShape(
@@ -206,6 +240,41 @@ class GcsBucketFallbackTests(harness.HarnessAssertions, unittest.TestCase):
             "the bucket-name expression",
             "Two spellings of a bucket name means half the pipeline reads from one "
             "bucket and half writes to another.",
+        )
+
+    def test_the_expression_only_appears_in_a_job_level_env_block(self):
+        """A copy inside a `run:` body is a copy that did not have to exist.
+
+        The job-level copies are load-bearing: GitHub evaluates a job's `env:`
+        before any step runs, so the value cannot come from a step output and the
+        expression has to be written where it is. A copy inside a step's `run:` has
+        no such excuse -- the job it sits in can declare the name once and every
+        step in that job can read it. Four of them did, and each was a place the
+        expression could drift without the other ten noticing.
+
+        Matched by position rather than by value. The first version of this
+        compared each match against the set of job-level `env:` values in the same
+        file, which meant one legitimate declaration in one job hid every inline
+        copy in every other job of that file -- it passed `pr-test-deploy.yml`
+        while line 305 was exactly the thing being looked for."""
+        offenders = []
+        for path in _workflow_files():
+            text = path.read_text(encoding="utf-8")
+            lines = text.split("\n")
+            for match in BUCKET_FALLBACK.finditer(text):
+                index = text.count("\n", 0, match.start())
+                keys = _enclosing_keys(lines, index)
+                # jobs -> <the job> -> env
+                at_job_level = len(keys) >= 3 and keys[-1] == "env" and keys[-3] == "jobs"
+                if not at_job_level:
+                    offenders.append(f"{path.name}:{index + 1}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these spell the bucket expression out somewhere a job-level `env:` entry "
+            "would have done, so they drift independently of the ones that have to be "
+            "written where they are:\n  " + "\n  ".join(offenders),
         )
 
     def test_the_fallback_still_has_a_project_in_it(self):

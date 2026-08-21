@@ -455,7 +455,7 @@ if __name__ == "__main__":
 
 
 class HandDeployBuildStaysCredentialFreeTests(harness.HarnessAssertions, unittest.TestCase):
-    """`ptp-14803-build-artifact.yml` exists because it cannot reach anything.
+    r"""`ptp-14803-build-artifact.yml` exists because it cannot reach anything.
 
     The architecture review recommended deleting it, on two grounds. Neither holds,
     and the record is here rather than in a commit message because the same two

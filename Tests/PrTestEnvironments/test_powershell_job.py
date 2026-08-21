@@ -360,12 +360,33 @@ class PesterJobTests(harness.HarnessAssertions, unittest.TestCase):
         comment saying `Deployment/PrTestEnvironments/*.ps1` is a glob, not a path.
         """
         quoted = re.compile(r"""['"]([^'"]*?[A-Za-z0-9_-]+\.ps1)['"]""")
+        swept = re.compile(r"""Get-RepositoryPath\s+['"]([^'"]+)['"]""")
         deployment = harness.REPO_ROOT / "Deployment" / "PrTestEnvironments"
         found = {}
 
         for suite in sorted(PESTER_DIR.glob("*.ps1")):
-            literals = quoted.findall(suite.read_text(encoding="utf-8"))
-            found[suite.name] = literals
+            text = suite.read_text(encoding="utf-8")
+            literals = quoted.findall(text)
+
+            # A suite that sweeps a directory rather than loading one script is
+            # anchored to that directory instead. ScriptDefaults.Tests.ps1 walks
+            # every .ps1 under Deployment/ looking for a parameter default stated
+            # twice, so there is no one script for it to name -- but the root it
+            # walks still has to exist, or the sweep finds nothing and passes.
+            # `$Script` interpolated into the path comes from a -ForEach table, and
+            # the table's entries are already checked above as bare filenames.
+            directories = [
+                target
+                for target in swept.findall(text)
+                if not target.endswith(".ps1") and "$" not in target
+            ]
+            for target in directories:
+                self.assertTrue(
+                    (harness.REPO_ROOT / target).is_dir(),
+                    f"{suite.name} sweeps {target}, which is not a directory.",
+                )
+
+            found[suite.name] = literals + directories
 
             for literal in literals:
                 # A literal with a path in it is resolved the way the suite itself
@@ -392,12 +413,12 @@ class PesterJobTests(harness.HarnessAssertions, unittest.TestCase):
         # loader rewritten into a shape this regex no longer sees -- and a total
         # stays comfortably above any floor while that happens to a single file.
         self.assertNotVacuous(found, f"{PESTER_DIR} holds no suites at all.")
-        silent = sorted(name for name, literals in found.items() if not literals)
+        silent = sorted(name for name, anchors in found.items() if not anchors)
         self.assertEqual(
             [],
             silent,
-            "These suites name no script, so nothing here checked them: "
-            + ", ".join(silent),
+            "These suites name neither a script nor a directory, so nothing here "
+            "checked them: " + ", ".join(silent),
         )
 
 

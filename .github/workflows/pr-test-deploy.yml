@@ -276,6 +276,12 @@ jobs:
     needs: [prepare, build, deploy]
     if: always() && needs.prepare.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
+    env:
+      # The deploy job declares the same name the same way. This one is read by the
+      # reconcile script out of the environment rather than interpolated into the
+      # middle of a JavaScript string literal, which is both the same expression in
+      # one fewer shape and one fewer place a quote can end a string early.
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -302,6 +308,6 @@ jobs:
               status: success ? 'deployed' : 'failed',
               hostName: '${{ needs.prepare.outputs.host_name }}',
               sha: '${{ needs.prepare.outputs.head_sha }}',
-              artifactGcsPath: 'gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ needs.build.outputs.artifact_gcs_object_path }}',
+              artifactGcsPath: 'gs://' + process.env.PR_TEST_GCS_BUCKET + '/${{ needs.build.outputs.artifact_gcs_object_path }}',
               logsUrl
             });

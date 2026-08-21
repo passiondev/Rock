@@ -42,12 +42,6 @@ inputs:
     default: ''
 
 outputs:
-  status:
-    description: The status the VM reported, `succeeded` or `failed`.
-    value: ${{ steps.await.outputs.status }}
-  error:
-    description: The error text the VM reported, empty on success.
-    value: ${{ steps.await.outputs.error }}
   log-path:
     description: >
       Workspace path of the downloaded VM log, empty when the VM reported none.
@@ -158,8 +152,6 @@ runs:
 
             if ($result.status -eq 'succeeded') {
               Show-CommandLog -LogObject $logObject
-              "status=succeeded" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-              "error=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
               "log-path=$($script:logPath)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
               exit 0
             }
@@ -175,7 +167,6 @@ runs:
               "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             }
             Show-CommandLog -LogObject $logObject -AppendToSummary
-            "status=failed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "log-path=$($script:logPath)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 1
           }
