@@ -219,7 +219,14 @@ class TheCheckoutTheActionRequiresTests(harness.HarnessAssertions, unittest.Test
             # step sees; an earlier one has been overwritten by it.
             with_block = steps[checkouts[-1]].get("with") or {}
             sparse = with_block.get("sparse-checkout")
-            if sparse and SESSION_ACTION not in sparse:
+            if sparse is None:
+                continue
+            # A parent entry covers the action. The lists name `.github/actions`
+            # rather than each action in turn, so a substring test for the action's
+            # own name reports a tree that plainly contains it.
+            entries = [entry.strip() for entry in str(sparse).split("\n") if entry.strip()]
+            target = SESSION_USES.removeprefix("./")
+            if not any(target == entry or target.startswith(entry + "/") for entry in entries):
                 offenders.append(f"{name} job `{job_name}`")
 
         self.assertEqual(

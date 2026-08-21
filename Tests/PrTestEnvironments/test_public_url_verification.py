@@ -117,12 +117,21 @@ class PublicUrlVerificationTests(unittest.TestCase):
                 if not preceding:
                     continue
 
+                # A parent directory covers the action as surely as its own path
+                # does, and the lists say `.github/actions` now rather than naming
+                # each action separately. Matching the exact string would fail on a
+                # tree that does contain the action.
+                entries = [
+                    entry.strip()
+                    for entry in str(preceding[-1]["with"]["sparse-checkout"]).split("\n")
+                    if entry.strip()
+                ]
+                target = ACTION_REF.removeprefix("./")
                 with self.subTest(workflow=path.name, job=job_name):
-                    self.assertIn(
-                        ".github/actions/verify-public-url",
-                        preceding[-1]["with"]["sparse-checkout"],
+                    self.assertTrue(
+                        any(target == entry or target.startswith(entry + "/") for entry in entries),
                         f"{path.name}:{job_name} sparse-checks-out a tree that does "
-                        "not contain the action it then uses",
+                        f"not contain the action it then uses: {entries}",
                     )
 
     def test_unreachable_is_fatal_but_a_certificate_finding_is_not(self):

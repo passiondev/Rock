@@ -18,6 +18,14 @@ and the agent failed a command on a bootstrap that had reported success. A modul
 would add a fourth place to keep in step, in the one path where being out of step
 is silent.
 
+The card anticipated the shipping objection and answered that the copy step can be
+changed to carry a `.psm1`. It can, and that is not the difficulty. Widening one
+glob is a one-line edit; what it buys is a deploy that fails if the module is
+absent, on a queue agent that updates itself out of the same bucket it is being
+updated by. A half-applied publish -- scripts new, module missing -- breaks every
+command on the VM rather than one, and the bootstrap has already shipped a
+disagreement of exactly that kind once.
+
 There is a third reason the module cannot be complete even if it shipped.
 `Get-GcsAccessToken` and `Copy-GcsObjectToFile` are defined inline in the VM
 startup script, because they are what fetches everything else onto the box. The

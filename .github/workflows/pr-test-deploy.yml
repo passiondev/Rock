@@ -223,10 +223,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
-            .github/actions/gcp-session
-            .github/actions/await-vm-command
-            .github/actions/queue-vm-command
-            .github/actions/verify-public-url
+            .github/actions
           sparse-checkout-cone-mode: false
 
       - name: Open a Google Cloud session

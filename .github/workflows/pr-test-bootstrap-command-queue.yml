@@ -21,7 +21,7 @@ jobs:
           sparse-checkout: |
             Deployment/PrTestEnvironments
             Deployment/Database
-            .github/actions/gcp-session
+            .github/actions
 
       - name: Check the deployment scripts parse
         shell: pwsh

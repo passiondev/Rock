@@ -110,6 +110,37 @@ class LocalActionCheckoutTests(harness.HarnessAssertions, unittest.TestCase):
             references, "no workflow references a local action, so this checked nothing"
         )
 
+    def test_no_sparse_list_names_an_action_one_at_a_time(self):
+        """`.github/actions`, not three entries that have to be kept in step.
+
+        Six jobs listed the same three action directories. Adding a fourth action
+        meant editing all six, and `queue-vm-command` is the proof -- it went in as
+        six separate edits to six sparse lists, and the workflow that got missed
+        failed several minutes into a deploy with `Can't find 'action.yml'`.
+
+        The coverage check above catches that, so the cost was a red build rather
+        than a broken deploy. This removes the occasion for the red build. One entry
+        covers every action there is and every action there will be, and the four
+        directories together are a few kilobytes of YAML and PowerShell.
+
+        Directory entries only, so cone mode is unaffected: `.github/actions` is a
+        directory in both modes, which is what the check below this one is about."""
+        offenders = []
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            for job_name, job in (harness.workflow(path.name).get("jobs") or {}).items():
+                for step in job.get("steps") or []:
+                    for entry in _sparse_paths(step) or []:
+                        if entry.startswith(".github/actions/"):
+                            offenders.append(f"{path.name} [{job_name}] {entry}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these name a single action inside the actions directory, so the next "
+            "action added has to be added here too:\n  " + "\n  ".join(offenders),
+        )
+
     def test_a_sparse_checkout_that_names_a_file_turns_cone_mode_off(self):
         """Cone mode matches directories, so a file pattern in a cone-mode list
         matches nothing and the checkout still reports success.

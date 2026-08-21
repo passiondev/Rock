@@ -189,9 +189,7 @@ jobs:
         with:
           sparse-checkout: |
             .github/scripts/pr-test-status.js
-            .github/actions/gcp-session
-            .github/actions/await-vm-command
-            .github/actions/queue-vm-command
+            .github/actions
           sparse-checkout-cone-mode: false
 
       - name: Open a Google Cloud session

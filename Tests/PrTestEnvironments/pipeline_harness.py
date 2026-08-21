@@ -19,6 +19,7 @@ test files, so paths that move into this module stay visible to the CI trigger
 check.
 """
 
+import copy
 import functools
 import pathlib
 import re
@@ -52,30 +53,61 @@ ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 # literal quoted-segment form: the root constant, then each directory as its own
 # quoted string. (Spelling that shape out here as an example makes this comment a
 # path the scan then goes looking for -- it is derived from every `*.py` in this
-# directory, this file included.) Rolling an accessor out
-# across the suite would have emptied that scan file by file, and the CI trigger's
-# coverage check would have gone green over a suite it could no longer see. The
-# duplication the card counted is real; it is also what keeps the paths visible.
-# Test files spell their paths out for that reason, and the cost is one line each.
+# directory, this file included.) Rolling an accessor out across the suite would
+# have emptied that scan file by file, and the CI trigger's coverage check would
+# have gone green over a suite it could no longer see. The duplication the card
+# counted is real; it is also what keeps the paths visible. Test files spell their
+# paths out for that reason, and the cost is one line each.
+#
+# The same answer governs how far `workflow()` goes, which is the part of the card
+# that looks half-finished and is not. Eight files call it; the rest still parse a
+# module-level constant of their own. Those constants are the declaration -- a file
+# saying `REPO_ROOT / ".github" / "workflows" / "pr-test-deploy.yml"` is how the
+# scan learns that file reads that workflow. Swapping them for `workflow("...")`
+# would collapse fifteen named workflows into this module's `WORKFLOWS_DIR` and
+# leave the trigger check unable to say which test guards which file. Nothing about
+# the CI filter would go red, because `.github/workflows/**` is wide enough to hide
+# it -- which is the failure mode, not the reassurance.
+#
+# So `workflow()` is for callers that already hold a name: iterating the directory,
+# or reading a workflow a constant elsewhere already declares. It is not a
+# replacement for the constants, and the eight-of-forty count is the shape this is
+# meant to have rather than a migration that stalled.
 
 
 @functools.lru_cache(maxsize=None)
-def workflow(name):
-    """A parsed workflow. `on:` is returned under the key `True` by PyYAML, because
-    YAML 1.1 reads a bare `on` as a boolean, so callers reach for `triggers()`."""
+def _parsed_workflow(name):
+    """The cached parse. Callers get a copy of it, never this object."""
     return yaml.safe_load((WORKFLOWS_DIR / name).read_text(encoding="utf-8"))
 
 
+def workflow(name):
+    """A parsed workflow. `on:` is returned under the key `True` by PyYAML, because
+    YAML 1.1 reads a bare `on` as a boolean, so callers reach for `triggers()`.
+
+    A fresh copy each call. The parse is cached because it is the expensive half and
+    forty test files read the same dozen workflows, but handing every caller the same
+    dictionary makes one test that edits a step visible to every test that runs after
+    it -- in whatever order the runner happened to pick. A suite whose whole job is
+    catching false greens should not ship that one."""
+    return copy.deepcopy(_parsed_workflow(name))
+
+
 @functools.lru_cache(maxsize=None)
+def _parsed_composite_action(name):
+    """The cached parse. Callers get a copy of it, never this object."""
+    return yaml.safe_load((ACTIONS_DIR / name / "action.yml").read_text(encoding="utf-8"))
+
+
 def composite_action(name):
     """A parsed composite action, addressed by its directory name.
 
     Mirrors `workflow()` because the two are read the same way and for the same
-    reasons. A composite action's steps run inside the caller's job and show up in
-    the caller's run, so anything asserted about workflow steps -- that a title
-    exists, that a block is PowerShell -- has to look here too or it reports a
-    clean result over half the tree."""
-    return yaml.safe_load((ACTIONS_DIR / name / "action.yml").read_text(encoding="utf-8"))
+    reasons -- including the copy. A composite action's steps run inside the
+    caller's job and show up in the caller's run, so anything asserted about
+    workflow steps -- that a title exists, that a block is PowerShell -- has to
+    look here too or it reports a clean result over half the tree."""
+    return copy.deepcopy(_parsed_composite_action(name))
 
 
 def composite_actions():

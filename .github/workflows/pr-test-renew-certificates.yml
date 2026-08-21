@@ -21,9 +21,7 @@ jobs:
         with:
           sparse-checkout: |
             Deployment/PrTestEnvironments
-            .github/actions/gcp-session
-            .github/actions/await-vm-command
-            .github/actions/queue-vm-command
+            .github/actions
 
       - name: Open a Google Cloud session
         uses: ./.github/actions/gcp-session

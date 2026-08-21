@@ -41,7 +41,32 @@ CATALOG_SURFACES = [
     REPO_ROOT / "Documentation" / "Training" / "rock-cicd-cheat-sheet.html",
     REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
     REPO_ROOT / ".github" / "scripts" / "pr-test-status.js",
+    REPO_ROOT / "Documentation" / "Making-A-Change-To-Rock.md",
 ]
+
+# Files that talk about PR environments and are still not catalog surfaces. Each
+# is here for a reason that does not expire, and the sweep below fails on anything
+# that is neither listed above nor excluded here -- so a new runbook is a red build
+# rather than a file nobody thought of.
+NOT_A_SURFACE = {
+    # Requirement documents record what was asked for. The PRD carries its own
+    # status note saying the sanitization step does not exist, and editing it to
+    # match reality would destroy the evidence of what was assumed.
+    "Documentation/Discussion Docs",
+    # An incident report is a record of a moment. Correcting its wording forward
+    # would make it describe a system that is not the one the incident happened to.
+    "Documentation/Incidents",
+    # The open-items log quotes the wrong wording in order to record that it was
+    # corrected. A guard against the claim cannot run over the document that
+    # explains the guard.
+    "Documentation/Training/DevOps-Open-Items-Rock-CICD.md",
+}
+
+# What makes a file a candidate: it is prose an engineer or operator reads, and it
+# mentions the thing. Extensions rather than a directory, because the surfaces are
+# already split across Documentation/ and .github/.
+CANDIDATE_SUFFIXES = {".md", ".html", ".js"}
+CANDIDATE_MENTION = re.compile(r"shared catalog|PR environment|PR test environment", re.IGNORECASE)
 
 # Claims that the data is safe to treat casually. Each of these was in the tree.
 UNSAFE_CLAIMS = [
@@ -66,7 +91,7 @@ UNSAFE_REFRESH_CLAIMS = [
 ]
 
 
-class SharedCatalogClaimTests(unittest.TestCase):
+class SharedCatalogClaimTests(harness.HarnessAssertions, unittest.TestCase):
     def surface_texts(self):
         """(repository-relative name, contents) for every listed catalog surface.
 
@@ -76,6 +101,42 @@ class SharedCatalogClaimTests(unittest.TestCase):
             relative = path.relative_to(REPO_ROOT).as_posix()
             self.assertTrue(path.exists(), f"{relative} is listed as a catalog surface but does not exist")
             yield relative, path.read_text(encoding="utf-8")
+
+    def test_every_document_that_mentions_the_catalog_is_accounted_for(self):
+        """The list above is the thing this module is, and a list goes stale.
+
+        Naming the surfaces is what let one guard replace six per-file pins, and it
+        is also the weakness: a runbook added next month is not on it, so it is not
+        checked, and nothing says so. This sweeps the two directories the surfaces
+        live in and requires every candidate to be either listed or excluded on
+        purpose. `Making-A-Change-To-Rock.md` is the one it found -- a live document
+        engineers are pointed at, never checked, carrying no claim today and nothing
+        stopping one from being added."""
+        listed = {path.relative_to(REPO_ROOT).as_posix() for path in CATALOG_SURFACES}
+        candidates, unaccounted = [], []
+
+        for directory in ("Documentation", ".github"):
+            for path in sorted((REPO_ROOT / directory).rglob("*")):
+                if not path.is_file() or path.suffix.lower() not in CANDIDATE_SUFFIXES:
+                    continue
+                relative = path.relative_to(REPO_ROOT).as_posix()
+                if not CANDIDATE_MENTION.search(path.read_text(encoding="utf-8", errors="ignore")):
+                    continue
+                candidates.append(relative)
+                if relative in listed:
+                    continue
+                if any(relative == skip or relative.startswith(skip + "/") for skip in NOT_A_SURFACE):
+                    continue
+                unaccounted.append(relative)
+
+        self.assertNotVacuous(candidates, "nothing under Documentation/ or .github/ mentions the catalog")
+        self.assertEqual(
+            [],
+            unaccounted,
+            "these describe PR environments and are neither checked as a catalog "
+            "surface nor excluded from being one -- add to CATALOG_SURFACES, or to "
+            "NOT_A_SURFACE with the reason:\n  " + "\n  ".join(unaccounted),
+        )
 
     def test_no_surface_calls_the_catalog_sanitized(self):
         offenders = []
