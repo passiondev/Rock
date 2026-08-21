@@ -1,3 +1,4 @@
+import re
 import unittest
 
 import pipeline_harness as harness
@@ -120,3 +121,54 @@ class RunbookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StepsTheRunbookTellsYouToWatchTests(harness.HarnessAssertions, unittest.TestCase):
+    """A runbook that names a step by its exact title is only useful while the step
+    still carries that title.
+
+    The architecture review read these two lines as an error -- the runbook sends the
+    operator to a step in `staging-deploy.yml` that really lives in
+    `env-deploy-command.yml`. It is not one. The runbook names no workflow file; it
+    says to check the run, and `staging-deploy.yml` calls `env-deploy-command.yml` as
+    a reusable workflow, so the step shows up inside the run the operator is already
+    looking at. The claim is recorded here rather than argued in a commit message,
+    because the next review will read the same two lines the same way.
+
+    What is worth holding is the weaker fact the review was reaching for: the title
+    in the prose and the title in the YAML are two copies of one string.
+    """
+
+    WATCHED_STEP = re.compile(r"(?:check|watch) the run's `([^`]+)` step", re.IGNORECASE)
+
+    def step_names(self):
+        """Every step title in every workflow and composite action."""
+        names = set()
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            parsed = harness.workflow(path.name)
+            for job in (parsed.get("jobs") or {}).values():
+                names.update(s.get("name") for s in (job.get("steps") or []) if s.get("name"))
+        return names
+
+    def test_every_step_a_runbook_names_still_exists_under_that_name(self):
+        available = self.step_names()
+        self.assertNotVacuous(available, "no workflow step names were found")
+
+        watched = []
+        offenders = []
+        for runbook in (DEV_RUNBOOK, OP_RUNBOOK):
+            text = runbook.read_text(encoding="utf-8")
+            for match in self.WATCHED_STEP.finditer(text):
+                name = match.group(1)
+                watched.append(name)
+                if name not in available:
+                    line = text.count("\n", 0, match.start()) + 1
+                    offenders.append(f"{runbook.name}:{line} names the step {name!r}")
+
+        self.assertNotVacuous(watched, "no runbook line points at a named step any more")
+        self.assertEqual(
+            [],
+            offenders,
+            "these send an operator looking for a step title no workflow carries:\n  "
+            + "\n  ".join(offenders),
+        )

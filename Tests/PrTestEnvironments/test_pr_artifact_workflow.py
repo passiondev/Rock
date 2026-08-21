@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 
@@ -8,6 +9,7 @@ import pipeline_harness as harness
 
 REPO_ROOT = harness.REPO_ROOT
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "pr-test-artifact.yml"
+HAND_DEPLOY_PATH = REPO_ROOT / ".github" / "workflows" / "ptp-14803-build-artifact.yml"
 BOOTSTRAP_ISSUE_PATH = REPO_ROOT / "Documentation" / "Discussion Docs" / "PR-Test-Environments-Issues" / "01-bootstrap-server-prerequisites.md"
 ROCK_CORE_LESS = REPO_ROOT / "RockWeb" / "Styles" / "_rock-core.less"
 
@@ -450,3 +452,86 @@ class StylesGateCompletenessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandDeployBuildStaysCredentialFreeTests(harness.HarnessAssertions, unittest.TestCase):
+    """`ptp-14803-build-artifact.yml` exists because it cannot reach anything.
+
+    The architecture review recommended deleting it, on two grounds. Neither holds,
+    and the record is here rather than in a commit message because the same two
+    readings are what an automated scan produces.
+
+    "Nobody triggers it." It was pinned to `push: [deploy/ptp-14803-18.4.1]`, a
+    branch on the prune list, which is a real problem and is fixed -- it is dispatch
+    only now, pinned by test_workflow_triggers_survive_pruning.py. The capability was
+    last used on 2026-08-18 against a different branch entirely.
+
+    "Fifteen of its nineteen steps are the same as the artifact build's." Nine are.
+    The count of fifteen comes from matching step titles; six of those fifteen differ
+    in substance, and the differences are the reason both files exist. The artifact
+    build pins a SHA and fetches depth 10, restores `RockWeb\packages.config` into a
+    named packages directory, caches five node_modules trees, and sorts build
+    failures into required and advisory. This one takes whatever branch you dispatch,
+    builds a fixed list of seven projects, and hard-fails on any of them. The nine
+    that do match are not contiguous in either file, because the artifact build also
+    compiles Rock.JavaScript and Rock.JavaScript.EditorJs in between -- so a shared
+    prelude action would have to either carry those for both or split into three
+    fragments, and neither is a deeper module than what is there.
+
+    What is worth pinning is the property that makes deleting it a loss: it consumes
+    no credentials, so it cannot boot Rock against the production catalog. That is a
+    claim its header makes at length and nothing enforced.
+    """
+
+    def workflow(self):
+        return harness.workflow(HAND_DEPLOY_PATH.name)
+
+    def test_it_requests_nothing_beyond_reading_the_repository(self):
+        self.assertEqual({"contents": "read"}, self.workflow().get("permissions"))
+
+    def test_it_consumes_no_secrets(self):
+        text = HAND_DEPLOY_PATH.read_text(encoding="utf-8")
+        self.assertNoMatch(
+            r"secrets\.",
+            text,
+            "this build is the one vehicle that cannot reach the production catalog, "
+            "and a secret is how that stops being true",
+        )
+
+    def test_it_opens_no_cloud_session(self):
+        text = HAND_DEPLOY_PATH.read_text(encoding="utf-8")
+        for forbidden in ("google-github-actions/auth", "setup-gcloud", "gsutil", "gcloud "):
+            self.assertNotIn(
+                forbidden,
+                text,
+                f"{forbidden} appeared in the hand-deploy build. It uploads to nothing "
+                "on purpose; the artifact workflow is where a cloud session belongs.",
+            )
+
+    def test_the_steps_it_shares_with_the_artifact_build_are_byte_identical(self):
+        """The nine that do match should keep matching. Left inline in both files
+        rather than extracted, for the reason in the class docstring -- so this is
+        what holds them together."""
+        import json
+
+        mine = self.workflow()["jobs"]["build"]["steps"]
+        theirs = harness.workflow(WORKFLOW_PATH.name)["jobs"]["package"]["steps"]
+
+        def by_title(steps):
+            return {s.get("name") or s.get("uses"): s for s in steps}
+
+        mine_by_title, theirs_by_title = by_title(mine), by_title(theirs)
+        shared = [
+            (title, step)
+            for title, step in mine_by_title.items()
+            if title in theirs_by_title
+            and json.dumps(step, sort_keys=True) == json.dumps(theirs_by_title[title], sort_keys=True)
+        ]
+
+        self.assertGreaterEqual(
+            len(shared),
+            9,
+            "the two builds used to share nine byte-identical steps and now share "
+            f"{len(shared)}. If a step diverged on purpose, say so; if it diverged by "
+            "accident, the two builds no longer set up the same way.",
+        )

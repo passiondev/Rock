@@ -177,6 +177,14 @@ jobs:
   # 7-only construct parses clean here and fails there --
   # test_powershell_edition_compatibility.py is what catches those, and this job
   # does not replace it.
+  #
+  # Parsing and Pester share a job on purpose, though they are two different
+  # techniques and a code review will read that as one job changing for two
+  # reasons. They answer one question -- is the PowerShell in this repository
+  # sound -- and splitting them buys a tidier boundary at the cost of a second
+  # checkout and a second toolchain install on every pull request. Being cheap
+  # enough to gate every pull request is the trade this whole workflow was set up
+  # to make, so the boundary loses.
   powershell:
     name: Check the PowerShell
     runs-on: ubuntu-latest

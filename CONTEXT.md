@@ -109,6 +109,22 @@ Passing a parameter the mode has no use for is an error, not a no-op:
 that lands somewhere other than where its operator asked should not report
 success.
 
+## Commit prefixes
+
+`CLAUDE.md` splits commits two ways: `+` for a notable change that appears in the
+Rock release notes, `-` for one that does not.
+
+Every commit to the pipeline this file describes uses `-`, including the ones
+that alter what a deploy does. The release notes go to churches running Rock. This pipeline is ours: it
+builds and deploys our fork, it ships to nobody, and no Rock installation
+anywhere is affected by a change to it. A `+ (Other)` line here would put a
+GitHub Actions workflow in front of an audience with no way to act on it.
+
+The rule that does apply is the one underneath the prefix -- the message has to
+be the whole release note. A pipeline commit gets the same treatment, written for
+whoever is reading `git log` at two in the morning trying to work out why the
+deploy behaves differently than it did last week.
+
 ---
 
 **Adding a term here.** A name that appears in more than one layer — a workflow,
