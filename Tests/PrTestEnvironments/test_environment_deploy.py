@@ -276,18 +276,54 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         its manifest is written under that root."""
         text = DEPLOY_SCRIPT.read_text()
         self.assertIn('$EnvironmentRoot = "C:\\RockTestEnvs"', text)
-        self.assertIn('$ManifestPath = Join-Path $EnvironmentPath "env.json"', text)
+        # Where the manifest actually lands moved into Resolve-DeploymentTarget and
+        # is checked by running it: Pester/DeploymentTarget.Tests.ps1, "puts the
+        # manifest beside the site it describes".
         self.assertIn('status = "deployed"', text)
         self.assertIn("hostName = $HostName", text)
         self.assertIn("siteName = $SiteName", text)
 
-    def test_in_place_manifest_is_kept_out_of_the_renewal_search_path(self):
-        """The renewal job stops and starts every site it finds a manifest for. A
-        production manifest under C:\\RockTestEnvs would put production in the blast
-        radius of a certificate job running on the test VM."""
-        text = DEPLOY_SCRIPT.read_text()
-        in_place_manifest = "$ManifestPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) \"env.json\""
-        self.assertIn(in_place_manifest, text)
+    # The production manifest staying out of the certificate renewal job's search
+    # path used to be asserted here, as a string match on the assignment. That
+    # decision now lives in Resolve-DeploymentTarget, and
+    # Pester/DeploymentTarget.Tests.ps1 checks it by calling the function and
+    # looking at the path that comes back -- "keeps the manifest out of the
+    # environment root" and "puts the manifest under the backup root instead".
+    # Reading the line proved it was written. Running it proves it is true.
+
+    def test_no_caller_pairs_a_dedicated_site_with_an_in_place_target(self):
+        """Resolve-DeploymentTarget now throws on that pair rather than dropping it,
+        which turns a silent mis-deploy into a loud refusal. That is the right
+        trade for a hand-dispatched run, and the wrong one to discover on a
+        scheduled staging deploy -- so the two callers that exist are checked here
+        instead."""
+        in_place_only = ("target_site_path", "target_site_name")
+        checked = 0
+
+        for workflow in (STAGING_WORKFLOW, PRODUCTION_WORKFLOW):
+            parsed = yaml.safe_load(workflow.read_text())
+            for name, job in parsed["jobs"].items():
+                if "env-deploy-command.yml" not in (job.get("uses") or ""):
+                    continue
+
+                checked += 1
+                passed = job.get("with") or {}
+                mode = passed.get("mode")
+                self.assertIn(mode, ("DedicatedSite", "InPlace"), f"{workflow.name}:{name} passes mode {mode!r}.")
+
+                if mode == "InPlace":
+                    continue
+
+                for parameter in in_place_only:
+                    self.assertNotIn(
+                        parameter,
+                        passed,
+                        f"{workflow.name}:{name} deploys DedicatedSite but passes "
+                        f"{parameter}. The deploy script rejects that pair, so this "
+                        f"run would fail before it copied anything.",
+                    )
+
+        self.assertEqual(2, checked, f"Expected the staging and production callers; found {checked}.")
 
     def test_deploy_waits_for_the_site_to_answer_before_reporting_success(self):
         """Rock runs EF and plugin migrations on the first request after a deploy,

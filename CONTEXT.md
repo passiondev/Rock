@@ -92,6 +92,12 @@ The mode decides which of `Deploy-RockEnvironment.ps1`'s parameters apply, and
 whether the shared-asset overlay runs at all. It is the single most consequential
 input to that script.
 
+Passing a parameter the mode has no use for is an error, not a no-op:
+`Resolve-DeploymentTarget` refuses `TargetSitePath` and `TargetAppPoolName` under
+`DedicatedSite` rather than dropping them. Both name a directory, and a deploy
+that lands somewhere other than where its operator asked should not report
+success.
+
 ---
 
 **Adding a term here.** A name that appears in more than one layer — a workflow,

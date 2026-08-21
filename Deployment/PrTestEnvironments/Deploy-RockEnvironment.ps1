@@ -138,28 +138,101 @@ $EnvironmentPath = Join-Path $EnvironmentRoot $EnvironmentName
 $ArtifactPath = Join-Path $EnvironmentPath "artifact.zip"
 $ExtractPath = Join-Path $EnvironmentPath "extract"
 
-if ($Mode -eq 'DedicatedSite') {
-    $SiteName = "rock-$EnvironmentName"
-    $AppPoolName = "rock-$EnvironmentName"
-    $SitePath = Join-Path $EnvironmentPath "site"
-    $ManifestPath = Join-Path $EnvironmentPath "env.json"
-}
-else {
+# Which site this deploy acts on. A function rather than thirty lines of
+# top-level script because two of its outcomes are unrecoverable if wrong --
+# overwriting the wrong live directory, and putting a production manifest where
+# the certificate renewal job will find it -- and nothing could call it to check.
+# Tests/PrTestEnvironments/Pester/DeploymentTarget.Tests.ps1 now can.
+function Resolve-DeploymentTarget {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('DedicatedSite', 'InPlace')]
+        [string]
+        $Mode,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentName,
+
+        # Where the deploy does its work -- the artifact download and the extract
+        # -- in both modes. Only DedicatedSite also serves the site from it.
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $TargetSitePath,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $TargetSiteName = 'Default Web Site',
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $TargetAppPoolName,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $BackupRoot = "C:\RockBackups"
+    )
+
+    if ($Mode -eq 'DedicatedSite') {
+        # These used to be accepted and silently dropped. env-deploy-command.yml
+        # forwards targetSitePath and targetSiteName whenever the workflow input
+        # is non-empty and never checks them against the mode, so an operator
+        # could ask for one directory, watch the deploy report success, and get
+        # another.
+        #
+        # Only the two parameters with no default can be checked from in here.
+        # TargetSiteName and BackupRoot always arrive populated, which makes
+        # "passed" and "defaulted" indistinguishable.
+        if (![string]::IsNullOrWhiteSpace($TargetSitePath)) {
+            throw "TargetSitePath does not apply when Mode is DedicatedSite: a dedicated site is placed under its environment path and named after its environment. Remove it, or pass -Mode InPlace."
+        }
+        if (![string]::IsNullOrWhiteSpace($TargetAppPoolName)) {
+            throw "TargetAppPoolName does not apply when Mode is DedicatedSite: the app pool is named after the environment. Remove it, or pass -Mode InPlace."
+        }
+
+        return @{
+            SiteName     = "rock-$EnvironmentName"
+            AppPoolName  = "rock-$EnvironmentName"
+            SitePath     = Join-Path $EnvironmentPath "site"
+            ManifestPath = Join-Path $EnvironmentPath "env.json"
+        }
+    }
+
     if ([string]::IsNullOrWhiteSpace($TargetSitePath)) {
         throw "TargetSitePath is required when Mode is InPlace."
     }
     if (!(Test-Path $TargetSitePath)) {
         throw "TargetSitePath does not exist: $TargetSitePath"
     }
-    $SiteName = $TargetSiteName
-    $AppPoolName = if ([string]::IsNullOrWhiteSpace($TargetAppPoolName)) {
+
+    $resolvedAppPool = if ([string]::IsNullOrWhiteSpace($TargetAppPoolName)) {
         (Get-ItemProperty "IIS:\Sites\$TargetSiteName" -Name applicationPool).Value
     } else { $TargetAppPoolName }
-    $SitePath = $TargetSitePath
-    # Never under $EnvironmentRoot: the certificate renewal job walks that tree
-    # and stops/starts every site it finds a manifest for.
-    $ManifestPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) "env.json"
+
+    return @{
+        SiteName    = $TargetSiteName
+        AppPoolName = $resolvedAppPool
+        SitePath    = $TargetSitePath
+        # Never under $EnvironmentRoot: the certificate renewal job walks that tree
+        # and stops/starts every site it finds a manifest for.
+        ManifestPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) "env.json"
+    }
 }
+
+$DeploymentTarget = Resolve-DeploymentTarget -Mode $Mode -EnvironmentName $EnvironmentName `
+    -EnvironmentPath $EnvironmentPath -TargetSitePath $TargetSitePath -TargetSiteName $TargetSiteName `
+    -TargetAppPoolName $TargetAppPoolName -BackupRoot $BackupRoot
+
+$SiteName = $DeploymentTarget.SiteName
+$AppPoolName = $DeploymentTarget.AppPoolName
+$SitePath = $DeploymentTarget.SitePath
+$ManifestPath = $DeploymentTarget.ManifestPath
 
 function Ensure-Directory {
     param([Parameter(Mandatory = $true)][string]$Path)
