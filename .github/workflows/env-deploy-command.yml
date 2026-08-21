@@ -175,12 +175,18 @@ jobs:
       # on 2026-08-19 while three green deploys kept serving a stale stylesheet.
       # Comparing the two copies costs one gsutil call and turns a silent no-op into
       # a warning on the run it affects. Open item 25.
-      - name: Check out the deploy scripts for the drift check
+      # One checkout for everything this job reads from the tree: the two script
+      # directories the drift check compares, and the two composite actions used
+      # later. It used to check out twice, once here and once again before the URL
+      # check, which is what a local action costs when nobody folds the cost back in.
+      - name: Check out the deploy scripts and composite actions
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
             Deployment/PrTestEnvironments
             Deployment/Database
+            .github/actions/await-vm-command
+            .github/actions/verify-public-url
           sparse-checkout-cone-mode: false
 
       - name: Report deploy script drift
@@ -295,100 +301,32 @@ jobs:
           gsutil cp command.json "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/pending/$env:COMMAND_ID.json"
 
       - name: Wait for the VM to report the result
-        id: poll
+        id: await
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: Deploy of ${{ env.ENVIRONMENT_NAME }}
+          attempts: ${{ inputs.poll_attempts }}
+
+      # The failure summary is the action's, because that is what had drifted across
+      # the six copies. This is the success half, which is this caller's alone: no
+      # other workflow deploys a named environment to a known host at a known commit.
+      - name: Summarize the deploy
         run: |
-          $resultUri = "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/results/$env:COMMAND_ID.json"
-          $attempts = ${{ inputs.poll_attempts }}
-
-          # The command's own output lives on the VM. The agent uploads a redacted
-          # copy beside the result so a failure can be diagnosed from this log
-          # instead of over RDP. Older agents do not set logObject, so treat a
-          # missing log as unremarkable rather than an error.
-          function Show-CommandLog {
-            param([string]$LogObject, [switch]$AppendToSummary)
-
-            if ([string]::IsNullOrWhiteSpace($LogObject)) {
-              Write-Host "The VM reported no output log. If this persists, re-run the bootstrap workflow so the VM picks up the current queue agent."
-              return
-            }
-
-            $logUri = "gs://$env:GCS_BUCKET/$LogObject"
-            gsutil -q cp $logUri command-output.log 2>$null
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "Could not download the command output from $logUri."
-              return
-            }
-
-            $logText = Get-Content command-output.log -Raw
-            Write-Host "::group::Command output from the VM"
-            Write-Host $logText
-            Write-Host "::endgroup::"
-
-            if ($AppendToSummary) {
-              # Only the tail goes in the summary -- it has a size limit, and the
-              # failure is at the end.
-              $lines = @($logText -split "`r?`n")
-              $tail = if ($lines.Count -gt 60) { $lines[-60..-1] } else { $lines }
-              "<details><summary>Command output from the VM (last $($tail.Count) lines)</summary>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              ($tail -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "</details>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            }
-          }
-
-          for ($i = 0; $i -lt $attempts; $i++) {
-            gsutil -q cp $resultUri result.json 2>$null
-            if ($LASTEXITCODE -eq 0) {
-              $result = Get-Content result.json -Raw | ConvertFrom-Json
-              $result | ConvertTo-Json -Depth 10
-
-              $logObject = $null
-              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
-
-              if ($result.status -eq "succeeded") {
-                Show-CommandLog -LogObject $logObject
-                "### Deployed $env:ENVIRONMENT_NAME" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-                "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-                "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-                "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-                "| URL | https://$env:HOST_NAME |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-                "| Commit | ``$env:DEPLOY_SHA`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-                "| Mode | $env:DEPLOY_MODE |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-                exit 0
-              }
-
-              Write-Host "::error::Deploy of $env:ENVIRONMENT_NAME failed on the VM: $($result.error)"
-              "### Deploy of $env:ENVIRONMENT_NAME failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "$($result.error)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              Show-CommandLog -LogObject $logObject -AppendToSummary
-              exit 1
-            }
-            Start-Sleep -Seconds 15
-          }
-
-          # No result object at all means the queue worker never ran: the VM is
-          # off, the scheduled task is missing, or its service account lost bucket
-          # access. Say so, because "timed out" alone sends people to the wrong place.
-          Write-Host "::error::No result after $($attempts * 15) seconds. Check that $env:GCS_BUCKET is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running on the target VM against queue '$env:QUEUE_NAME'."
-          exit 1
+          "### Deployed $env:ENVIRONMENT_NAME" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| URL | https://$env:HOST_NAME |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Commit | ``$env:DEPLOY_SHA`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Mode | $env:DEPLOY_MODE |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       # The verification lives in a composite action so the staging/production path and
       # the pr-* fleet ask the identical question -- see .github/actions/verify-public-url,
-      # which carries the reasoning behind every branch of it. A sparse checkout because
-      # this job otherwise needs no working tree.
-      - name: Check out the verification action
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            .github/actions/verify-public-url
-          sparse-checkout-cone-mode: false
-
+      # which carries the reasoning behind every branch of it. Checked out at the top
+      # of the job with everything else this one reads from the tree.
       - name: Verify the public URL from the internet
         uses: ./.github/actions/verify-public-url
         with:

@@ -1,0 +1,189 @@
+name: Await a VM command result
+description: >
+  Poll the GCS result object for a queued VM command, print what the VM reported,
+  and fail the step when the command failed or never answered.
+
+inputs:
+  bucket:
+    description: The GCS bucket holding the command queue.
+    required: true
+  command-id:
+    description: The id returned when the command was queued.
+    required: true
+  label:
+    description: >
+      What to call this command in error messages and the job summary, for example
+      "Deploy of staging" or "Destroy of PR #1234". It is read by whoever opens a
+      red run, so name the thing that failed rather than the verb.
+    required: true
+  queue-name:
+    description: >
+      The queue directory under `pr-environments/`. The PR fleet uses the default.
+      Named queues exist so that a VM only picks up the commands meant for it.
+    required: false
+    default: commands
+  attempts:
+    description: >
+      How many times to look for the result before giving up. With the default
+      interval this is a 35 minute ceiling, which is above the slowest observed
+      full deploy.
+    required: false
+    default: '140'
+  interval-seconds:
+    description: Seconds between attempts.
+    required: false
+    default: '15'
+  failure-hint:
+    description: >
+      Extra sentence appended to the failure annotation, for a caller that can tell
+      the reader what to do next. The teardown sweep uses it to say that the other
+      environments carried on.
+    required: false
+    default: ''
+
+outputs:
+  status:
+    description: The status the VM reported, `succeeded` or `failed`.
+    value: ${{ steps.await.outputs.status }}
+  error:
+    description: The error text the VM reported, empty on success.
+    value: ${{ steps.await.outputs.error }}
+  log-path:
+    description: >
+      Workspace path of the downloaded VM log, empty when the VM reported none.
+      A caller that wants the log in its own job summary reads this rather than
+      asking for another input here. The legacy-column scan does, because for that
+      command the log is the finding rather than a diagnostic.
+    value: ${{ steps.await.outputs.log-path }}
+
+# Six workflows queue a command onto the VM and wait for it, and until this action
+# existed each carried its own copy of the wait. They had drifted into a staircase:
+# of the six things this does, `env-deploy-command.yml` did all six and
+# `pr-test-lifecycle.yml` did none. Lifecycle polled sixty times at ten seconds
+# where its siblings polled a configurable count at fifteen, so a command that took
+# more than ten minutes was reported as a timeout by one workflow and as a success
+# by another. It also downloaded no log, which is the whole diagnosis on a failure.
+#
+# That is what duplicated protocol code does: it does not stay duplicated. Nothing
+# was wrong with any single copy, and no review of any single copy would have found
+# it, because the defect only exists in the comparison.
+#
+# The success path deliberately writes nothing to the job summary. Callers want
+# different things there -- the deploy workflow writes a URL, a commit and a mode --
+# and folding that in would mean an input per caller. Failures are uniform and are
+# owned here, which is where the drift actually hurt.
+runs:
+  using: composite
+  steps:
+    - name: Wait for the VM to report the result
+      id: await
+      shell: pwsh
+      env:
+        AWAIT_BUCKET: ${{ inputs.bucket }}
+        AWAIT_QUEUE: ${{ inputs.queue-name }}
+        AWAIT_COMMAND_ID: ${{ inputs.command-id }}
+        AWAIT_LABEL: ${{ inputs.label }}
+        AWAIT_ATTEMPTS: ${{ inputs.attempts }}
+        AWAIT_INTERVAL: ${{ inputs.interval-seconds }}
+        AWAIT_FAILURE_HINT: ${{ inputs.failure-hint }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        $bucket = $env:AWAIT_BUCKET
+        $label = $env:AWAIT_LABEL
+
+        # Parsed, not cast. A workflow_dispatch input is a string whatever its
+        # declared type, and two of the callers pass one straight through, so a
+        # nonsense value should be an immediate error rather than a loop that never
+        # runs or an exception thirty lines later.
+        $attempts = 0
+        if (-not [int]::TryParse($env:AWAIT_ATTEMPTS, [ref]$attempts) -or $attempts -lt 1) {
+          throw "attempts must be a positive whole number; got '$($env:AWAIT_ATTEMPTS)'."
+        }
+        $interval = 0
+        if (-not [int]::TryParse($env:AWAIT_INTERVAL, [ref]$interval) -or $interval -lt 1) {
+          throw "interval-seconds must be a positive whole number; got '$($env:AWAIT_INTERVAL)'."
+        }
+        $resultUri = "gs://$bucket/pr-environments/$($env:AWAIT_QUEUE)/results/$($env:AWAIT_COMMAND_ID).json"
+
+        # The command's own output lives on the VM. The agent uploads a redacted
+        # copy beside the result so a failure can be diagnosed from this log
+        # instead of over RDP. Older agents do not set logObject, so treat a
+        # missing log as unremarkable rather than an error.
+        $script:logPath = ''
+
+        function Show-CommandLog {
+          param([string]$LogObject, [switch]$AppendToSummary)
+
+          if ([string]::IsNullOrWhiteSpace($LogObject)) {
+            Write-Host "The VM reported no output log. If this persists, re-run the bootstrap workflow so the VM picks up the current queue agent."
+            return
+          }
+
+          $logUri = "gs://$bucket/$LogObject"
+          gsutil -q cp $logUri command-output.log 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Could not download the command output from $logUri."
+            return
+          }
+
+          $script:logPath = (Resolve-Path command-output.log).Path
+          $logText = Get-Content command-output.log -Raw
+          Write-Host "::group::Command output from the VM"
+          Write-Host $logText
+          Write-Host "::endgroup::"
+
+          if ($AppendToSummary -and $env:GITHUB_STEP_SUMMARY) {
+            # Only the tail goes in the summary -- it has a size limit, and the
+            # failure is at the end.
+            $lines = @($logText -split "`r?`n")
+            $tail = if ($lines.Count -gt 60) { $lines[-60..-1] } else { $lines }
+            "<details><summary>Command output from the VM (last $($tail.Count) lines)</summary>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            ($tail -join "`n") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "</details>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+        }
+
+        for ($i = 0; $i -lt $attempts; $i++) {
+          gsutil -q cp $resultUri result.json 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $result = Get-Content result.json -Raw | ConvertFrom-Json
+            $result | ConvertTo-Json -Depth 10
+
+            $logObject = $null
+            if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
+
+            if ($result.status -eq 'succeeded') {
+              Show-CommandLog -LogObject $logObject
+              "status=succeeded" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              "error=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              "log-path=$($script:logPath)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              exit 0
+            }
+
+            $hint = if ([string]::IsNullOrWhiteSpace($env:AWAIT_FAILURE_HINT)) { '' } else { " $($env:AWAIT_FAILURE_HINT)" }
+            Write-Host "::error::$label failed on the VM: $($result.error)$hint"
+            if ($env:GITHUB_STEP_SUMMARY) {
+              "### $label failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "$($result.error)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            }
+            Show-CommandLog -LogObject $logObject -AppendToSummary
+            "status=failed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "log-path=$($script:logPath)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 1
+          }
+          Start-Sleep -Seconds $interval
+        }
+
+        # No result object at all means the queue worker never ran: the VM is
+        # off, the scheduled task is missing, or its service account lost bucket
+        # access. Say so, because "timed out" alone sends people to the wrong place.
+        Write-Host "::error::No result for $label after $($attempts * $interval) seconds. Check that $bucket is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running on the target VM against queue '$($env:AWAIT_QUEUE)'."
+        exit 1

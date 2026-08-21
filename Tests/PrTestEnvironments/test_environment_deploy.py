@@ -486,11 +486,11 @@ class CommandWorkflowTests(unittest.TestCase):
         self.assertIn("gsutil -q stat", text)
         self.assertIn("::error::Artifact not found", text)
 
-    def test_timeout_message_names_the_actual_cause(self):
-        """A missing result object means the queue worker never ran. 'Timed out'
-        alone sent three months of failures to the wrong place."""
-        text = COMMAND_WORKFLOW.read_text()
-        self.assertIn("scheduled task is running on the target VM", text)
+    # test_timeout_message_names_the_actual_cause moved to
+    # test_local_composite_actions.py. This workflow was the only one of six that
+    # carried that message, which is the argument the shared wait was built on --
+    # asserting it here would have gone on passing while the other five stayed
+    # wrong.
 
     def test_connection_string_is_redacted_from_logs(self):
         """The repo is public and these logs get screenshotted in training."""

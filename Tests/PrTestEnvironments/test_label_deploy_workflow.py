@@ -25,10 +25,10 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
         self.assertIn("./.github/workflows/pr-test-artifact.yml", text)
         self.assertIn("secrets: inherit", text)
         self.assertIn("commands/pending", text)
-        self.assertIn("commands/results", text)
-        self.assertIn("Poll PR environment command result", text)
-        self.assertIn("$i -lt 120", text)
-        self.assertIn("Start-Sleep -Seconds 15", text)
+        # The wait itself is .github/actions/await-vm-command now, and its
+        # behaviour is asserted once in test_local_composite_actions.py rather
+        # than once per producer. What stays here is what this workflow chooses.
+        self.assertIn("attempts: '120'", text)
         self.assertIn("artifactGcsPath", text)
         self.assertIn("rock-dev.connect.passion.team", text)
         self.assertNotIn("sshpass", text)

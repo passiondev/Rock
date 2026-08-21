@@ -21,6 +21,7 @@ jobs:
         with:
           sparse-checkout: |
             Deployment/PrTestEnvironments
+            .github/actions/await-vm-command
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -92,41 +93,17 @@ jobs:
           $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
           gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
 
-      - name: Poll certificate renewal result
-        shell: pwsh
-        run: |
-          $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
-          for ($i = 0; $i -lt 90; $i++) {
-            gsutil -q cp $resultUri result.json 2>$null
-            if ($LASTEXITCODE -eq 0) {
-              $result = Get-Content result.json -Raw | ConvertFrom-Json
-              $result | ConvertTo-Json -Depth 10
-
-              # Always print the renewal output. `succeeded` on its own is not
-              # proof of work here: the script exits happily when it finds zero
-              # deployed environments, so the log is the only place that says
-              # which host names were actually issued a certificate.
-              $logObject = $null
-              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
-              if (![string]::IsNullOrWhiteSpace($logObject)) {
-                gsutil -q cp "gs://$env:PR_TEST_GCS_BUCKET/$logObject" command-output.log 2>$null
-                if ($LASTEXITCODE -eq 0) {
-                  Write-Host "::group::Certificate renewal output from the VM"
-                  Get-Content command-output.log -Raw | Write-Host
-                  Write-Host "::endgroup::"
-                }
-              }
-              else {
-                Write-Host "The VM reported no output log. If this persists, re-run the bootstrap workflow so the VM picks up the current queue agent."
-              }
-
-              if ($result.status -eq 'succeeded') { exit 0 }
-              Write-Host "::error::Certificate renewal failed on the VM: $($result.error)"
-              exit 1
-            }
-            Start-Sleep -Seconds 10
-          }
-          throw "Timed out waiting for PR environment certificate renewal result: $resultUri"
+      # The action prints the VM log on success as well as on failure, which this
+      # command needs: the renewal script exits happily when it finds zero deployed
+      # environments, so `succeeded` alone is not proof a certificate was issued.
+      - name: Wait for the VM to report the result
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: Certificate renewal
+          attempts: '90'
+          interval-seconds: '10'
 
       - name: Remove temporary ACME HTTP-01 network tag
         if: always()

@@ -36,8 +36,10 @@ class PrTestLifecycleTests(unittest.TestCase):
         self.assertIn('rock:destroy', text)
         self.assertIn('merged', text)
         self.assertIn('commands/pending', text)
-        self.assertIn('commands/results', text)
-        self.assertIn('Poll PR environment command result', text)
+        # The wait itself is .github/actions/await-vm-command now, and its
+        # behaviour is asserted once in test_local_composite_actions.py rather
+        # than once per producer. What stays here is what this workflow chooses.
+        self.assertIn("attempts: '120'", text)
         self.assertIn('updatePrTestStatus', text)
         self.assertIn('removeLabel', text)
 

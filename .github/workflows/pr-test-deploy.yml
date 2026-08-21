@@ -213,6 +213,20 @@ jobs:
       # and staging still share one database until someone sets one of them.
       SANDBOX_CONNECTION_STRING: Data Source=${{ secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME }};Initial Catalog=${{ vars.PR_TEST_DB_NAME || secrets.DB_NAME }};User Id=${{ secrets.DB_USER }};password=${{ secrets.DB_PASSWORD }};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;
     steps:
+      # Two composite actions in this job: the wait below, and the public-URL check
+      # at the end. The verification lives in an action so the staging/production
+      # path and the pr-* fleet ask the identical question -- see
+      # .github/actions/verify-public-url, which carries the reasoning behind every
+      # branch of it. Checked out first because `uses: ./...` reads from the working
+      # tree, and sparse because this job needs nothing else from it.
+      - name: Check out the composite actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions/await-vm-command
+            .github/actions/verify-public-url
+          sparse-checkout-cone-mode: false
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -237,52 +251,13 @@ jobs:
           $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
           gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
 
-      - name: Poll PR environment command result
-        shell: pwsh
-        run: |
-          $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
-          for ($i = 0; $i -lt 120; $i++) {
-            gsutil -q cp $resultUri result.json 2>$null
-            if ($LASTEXITCODE -eq 0) {
-              $result = Get-Content result.json -Raw | ConvertFrom-Json
-              $result | ConvertTo-Json -Depth 10
-
-              # The deploy script's own output stays on the VM; the queue agent
-              # uploads a redacted copy beside the result. Print it either way --
-              # on a failure it is the whole diagnosis, and on a success it is how
-              # you confirm the app actually started rather than merely copied.
-              $logObject = $null
-              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
-              if (![string]::IsNullOrWhiteSpace($logObject)) {
-                gsutil -q cp "gs://$env:PR_TEST_GCS_BUCKET/$logObject" command-output.log 2>$null
-                if ($LASTEXITCODE -eq 0) {
-                  Write-Host "::group::Deploy output from the VM"
-                  Get-Content command-output.log -Raw | Write-Host
-                  Write-Host "::endgroup::"
-                }
-              }
-              else {
-                Write-Host "The VM reported no output log. If this persists, re-run the bootstrap workflow so the VM picks up the current queue agent."
-              }
-
-              if ($result.status -eq "succeeded") { exit 0 }
-              Write-Host "::error::Deploy of PR #$env:PR_NUMBER failed on the VM: $($result.error)"
-              exit 1
-            }
-            Start-Sleep -Seconds 15
-          }
-          throw "Timed out waiting for PR environment command result: $resultUri"
-
-      # The verification lives in a composite action so the staging/production path and
-      # the pr-* fleet ask the identical question -- see .github/actions/verify-public-url,
-      # which carries the reasoning behind every branch of it. A sparse checkout because
-      # this job otherwise needs no working tree.
-      - name: Check out the verification action
-        uses: actions/checkout@v4
+      - name: Wait for the VM to report the result
+        uses: ./.github/actions/await-vm-command
         with:
-          sparse-checkout: |
-            .github/actions/verify-public-url
-          sparse-checkout-cone-mode: false
+          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: Deploy of PR #${{ env.PR_NUMBER }}
+          attempts: '120'
 
       # Until now nothing asked whether a pr-* site was reachable from outside the VM.
       # The VM's own loopback probe cannot answer that, so a site could be reported

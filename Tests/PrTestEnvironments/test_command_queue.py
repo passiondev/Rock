@@ -31,11 +31,13 @@ class CommandQueueTests(unittest.TestCase):
         for path in [DEPLOY_WORKFLOW, LIFECYCLE_WORKFLOW]:
             text = path.read_text()
             self.assertIn("commands/pending", text)
-            self.assertIn("commands/results", text)
             self.assertIn("gsutil cp", text)
-            self.assertIn("Poll PR environment command result", text)
             self.assertNotIn("sshpass", text)
             self.assertNotIn("Deploy over SSH", text)
+
+            # Polling for the result moved to .github/actions/await-vm-command.
+            # test_local_composite_actions.py asserts every producer waits through
+            # it, which is a stronger claim than the string this used to match.
 
 if __name__ == "__main__":
     unittest.main()
