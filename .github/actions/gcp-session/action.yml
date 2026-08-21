@@ -18,8 +18,14 @@ description: Authenticate the run to Google Cloud and put gcloud on PATH.
 # `pr-test-diagnose-command-queue.yml` was the only one that gained a checkout it
 # did not have, and it takes a sparse one that fetches this directory alone.
 inputs:
+  # The description is written without expression braces on purpose. GitHub
+  # evaluates an expression in this field like any other, and a composite action
+  # has no secrets context, so spelling the example out in full made the file
+  # fail template validation at this line -- taking all nine callers down at
+  # their authentication step, for a reason that had nothing to do with
+  # authentication. A YAML comment is inert; an input description is not.
   credentials-json:
-    description: The service account key. Pass `${{ secrets.GCP_SA_KEY }}`; nothing else belongs here.
+    description: The service account key. Pass the GCP_SA_KEY secret; nothing else belongs here.
     required: true
 
 runs:

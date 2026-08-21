@@ -640,3 +640,64 @@ class QueueActionBehaviourTests(harness.HarnessAssertions, unittest.TestCase):
 
         self.assertIn("connectionstring|password|secret|token|credential", text)
         self.assertNotIn("-eq 'connectionString'", text)
+
+
+class SecretsContextTests(harness.HarnessAssertions, unittest.TestCase):
+    """No composite action may name the `secrets` context, anywhere in its file.
+
+    A composite action cannot read `secrets`. GitHub exposes `inputs`, `env`,
+    `github`, `runner`, `job`, `steps`, `strategy` and `matrix` to one, and
+    nothing else. Referencing `secrets` is not an empty value at runtime -- it
+    fails template validation while the action is being loaded, so every step
+    the action would have run is skipped and the job dies at the `uses:` line.
+
+    The trap is that the parser does not care which field the expression sits
+    in. `gcp-session` took its key through an input, correctly, and then said so
+    in the input's own `description`:
+
+        description: The service account key. Pass `${{ secrets.GCP_SA_KEY }}`; ...
+
+    That is documentation. It reads as a worked example of the right call, and
+    it is the reason the action could not load. GitHub evaluated the expression
+    in the description text and rejected the file at line 22, column 18, before
+    reaching a single step. Nine workflows use this action. All nine were dead
+    at their authentication step, each reporting a Google Cloud failure that had
+    nothing to do with Google Cloud.
+
+    A YAML parse cannot see this. `yaml.safe_load` reads that description as an
+    ordinary string and returns a valid document, which is why the tests around
+    it stayed green. The check has to run over the raw text.
+    """
+
+    # Any expression naming the secrets context, in any field. The `[^}]*` is
+    # deliberate: `${{ inputs.x || secrets.Y }}` is the same failure as a bare
+    # reference, and an anchored match on the opening brace would miss it.
+    SECRETS_EXPRESSION = re.compile(r"\$\{\{[^}]*\bsecrets\.", re.IGNORECASE)
+
+    def test_no_composite_action_references_the_secrets_context(self):
+        names = harness.composite_actions()
+        self.assertNotVacuous(names, "no composite actions found to check")
+
+        offenders = []
+        for name in names:
+            text = (ACTIONS_DIR / name / "action.yml").read_text(encoding="utf-8")
+            for match in self.SECRETS_EXPRESSION.finditer(text):
+                line = harness.line_of(text, match.start())
+                offenders.append(f"{name}/action.yml:{line}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "A composite action cannot read `secrets`; the reference fails template "
+            "validation and the action never loads. Take the value as an input and "
+            "let the calling workflow pass the secret. To show the call in a "
+            "description, write it without the expression braces.",
+        )
+
+    def test_an_action_taking_a_secret_declares_it_as_a_required_input(self):
+        """The other half of the same rule. Moving a secret to an input is only
+        safe if the input is mandatory -- an optional one authenticates as the
+        runner's own identity and fails later, against the wrong principal."""
+        credentials = harness.composite_action("gcp-session")["inputs"]["credentials-json"]
+
+        self.assertIs(True, credentials["required"])
