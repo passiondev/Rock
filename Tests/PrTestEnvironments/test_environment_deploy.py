@@ -10,9 +10,13 @@ import collections
 import pathlib
 import re
 import subprocess
+import sys
 import unittest
 
 import yaml
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import pipeline_harness as harness
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -325,10 +329,26 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
     def test_health_check_forces_a_modern_tls_version(self):
         """PowerShell 5.1 can default ServicePointManager to SSL3/TLS1.0, which a
         hardened IIS refuses. It surfaces as 'the underlying connection was closed',
-        which reads like the site is down rather than like the probe is broken."""
+        which reads like the site is down rather than like the probe is broken.
+
+        This test used to be `assertIn("SecurityProtocol", text)` against the whole
+        918-line script, which could not fail: the token also appears in the
+        comment explaining why the line is there, so deleting both real sites left
+        it green. TLS is set at two independent probe paths and both need it --
+        `Invoke-SiteProbe` is what the deploy polls with, `Test-EnvironmentHealth`
+        is what decides the deploy succeeded -- so name both.
+        """
         text = DEPLOY_SCRIPT.read_text()
-        self.assertIn("SecurityProtocol", text)
-        self.assertIn("Tls12", text)
+
+        for function_name in ("Invoke-SiteProbe", "Test-EnvironmentHealth"):
+            body = harness.powershell_function(text, function_name)
+            self.assertIn(
+                "[Net.ServicePointManager]::SecurityProtocol",
+                body,
+                f"{function_name} no longer sets SecurityProtocol, so on a hardened "
+                "IIS its probe fails with a message that reads like the site is down",
+            )
+            self.assertIn("Tls12", body, f"{function_name} sets SecurityProtocol to something other than Tls12")
 
     def test_app_pool_is_stopped_and_drained_before_files_are_replaced(self):
         text = DEPLOY_SCRIPT.read_text()

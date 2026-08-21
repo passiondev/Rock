@@ -39,9 +39,15 @@ READ_PATH = re.compile(r'REPO_ROOT\s*((?:/\s*"[^"]+"\s*)+)')
 
 
 def _read_paths():
-    """Every repository path the suite resolves, as posix strings relative to the root."""
+    """Every repository path the suite resolves, as posix strings relative to the root.
+
+    Every `*.py` here, not only `test_*.py`. `pipeline_harness.py` holds path
+    constants on behalf of the tests that import it, and a scan restricted to
+    test files would stop seeing them the moment a path moved into the harness
+    -- reopening this exact hole through the refactor meant to close others.
+    """
     found = {}
-    for source in sorted(SUITE_DIR.glob("test_*.py")):
+    for source in sorted(SUITE_DIR.glob("*.py")):
         # This file quotes the pattern it looks for, in its own docstring and in its
         # own regex, so scanning itself finds paths no test actually reads.
         if source.name == pathlib.Path(__file__).name:
@@ -95,6 +101,19 @@ class TriggerCoversWhatTheSuiteReadsTests(unittest.TestCase):
 
         self.assertGreater(len(paths), 20, "the path scan found almost nothing -- it has stopped working")
         self.assertIn(".github/pr-test-environments.json", paths)
+
+    def test_the_scan_reaches_the_shared_harness(self):
+        """The harness is not a `test_*.py` file, so the scan had to be widened to
+        see it. If that widening is ever undone, every path the harness owns
+        silently leaves the CI trigger's coverage."""
+        sources = {source for paths in _read_paths().values() for source in paths}
+
+        self.assertIn(
+            "pipeline_harness.py",
+            sources,
+            "the path scan no longer reads pipeline_harness.py, so the repository "
+            "paths it names are not checked against the CI trigger",
+        )
 
     def test_the_pull_request_filter_matches_the_push_filter(self):
         """The two lists are copies by necessity -- GitHub Actions rejects YAML anchors,

@@ -1503,11 +1503,16 @@ for b in develop-17.6.1 bump fix/group-sync pilot/pr-test-env-doc-smoke-v1761 de
 done
 ```
 
-One caveat on `deploy/ptp-14803-18.4.1` even though it is clean: it is the `push` trigger of
-`.github/workflows/ptp-14803-build-artifact.yml`. Deleting the branch leaves that workflow
-reachable only by `workflow_dispatch`, which is in fact how it was last used (run
-`32120334971`, 2026-08-18, dispatched against `fix/forward-port-to-19`). Fine to do, but do it
-knowingly.
+~~One caveat on `deploy/ptp-14803-18.4.1` even though it is clean: it is the `push` trigger of
+`.github/workflows/ptp-14803-build-artifact.yml`.~~ **Resolved 2026-08-21 — the trigger is
+gone.** That workflow is `workflow_dispatch` only now, which is how it was actually used
+anyway (run `32120334971`, 2026-08-18, dispatched against `fix/forward-port-to-19`). The
+branch and the workflow are no longer coupled, so pruning the branch costs nothing.
+
+A caveat in prose only works if the person pruning reads the paragraph, and the branch is on
+this list precisely because nobody thinks about it. `test_workflow_triggers_survive_pruning.py`
+now derives the overlap: any workflow that fires on a branch this table marks **Yes** fails the
+suite, naming both halves.
 
 > **Escalated 2026-08-19 — this prune list is no longer safe as written.** `staging` was
 > deleted from `origin` on 2026-08-18 (a `DeleteEvent` at 09:17 UTC; the branch survives only
@@ -1714,9 +1719,12 @@ is the open question at the end, which is a decision rather than a defect.
 `RockWeb/Plugins/.gitignore` is a single rule, `*/*`, so every plugin subfolder is ignored.
 That is upstream Rock's convention — plugins are installed packages, not source. The
 consequence for *us* is that Passion's own customizations are not on the trunk:
-measured 2026-08-10, the trunk tracks two files under `RockWeb/Plugins/` (`.gitignore`,
-`readme.txt`) and **zero** paths matching `org_passion` or `team_passion`, against 448 tracked
-core blocks under `RockWeb/Blocks/`.
+the trunk tracks two files under `RockWeb/Plugins/` (`.gitignore`,
+`readme.txt`) and **zero** paths matching `org_passion` or `team_passion`, against 353 tracked
+core blocks under `RockWeb/Blocks/`. (That last figure read 448 from 2026-08-10 until
+2026-08-21, nine days after the 19.3.4 cutover moved it. It is derived from the tree now, by
+`Tests/PrTestEnvironments/test_documented_facts_match_the_tree.py`, so a Rock upgrade fails the
+suite instead of quietly aging the sentence.)
 
 They are not absent from the *repository*, though — only from the trunk. `develop` tracks all
 276 files under `RockWeb/Plugins/`, 78 of them `org_passion`/`team_passion`, because a file

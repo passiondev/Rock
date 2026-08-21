@@ -12,8 +12,10 @@
 - Firewall: **as actually configured, HTTPS/443 is open to the whole internet** via the rule
   `https-from-world`, not restricted to office egress. The `159.63.145.194/32` allowlist covers
   RDP and SQL only. This document previously described the restricted design as though it were
-  in force; it is not. These hosts run a sanitized sandbox database, so the exposure is bounded,
-  but the gap between intent and reality is worth a decision rather than a surprise.
+  in force; it is not. The exposure is **not** bounded by the data either: these hosts serve a
+  straight copy of a production backup, with real names, addresses and giving history, behind
+  nothing but Rock's login. This paragraph said the database was sanitized until 2026-08-21 and
+  reasoned from that to a bounded exposure. Both halves were wrong. See open item 24.
   A pre-created GCP firewall rule named `pr-test-acme-http` allows HTTP/80 only to VMs with the
   `pr-test-acme-http` network tag, which the renewal workflow applies only during ACME validation.
 - Deployment control plane: GitHub Actions uploads artifacts/commands to GCS; the Windows VM polls the command queue. Do not expose SSH publicly for PR environment deployment.
@@ -103,7 +105,7 @@ Current shared setup, for reference:
 To provision:
 
 1. ~~**Decide where the catalog lives, and check the refresh mechanism first.**~~ **Resolved 2026-08-17 — `RockStaging` on `connect-restore-test` is fine.** The refresh is a per-database `.bak` import (`IMPORT` with `database: RockConnectProd`, preceded by a `DELETE_DATABASE`), not an instance-level backup restore, so a second catalog beside it survives. No `RESTORE_VOLUME` has ever run on this instance. **Check the disk first, though:** the instance is `db-custom-2-8192` with a 418 GB disk, and the production backup is ~127 GB striped, so a second full copy is marginal. `storageAutoResize` was **disabled** when this was written and was **enabled with no limit on 2026-08-18** before the copy was taken — which is what made step 2 safe. It now holds two ~108 GiB catalogs and is over half full, so check used bytes again before any third copy.
-2. **Create the catalog** and seed it from the current shared one so staging starts from the same sanitized data it has today.
+2. **Create the catalog** and seed it from the current shared one so staging starts from the same data it has today. That data is a production copy, so the new catalog inherits the same handling rules as the old one.
 3. **Grant the existing `DB_USER`** access to it, so no new credential is introduced and `DB_USER` / `DB_PASSWORD` keep working unchanged.
 4. **Exclude it from the refresh** -- if one is ever built. This is a no-op today: there is no refresh to exclude it from (see below). Keep the requirement recorded, because staging not resetting is what makes a version upgrade durable and staging trustworthy during a demo.
 5. **Set the repository variable** `STAGING_DB_NAME` to the catalog name. A variable, not a secret: a catalog name is not a credential, and keeping it visible lets the deploy log state which database was used. This moves **staging only**. The `pr-*` fleet reads its own variable, `PR_TEST_DB_NAME`, and both fall back to the shared prod-derived catalog while unset -- so setting one leaves the other exactly where it is. Staging does not move until it is redeployed.
@@ -155,7 +157,7 @@ The consequence of the fix is that **"move the default branch" is now a required
    The base-branch column is there to be read, not obeyed: **apply** destroys everything in the list. If some of those PRs are current work you want to keep, copy the retired ones' numbers into the `pr_numbers` input and it will act on those alone. It queues the ordinary `destroy` command once per PR, serially, and does not stop at the first failure.
 
    The list is built from GitHub labels, and `C:\RockTestEnvs` on the VM is what is actually deployed. An environment whose PR was deleted, or whose label was cleared by a run that failed halfway, will not appear and will survive the teardown -- so list that directory afterwards. For anything left over: `rock:destroy` on the PR if it still has one, `Destroy-PrEnvironment.ps1 -PrNumber <n>` on the VM if it does not. Ordering against the other steps is not enforced by anything; the only thing making this step first is you doing it first.
-2. **Flip every pin in the same commit.** Bump `EXPECTED_BASE_BRANCH` in `Tests/PrTestEnvironments/test_base_branch_config.py` first and on its own -- that constant is the oracle the guard compares everything against, not a pin. Then run that one file. `BASE_BRANCH_PIN_SITES` enumerates the eight real pins, spread over seven other files, and the failure message names every one still on the old branch; work it until green. That list is the checklist -- do not rebuild it by hand. Nothing else will tell you: no build fails if you miss one. A missed `deployment-pipeline-tests.yml` stops running on pushes altogether, silently.
+2. **Flip every pin in the same commit.** Bump `EXPECTED_BASE_BRANCH` in `Tests/PrTestEnvironments/test_base_branch_config.py` first and on its own -- that constant is the oracle the guard compares everything against, not a pin. Then run that one file. `BASE_BRANCH_PIN_SITES` enumerates the seven real pins, spread over six other files, and the failure message names every one still on the old branch; work it until green. That list is the checklist -- do not rebuild it by hand. Nothing else will tell you: no build fails if you miss one. A missed `deployment-pipeline-tests.yml` stops running on pushes altogether, silently.
 
    **The two production pins are not on that list, and must not be flipped here.** `production-deploy.yml`'s `ref` default and `productionBranch` in `.github/pr-test-environments.json` track the branch **production actually runs**, which lags the trunk until production is itself upgraded. They live in `PRODUCTION_PIN_SITES` with their own oracle, `EXPECTED_PRODUCTION_BRANCH`, and flipping them at trunk cutover would point a production deploy at a Rock minor production is not on.
 

@@ -65,6 +65,8 @@ name: Deployment Pipeline Tests
       # version guard nobody tested.
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
+      # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
+      - 'CONTEXT.md'
   # The path list is repeated rather than shared through a YAML anchor: PyYAML
   # resolves anchors happily, so the suite's own YAML tests would pass while
   # GitHub Actions -- which does not support them -- rejected the file.
@@ -87,6 +89,8 @@ name: Deployment Pipeline Tests
       - 'Rock.JavaScript.Obsidian.Blocks/**'
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
+      # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
+      - 'CONTEXT.md'
   workflow_dispatch:
 
 permissions:

@@ -64,6 +64,8 @@ A comment on this PR is updated with the URL and a link to the logs. Other label
 The environment is destroyed automatically when this PR merges, and stopped when
 it closes without merging.
 
-Note: the test site runs against the shared sandbox database, not production.
-Data you create there is not real and may be wiped by a sandbox refresh.
+Note: the test site runs against the shared sandbox database, not production. That
+database is a straight copy of a production backup, so treat what you see there as real
+congregant data. Nothing resets it, so anything you create there stays, and everyone
+else's PR environment sees it too.
 -->
