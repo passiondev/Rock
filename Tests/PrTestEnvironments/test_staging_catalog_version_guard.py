@@ -27,8 +27,10 @@ import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 STAGING_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "staging-deploy.yml"
 # Both places Rock has declared its version across this upgrade. 18.4.1 uses the
 # assembly attribute; 19.3.4 deleted that file and moved to <Version> in

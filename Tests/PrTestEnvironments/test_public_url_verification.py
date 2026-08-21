@@ -1,10 +1,11 @@
-import pathlib
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 ACTION = REPO_ROOT / ".github" / "actions" / "verify-public-url" / "action.yml"
 ACTION_REF = "./.github/actions/verify-public-url"
 

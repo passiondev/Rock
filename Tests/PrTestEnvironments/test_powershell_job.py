@@ -13,14 +13,11 @@ while reporting the same green it always did.
 """
 
 import importlib.util
-import pathlib
 import re
-import sys
 import unittest
 
 import yaml
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 PIPELINE_WORKFLOW = harness.REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
@@ -36,6 +33,10 @@ DECLARES_PWSH = re.compile(r"^\s*shell:\s*pwsh\s*$", re.MULTILINE)
 
 
 def load_extractor():
+    """The extractor script as a module.
+
+    Loaded by path because `.github/scripts` is not a package and the file name
+    is hyphenated, so neither plain import form reaches it."""
     spec = importlib.util.spec_from_file_location("extract_powershell_blocks", EXTRACTOR)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -43,6 +44,8 @@ def load_extractor():
 
 
 def yaml_sources():
+    """Every YAML file a runner may find PowerShell in: the workflows, and each
+    composite action's `action.yml`."""
     workflows = sorted((harness.REPO_ROOT / ".github" / "workflows").glob("*.yml"))
     actions = sorted((harness.REPO_ROOT / ".github" / "actions").glob("*/action.yml"))
     return workflows + actions
@@ -105,10 +108,10 @@ class SyntaxJobTests(unittest.TestCase):
             source = path.parent.name if path.name == "action.yml" else path.stem
             parsed = yaml.safe_load(raw)
             blocks = list(module.powershell_steps(parsed, source))
-            declares = bool(DECLARES_PWSH.search(raw))
+            declares_pwsh = bool(DECLARES_PWSH.search(raw))
             name = path.relative_to(harness.REPO_ROOT).as_posix()
 
-            if declares:
+            if declares_pwsh:
                 checked += 1
                 self.assertTrue(
                     blocks,

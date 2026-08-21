@@ -39,6 +39,7 @@ def substitute(script):
     """
 
     def replacement(match):
+        """One expression, quoted unless a neighbouring character already quotes it."""
         before = script[match.start() - 1] if match.start() else ""
         after = script[match.end()] if match.end() < len(script) else ""
         # `x in y` is True for an empty x, and an expression at the very start or
@@ -50,11 +51,24 @@ def substitute(script):
     return EXPRESSION.sub(replacement, script)
 
 
+def default_shell(container):
+    """The `defaults: run: shell:` a workflow or a job sets, or None.
+
+    Every level of that walk is optional and any of them can be present but null,
+    so `.get()` alone is not enough -- `(x or {})` at each hop is what keeps a
+    `defaults:` with nothing under it from raising."""
+    return ((container.get("defaults") or {}).get("run") or {}).get("shell")
+
+
 def powershell_steps(parsed, source):
     """(label, script) for every step in `parsed` that a runner will hand to pwsh."""
-    default_shell = ((parsed.get("defaults") or {}).get("run") or {}).get("shell")
+    workflow_shell = default_shell(parsed)
 
     def collect(steps, container, container_shell):
+        """Every pwsh step in one flat step list, labelled by its container.
+
+        `container_shell` is what the step inherits when it declares no shell of
+        its own -- the job's default, or the workflow's."""
         for index, step in enumerate(steps or []):
             run = step.get("run")
             if not run:
@@ -67,7 +81,7 @@ def powershell_steps(parsed, source):
             yield slug, run
 
     for job_name, job in (parsed.get("jobs") or {}).items():
-        job_shell = ((job.get("defaults") or {}).get("run") or {}).get("shell") or default_shell
+        job_shell = default_shell(job) or workflow_shell
         yield from collect(job.get("steps"), job_name, job_shell)
 
     # A composite action has one flat step list and no `defaults`, so a step there
@@ -78,6 +92,7 @@ def powershell_steps(parsed, source):
 
 
 def main():
+    """Write every extracted block to the output directory named on the command line."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2

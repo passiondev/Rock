@@ -1,8 +1,9 @@
-import pathlib
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 STOP_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Stop-PrEnvironment.ps1"
 DESTROY_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Destroy-PrEnvironment.ps1"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-lifecycle.yml"

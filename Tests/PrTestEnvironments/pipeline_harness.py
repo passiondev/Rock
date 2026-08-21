@@ -24,6 +24,7 @@ import functools
 import pathlib
 import re
 import subprocess
+from collections import Counter
 
 import yaml
 
@@ -37,12 +38,11 @@ DEPLOYMENT_DIR = REPO_ROOT / "Deployment"
 DOCUMENTATION_DIR = REPO_ROOT / "Documentation"
 
 
-def repo_text(*parts):
-    """The text of a repository file, addressed from the root."""
-    path = REPO_ROOT.joinpath(*parts)
-    if not path.exists():
-        raise AssertionError(f"{path.relative_to(REPO_ROOT).as_posix()} does not exist in this checkout")
-    return path.read_text(encoding="utf-8")
+# There was a `repo_text(*parts)` here that read a file addressed from the root.
+# Nothing ever called it, and it should stay uncalled: `REPO_ROOT.joinpath(*parts)`
+# hides the path from test_ci_trigger_coverage.py, which finds what the suite reads
+# by looking for the literal quoted-segment form. Adopting it across the suite would
+# have emptied that scan and taken the CI trigger's coverage check with it.
 
 
 @functools.lru_cache(maxsize=None)
@@ -100,6 +100,11 @@ def tracked():
 
 
 def tracked_under(directory, suffix=""):
+    """Tracked files below `directory`, as posix strings relative to the repository root.
+
+    `directory` is a Path under REPO_ROOT, not a string. Tracked rather than
+    globbed, so a build output or a scratch file sitting in the tree does not
+    become something a test demands the pipeline account for."""
     prefix = directory.relative_to(REPO_ROOT).as_posix() + "/"
     return [p for p in tracked() if p.startswith(prefix) and p.endswith(suffix)]
 
@@ -108,31 +113,29 @@ class HarnessAssertions:
     """Mixed into a TestCase. Every method here exists because the plain
     assertion it replaces was, somewhere in this suite, unable to fail."""
 
-    def assertInScope(self, needle, text, scope, why=""):
-        """Assert `needle` appears inside a named region of `text`, not anywhere
-        in it. `scope` is a (start_marker, end_marker) pair, or a callable that
-        returns the region."""
-        if callable(scope):
-            region = scope(text)
-            label = getattr(scope, "__name__", "the scoped region")
-        else:
-            start_marker, end_marker = scope
-            if start_marker not in text:
-                raise AssertionError(f"the region marker {start_marker!r} is gone from the text under test")
-            region = text.split(start_marker, 1)[1]
-            region = region.split(end_marker, 1)[0] if end_marker and end_marker in region else region
-            label = f"between {start_marker!r} and {end_marker!r}"
+    def assertOneShape(self, labelled, what, why):
+        """Every text in `labelled` is byte-identical, or fail naming each distinct
+        shape and the sources carrying it.
 
-        self.assertIn(needle, region, f"{needle!r} is not {label}. {why}".strip())
+        `labelled` is (source, text) pairs. Three places in this suite guard a block
+        that is copied on purpose -- a workflow cannot import another workflow, and a
+        composite action cannot reach the VM -- so the copies are the design and this
+        is the only thing holding them in step. What makes the report worth sharing
+        rather than the assertion is that "they differ" across nine files leaves the
+        reader diffing by eye; grouped by shape, the odd one out is the short list."""
+        self.assertNotVacuous(labelled, f"nothing matched, so {what} is not being checked at all")
 
-    def assertOccursExactly(self, count, needle, text, why=""):
-        """The count matters when a token appearing twice means two code paths
-        and appearing once means somebody deleted one of them."""
-        actual = text.count(needle)
-        self.assertEqual(
-            count,
-            actual,
-            f"{needle!r} appears {actual} times, expected {count}. {why}".strip(),
+        shapes = Counter(text for _, text in labelled)
+        if len(shapes) == 1:
+            return
+
+        report = "\n\n".join(
+            f"--- in {sorted({source for source, text in labelled if text == shape})} ---\n{shape}"
+            for shape in shapes
+        )
+        self.fail(
+            f"{what} has drifted into {len(shapes)} shapes across {len(labelled)} "
+            f"copies. {why}\n\n{report}"
         )
 
     def assertNotVacuous(self, collection, why):

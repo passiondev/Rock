@@ -1,11 +1,12 @@
-import pathlib
 import re
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 DESTROY_ALL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-destroy-all.yml"
 LIFECYCLE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-lifecycle.yml"
 STATUS_SCRIPT = REPO_ROOT / ".github" / "scripts" / "pr-test-status.js"

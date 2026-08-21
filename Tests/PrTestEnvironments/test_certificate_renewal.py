@@ -1,7 +1,8 @@
-import pathlib
 import unittest
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+import pipeline_harness as harness
+
+REPO_ROOT = harness.REPO_ROOT
 RENEWAL_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCertificateRenewal.ps1"
 QUEUE_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
 BOOTSTRAP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-bootstrap-command-queue.yml"

@@ -1,9 +1,10 @@
-import pathlib
 import unittest
 
 import yaml
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+import pipeline_harness as harness
+
+REPO_ROOT = harness.REPO_ROOT
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-bootstrap-command-queue.yml"
 
 class BootstrapCommandQueueWorkflowTests(unittest.TestCase):

@@ -1,10 +1,11 @@
-import pathlib
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "pr-test-deploy.yml"
 
 

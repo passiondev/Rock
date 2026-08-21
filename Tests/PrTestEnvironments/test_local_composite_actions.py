@@ -18,11 +18,8 @@ took the number of local action references from two to fourteen. This module is
 what makes that safe to keep doing.
 """
 
-import pathlib
-import sys
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 ACTIONS_DIR = harness.REPO_ROOT / ".github" / "actions"
@@ -74,7 +71,7 @@ def _sparse_paths(checkout_step):
     return [line.strip() for line in str(sparse).splitlines() if line.strip()]
 
 
-class LocalActionCheckoutTests(unittest.TestCase, harness.HarnessAssertions):
+class LocalActionCheckoutTests(harness.HarnessAssertions, unittest.TestCase):
     """The invariant: checked out, before, and included in the sparse list."""
 
     def test_every_local_action_reference_is_checked_out_first(self):
@@ -121,7 +118,7 @@ class LocalActionCheckoutTests(unittest.TestCase, harness.HarnessAssertions):
                 )
 
 
-class AwaitActionAdoptionTests(unittest.TestCase, harness.HarnessAssertions):
+class AwaitActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
     """The six producers all wait the same way now."""
 
     def test_every_queue_producer_waits_through_the_action(self):
@@ -224,7 +221,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class QueueActionAdoptionTests(unittest.TestCase, harness.HarnessAssertions):
+class QueueActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
     """The enqueue is the other half of the wait, and it moved for a sharper reason.
 
     Two of the six producers echoed the queued command into the Actions log

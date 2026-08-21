@@ -13,12 +13,9 @@ Nothing violates this today. The test is cheap and the failure it prevents is
 not.
 """
 
-import pathlib
 import re
-import sys
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 

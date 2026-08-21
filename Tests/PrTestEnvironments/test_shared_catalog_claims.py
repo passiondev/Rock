@@ -12,27 +12,35 @@ A per-file pin cannot catch that. This test names the surfaces instead, so the
 next surface added is a line in one list rather than a file nobody thought of.
 """
 
-import pathlib
 import re
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 
 # Everything an engineer or an operator reads to decide how to treat what they
 # see in a PR environment. Requirement documents under `Discussion Docs` are
 # deliberately absent: the PRD records what was asked for, carries its own
 # status note saying the sanitization step does not exist, and is preserved as
 # written rather than edited to match reality.
+#
+# Written out one quoted segment at a time, rather than as a list of
+# slash-joined strings, because that literal form is the only one
+# test_ci_trigger_coverage.py can see. Built from strings, these eight surfaces
+# were invisible to it, so the CI trigger was never checked against them -- they
+# were covered only because `.github/**` and `Documentation/**` happened to be
+# wide enough.
 CATALOG_SURFACES = [
-    "Documentation/PR-Test-Environments-Developer-Runbook.md",
-    "Documentation/PR-Test-Environments-Operator-Runbook.md",
-    "Documentation/Local-Engineering-Training-Edit-Test-and-Deploy.md",
-    "Documentation/Training/Facilitator-Script-Rock-CICD-Training.md",
-    "Documentation/Training/rock-cicd-training-deck.html",
-    "Documentation/Training/rock-cicd-cheat-sheet.html",
-    ".github/PULL_REQUEST_TEMPLATE.md",
-    ".github/scripts/pr-test-status.js",
+    REPO_ROOT / "Documentation" / "PR-Test-Environments-Developer-Runbook.md",
+    REPO_ROOT / "Documentation" / "PR-Test-Environments-Operator-Runbook.md",
+    REPO_ROOT / "Documentation" / "Local-Engineering-Training-Edit-Test-and-Deploy.md",
+    REPO_ROOT / "Documentation" / "Training" / "Facilitator-Script-Rock-CICD-Training.md",
+    REPO_ROOT / "Documentation" / "Training" / "rock-cicd-training-deck.html",
+    REPO_ROOT / "Documentation" / "Training" / "rock-cicd-cheat-sheet.html",
+    REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
+    REPO_ROOT / ".github" / "scripts" / "pr-test-status.js",
 ]
 
 # Claims that the data is safe to treat casually. Each of these was in the tree.
@@ -60,8 +68,12 @@ UNSAFE_REFRESH_CLAIMS = [
 
 class SharedCatalogClaimTests(unittest.TestCase):
     def surface_texts(self):
-        for relative in CATALOG_SURFACES:
-            path = REPO_ROOT / relative
+        """(repository-relative name, contents) for every listed catalog surface.
+
+        The name rather than the path, because it is what the failure messages
+        print and an absolute path from somebody else's machine is noise."""
+        for path in CATALOG_SURFACES:
+            relative = path.relative_to(REPO_ROOT).as_posix()
             self.assertTrue(path.exists(), f"{relative} is listed as a catalog surface but does not exist")
             yield relative, path.read_text(encoding="utf-8")
 

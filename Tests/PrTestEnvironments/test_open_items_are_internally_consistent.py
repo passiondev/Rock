@@ -23,12 +23,13 @@ which is the failure mode this suite keeps rediscovering: an assertion pinned ne
 to the thing it means to guard rather than on it.
 """
 
-import pathlib
 import re
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 OPEN_ITEMS = REPO_ROOT / "Documentation" / "Training" / "DevOps-Open-Items-Rock-CICD.md"
 DOCS_DIR = REPO_ROOT / "Documentation"
 

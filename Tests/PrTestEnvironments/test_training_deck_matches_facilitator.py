@@ -20,12 +20,13 @@ fail on correct prose and teach the next person to delete the test.
 """
 
 import html
-import pathlib
 import re
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 TRAINING_DIR = REPO_ROOT / "Documentation" / "Training"
 DECK = TRAINING_DIR / "rock-cicd-training-deck.html"
 SCRIPT = TRAINING_DIR / "Facilitator-Script-Rock-CICD-Training.md"

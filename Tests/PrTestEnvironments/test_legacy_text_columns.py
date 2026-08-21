@@ -14,14 +14,15 @@ Finding them needs a read; fixing them needs a write against production-derived
 data, which is why they are two scripts and not one.
 """
 
-import pathlib
 import re
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 SCRIPT_DIR = REPO_ROOT / "Deployment" / "Database"
 FINDER = SCRIPT_DIR / "Find-LegacyTextColumns.ps1"
 CONVERTER = SCRIPT_DIR / "Convert-LegacyTextColumns.ps1"

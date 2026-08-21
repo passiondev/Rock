@@ -11,12 +11,9 @@ Every fact below is derived, never hard-coded. A number written here would be a
 fifth copy of the thing this file exists to stop.
 """
 
-import pathlib
 import re
-import sys
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 REPO_ROOT = harness.REPO_ROOT

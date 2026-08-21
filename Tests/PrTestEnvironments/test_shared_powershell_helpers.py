@@ -30,13 +30,9 @@ bootstrap copy lives in a YAML here-string at a different indent with `$` escape
 as a backtick-dollar.
 """
 
-import pathlib
 import re
-import sys
 import unittest
-from collections import Counter
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 DEPLOY_DIR = harness.REPO_ROOT / "Deployment" / "PrTestEnvironments"
@@ -119,7 +115,7 @@ def normalized(body):
     return "\n".join(line for line in lines if line)
 
 
-class SharedHelperTests(unittest.TestCase, harness.HarnessAssertions):
+class SharedHelperTests(harness.HarnessAssertions, unittest.TestCase):
     """The helpers copied between scripts, which nothing else holds together."""
 
     def test_every_copy_of_each_helper_is_the_same_function(self):
@@ -136,18 +132,12 @@ class SharedHelperTests(unittest.TestCase, harness.HarnessAssertions):
                     )
                     found.append((filename, normalized(bodies[0])))
 
-                shapes = Counter(body for _, body in found)
-                if len(shapes) > 1:
-                    report = "\n\n".join(
-                        f"--- {sorted(f for f, b in found if b == body)} ---\n{body}"
-                        for body in shapes
-                    )
-                    self.fail(
-                        f"`{name}` has drifted into {len(shapes)} versions across "
-                        f"{len(found)} copies. These are copies on purpose -- a "
-                        "module cannot reach the VM -- so nothing but this test "
-                        "keeps them in step:\n\n" + report
-                    )
+                self.assertOneShape(
+                    found,
+                    f"`{name}`",
+                    "These are copies on purpose -- a module cannot reach the VM -- "
+                    "so nothing but this test keeps them in step.",
+                )
 
     def test_the_expected_files_are_the_ones_that_carry_each_helper(self):
         actual = {name: [] for name in SHARED_HELPERS}
@@ -180,7 +170,7 @@ class SharedHelperTests(unittest.TestCase, harness.HarnessAssertions):
             )
 
 
-class BootstrapCopyTests(unittest.TestCase, harness.HarnessAssertions):
+class BootstrapCopyTests(harness.HarnessAssertions, unittest.TestCase):
     """The copy inside the VM startup script, which no module could ever replace."""
 
     def test_the_bootstrap_token_helper_matches_the_scripts_it_installs(self):

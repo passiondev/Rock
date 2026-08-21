@@ -7,19 +7,16 @@ properties that make the production path safe.
 """
 
 import collections
-import pathlib
 import re
 import subprocess
-import sys
 import unittest
 
 import yaml
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+REPO_ROOT = harness.REPO_ROOT
 DEPLOY_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Deploy-RockEnvironment.ps1"
 QUEUE_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
 TASK_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Install-PrEnvironmentCommandQueueTask.ps1"
@@ -300,8 +297,11 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         in_place_only = ("target_site_path", "target_site_name")
         checked = 0
 
-        for workflow in (STAGING_WORKFLOW, PRODUCTION_WORKFLOW):
-            parsed = yaml.safe_load(workflow.read_text())
+        # `workflow_path`, not `workflow`: in this suite `harness.workflow(...)` is a
+        # parsed dictionary, and one name for two kinds of thing is how a `.get()`
+        # ends up on a Path.
+        for workflow_path in (STAGING_WORKFLOW, PRODUCTION_WORKFLOW):
+            parsed = yaml.safe_load(workflow_path.read_text())
             for name, job in parsed["jobs"].items():
                 if "env-deploy-command.yml" not in (job.get("uses") or ""):
                     continue
@@ -309,7 +309,7 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                 checked += 1
                 passed = job.get("with") or {}
                 mode = passed.get("mode")
-                self.assertIn(mode, ("DedicatedSite", "InPlace"), f"{workflow.name}:{name} passes mode {mode!r}.")
+                self.assertIn(mode, ("DedicatedSite", "InPlace"), f"{workflow_path.name}:{name} passes mode {mode!r}.")
 
                 if mode == "InPlace":
                     continue
@@ -318,7 +318,7 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                     self.assertNotIn(
                         parameter,
                         passed,
-                        f"{workflow.name}:{name} deploys DedicatedSite but passes "
+                        f"{workflow_path.name}:{name} deploys DedicatedSite but passes "
                         f"{parameter}. The deploy script rejects that pair, so this "
                         f"run would fail before it copied anything.",
                     )

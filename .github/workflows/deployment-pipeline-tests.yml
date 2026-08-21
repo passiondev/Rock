@@ -212,7 +212,7 @@ jobs:
             throw 'Found no PowerShell to parse. Either the paths moved or the extractor produced nothing, and a job that checks nothing should not report success.'
           }
 
-          $failed = 0
+          $filesWithErrors = 0
           foreach ($file in $targets) {
             # An extracted block sits in a temp directory under a slug, so the
             # annotation would name a path nobody can open. Its first line records
@@ -228,7 +228,7 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
 
             if ($errors.Count -gt 0) {
-              $failed++
+              $filesWithErrors++
               foreach ($parseError in $errors) {
                 $line = $parseError.Extent.StartLineNumber
                 Write-Host "::error file=$origin,line=$line::$($parseError.Message)"
@@ -236,8 +236,8 @@ jobs:
             }
           }
 
-          Write-Host "Parsed $($targets.Count) files. $failed had errors."
-          if ($failed -gt 0) {
+          Write-Host "Parsed $($targets.Count) files. $filesWithErrors had errors."
+          if ($filesWithErrors -gt 0) {
             exit 1
           }
 

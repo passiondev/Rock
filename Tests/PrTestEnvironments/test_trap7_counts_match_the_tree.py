@@ -26,13 +26,14 @@ on, and they are correct precisely because they are pinned to a date and a branc
 """
 
 import functools
-import pathlib
 import re
 import subprocess
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 GUIDE = REPO_ROOT / "Documentation" / "Local-Engineering-Training-Edit-Test-and-Deploy.md"
 
 # Written as REPO_ROOT paths rather than as the bare "RockWeb/Blocks/" strings the

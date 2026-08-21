@@ -16,12 +16,13 @@ says it cannot.
 So: add a trigger and this fails, with the list of files to update in the message.
 """
 
-import pathlib
 import re
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 DEPLOY_DIR = REPO_ROOT / "Deployment" / "PrTestEnvironments"
 

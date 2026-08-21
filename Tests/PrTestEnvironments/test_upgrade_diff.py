@@ -43,8 +43,10 @@ from unittest import mock
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 UPGRADE_DIFF = REPO_ROOT / "Deployment" / "Repository" / "upgrade_diff.py"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
 DISPATCH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "upgrade-diff.yml"

@@ -29,8 +29,10 @@ import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 SUITE_DIR = REPO_ROOT / "Tests" / "PrTestEnvironments"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
 
@@ -113,6 +115,37 @@ class TriggerCoversWhatTheSuiteReadsTests(unittest.TestCase):
             sources,
             "the path scan no longer reads pipeline_harness.py, so the repository "
             "paths it names are not checked against the CI trigger",
+        )
+
+    def test_every_test_that_reads_a_file_addresses_it_in_the_form_this_scan_sees(self):
+        """The scan is exact about the form it reads, so a test that builds paths any
+        other way is invisible to it and its reads are never checked against the
+        trigger. test_shared_catalog_claims.py did that: eight surfaces behind a list
+        of slash-joined strings and a `REPO_ROOT / relative` at the point of use. They
+        happened to fall under `.github/**` and `Documentation/**`, so the gap cost
+        nothing -- which is the whole problem with finding it by inspection.
+
+        Per file, not per path: one path in the readable form clears the whole file.
+        The shape it catches is the one that occurs, a test resolving its paths its
+        own way from the top, and no static check can do better than that."""
+        scanned = {source for paths in _read_paths().values() for source in paths}
+        opens = re.compile(r"read_text\(|(?<![\w.])open\(")
+
+        invisible = []
+        for source in sorted(SUITE_DIR.glob("*.py")):
+            if source.name == pathlib.Path(__file__).name:
+                continue
+            if not opens.search(source.read_text()):
+                continue
+            if source.name in scanned:
+                continue
+            invisible.append(source.name)
+
+        self.assertEqual(
+            [],
+            invisible,
+            "these read repository files but name none of them as REPO_ROOT / \"...\", so "
+            "the paths they depend on are outside this check entirely: " + ", ".join(invisible),
         )
 
     def test_the_pull_request_filter_matches_the_push_filter(self):

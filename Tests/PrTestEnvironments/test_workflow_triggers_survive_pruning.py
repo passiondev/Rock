@@ -11,12 +11,9 @@ document; the triggers are in the workflows. If the two ever overlap again, this
 fails with both halves named.
 """
 
-import pathlib
 import re
-import sys
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 
@@ -31,6 +28,7 @@ PRUNE_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|[^|]*\|[^|]*\|\s*\*\*Yes\*\*", re.M
 
 
 def _prunable_branches():
+    """Every branch the open-items table marks **Yes** in its prune column."""
     return set(PRUNE_ROW.findall(DEVOPS_OPEN_ITEMS.read_text(encoding="utf-8")))
 
 

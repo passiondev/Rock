@@ -27,13 +27,9 @@ is edited alone, which is the failure a composite action would have made
 impossible and which nothing else in the suite would notice.
 """
 
-import pathlib
 import re
-import sys
 import unittest
-from collections import Counter
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pipeline_harness as harness
 
 DEPENDABOT_CONFIG = harness.REPO_ROOT / ".github" / "dependabot.yml"
@@ -86,24 +82,15 @@ def _matches(pattern):
     return found
 
 
-class GcpAuthPreambleTests(unittest.TestCase, harness.HarnessAssertions):
+class GcpAuthPreambleTests(harness.HarnessAssertions, unittest.TestCase):
     """The nine copies of the authentication preamble."""
 
     def test_every_copy_is_byte_identical(self):
-        found = _matches(AUTH_PREAMBLE)
-        self.assertNotVacuous(found, "the preamble pattern matched nothing at all")
-
-        shapes = Counter(text for _, text in found)
-        if len(shapes) > 1:
-            report = "\n\n".join(
-                f"--- in {sorted({f for f, t in found if t == text})} ---\n{text}"
-                for text in shapes
-            )
-            self.fail(
-                "the Google Cloud preamble has drifted into "
-                f"{len(shapes)} shapes. They have to stay identical, because "
-                "nothing collapses them:\n\n" + report
-            )
+        self.assertOneShape(
+            _matches(AUTH_PREAMBLE),
+            "the Google Cloud preamble",
+            "They have to stay identical, because nothing collapses them.",
+        )
 
     def test_the_expected_workflows_are_the_ones_that_authenticate(self):
         found = sorted({name for name, _ in _matches(AUTH_PREAMBLE)})
@@ -125,24 +112,16 @@ class GcpAuthPreambleTests(unittest.TestCase, harness.HarnessAssertions):
             )
 
 
-class GcsBucketFallbackTests(unittest.TestCase, harness.HarnessAssertions):
+class GcsBucketFallbackTests(harness.HarnessAssertions, unittest.TestCase):
     """The fourteen copies of the bucket-name expression."""
 
     def test_every_copy_is_byte_identical(self):
-        found = _matches(BUCKET_FALLBACK)
-        self.assertNotVacuous(found, "the bucket pattern matched nothing at all")
-
-        shapes = Counter(text for _, text in found)
-        if len(shapes) > 1:
-            report = "\n\n".join(
-                f"--- in {sorted({f for f, t in found if t == text})} ---\n{text}"
-                for text in shapes
-            )
-            self.fail(
-                f"the bucket-name expression has drifted into {len(shapes)} "
-                "shapes. Two spellings of a bucket name means half the pipeline "
-                "reads from one bucket and half writes to another:\n\n" + report
-            )
+        self.assertOneShape(
+            _matches(BUCKET_FALLBACK),
+            "the bucket-name expression",
+            "Two spellings of a bucket name means half the pipeline reads from one "
+            "bucket and half writes to another.",
+        )
 
     def test_the_fallback_still_has_a_project_in_it(self):
         # The default name is derived, not typed, so that a fork gets its own
@@ -153,7 +132,7 @@ class GcsBucketFallbackTests(unittest.TestCase, harness.HarnessAssertions):
             self.assertIn("secrets.GCP_PROJECT_ID", text, f"{name} dropped the project id")
 
 
-class DependabotTests(unittest.TestCase, harness.HarnessAssertions):
+class DependabotTests(harness.HarnessAssertions, unittest.TestCase):
     """The config that moves the pinned versions, since no action collapses them."""
 
     def test_dependabot_watches_the_actions(self):
