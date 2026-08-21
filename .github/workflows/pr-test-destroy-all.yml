@@ -31,7 +31,13 @@ name: PR Test Environment Destroy All
 
 permissions:
   contents: read
-  pull-requests: read
+  # pull-requests: write, not read. pr-test-status.js manages the `rock:` state
+  # label through issues.addLabels/removeLabel, and for a pull request GitHub bills
+  # label writes against `pull-requests`, not `issues`. Declaring read here cost
+  # three green teardowns a 403 on their final bookkeeping step: the environments
+  # were gone and the labels still advertised them. pr-test-deploy.yml already
+  # declared write, which is why only these two ever failed.
+  pull-requests: write
   issues: write
 
 concurrency:

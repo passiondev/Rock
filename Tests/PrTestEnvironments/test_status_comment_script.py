@@ -66,5 +66,51 @@ class PrTestStatusCommentScriptTests(unittest.TestCase):
         self.assertNotIn("github.rest.issues.createComment", text)
 
 
+class StatusScriptPermissionTests(harness.HarnessAssertions, unittest.TestCase):
+    """Every workflow that writes a sticky status needs `pull-requests: write`.
+
+    The module reaches the label through `github.rest.issues.addLabels`, so the
+    natural reading is that `issues: write` covers it. It does not. A pull request
+    is not a plain issue, and GitHub bills its label writes against the
+    `pull-requests` scope -- so a workflow declaring `issues: write` and
+    `pull-requests: read` gets a 403 on exactly one step, the last one.
+
+    That is the worst shape a permission bug can take here. On 2026-08-21 a
+    destroy-all run tore down three environments, polled three successful results,
+    and then failed all three legs on the bookkeeping step. The environments were
+    gone; their pull requests still carried `rock:deployed` and a sticky comment
+    pointing at a hostname that no longer answered. The run went red for a reason
+    that had nothing to do with the teardown, which is the kind of red that trains
+    people to skim the summary.
+    """
+
+    def workflows_requiring_the_status_script(self):
+        """Every workflow whose steps require pr-test-status.js, by file name."""
+        found = []
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            if "pr-test-status.js" in path.read_text(encoding="utf-8"):
+                found.append(path.name)
+        return found
+
+    def test_every_workflow_using_the_status_script_can_write_pull_requests(self):
+        names = self.workflows_requiring_the_status_script()
+        self.assertNotVacuous(names, "no workflow requires pr-test-status.js")
+
+        wrong = []
+        for name in names:
+            permissions = harness.workflow(name).get("permissions") or {}
+            if permissions.get("pull-requests") != "write":
+                wrong.append(f"{name}: pull-requests={permissions.get('pull-requests')!r}")
+
+        self.assertEqual(
+            [],
+            wrong,
+            "pr-test-status.js sets a label on a pull request, which needs "
+            "pull-requests: write. These declare something else, so their sticky "
+            "update will 403 after the real work has already succeeded: "
+            + "; ".join(wrong),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
