@@ -18,6 +18,8 @@ took the number of local action references from two to fourteen. This module is
 what makes that safe to keep doing.
 """
 
+import pathlib
+import re
 import unittest
 
 import pipeline_harness as harness
@@ -108,6 +110,49 @@ class LocalActionCheckoutTests(harness.HarnessAssertions, unittest.TestCase):
             references, "no workflow references a local action, so this checked nothing"
         )
 
+    def test_a_sparse_checkout_that_names_a_file_turns_cone_mode_off(self):
+        """Cone mode matches directories, so a file pattern in a cone-mode list
+        matches nothing and the checkout still reports success.
+
+        Every sparse checkout in the pipeline is correct on this today: the four
+        that name a file already set the flag, and the two that leave it unset list
+        directories only. What this holds is the next edit. Adding
+        `.github/scripts/something.js` to one of those two lists is a one-line change
+        that reviews cleanly and fails at runtime as a missing file, which reads as
+        a bad path rather than as a checkout that quietly skipped it.
+
+        Not switching the other two to non-cone instead: cone mode also brings down
+        the files at each parent level, so turning it off removes files from the
+        working tree rather than adding any.
+        """
+        offenders = []
+        checked = []
+
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            parsed = harness.workflow(path.name)
+            for job_name, job in (parsed.get("jobs") or {}).items():
+                for step in job.get("steps") or []:
+                    entries = _sparse_paths(step)
+                    if entries is None:
+                        continue
+
+                    checked.append(f"{path.name}:{job_name}")
+                    named_files = [e for e in entries if pathlib.PurePosixPath(e).suffix]
+                    cone_off = (step.get("with") or {}).get("sparse-checkout-cone-mode") is False
+                    if named_files and not cone_off:
+                        offenders.append(
+                            f"{path.name} job `{job_name}` -> " + ", ".join(named_files)
+                        )
+
+        self.assertNotVacuous(checked, "no workflow checks out sparsely any more")
+        self.assertEqual(
+            [],
+            offenders,
+            "these name a file in a cone-mode sparse checkout, so the pattern matches "
+            "nothing and the file never lands. Set `sparse-checkout-cone-mode: false`:"
+            "\n  " + "\n  ".join(offenders),
+        )
+
     def test_every_referenced_local_action_exists(self):
         for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
             for job_name, index, uses in _local_action_references(harness.workflow(path.name)):
@@ -164,6 +209,100 @@ class AwaitActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
                             f"{name} job `{job_name}` calls the await action without "
                             f"`{required}`.",
                         )
+
+
+class WaitCeilingTests(harness.HarnessAssertions, unittest.TestCase):
+    """Two workflows that can queue the same command must wait the same length.
+
+    `pr-test-destroy-all.yml` queued `destroy` and waited 600 seconds while
+    `pr-test-lifecycle.yml` queued the same `destroy` and waited 1800. A teardown
+    that ran past ten minutes was a timeout in one run and a success in the other,
+    for identical work on the same VM -- and because `fail-fast` is off in the
+    sweep, the false timeout was triaged as a failed teardown of a PR whose disk
+    had in fact been released.
+
+    Six copies of this wait were converted to the shared action and five of them
+    were brought to a common ceiling. This is the sixth, found by review rather
+    than by anything in the suite, which is the gap this test closes.
+
+    A ceiling is only compared where both ends resolve to a literal. Where a caller
+    computes its attempt count from an input, there is nothing here to compare and
+    the pair is skipped rather than guessed at.
+    """
+
+    def ceiling_seconds(self, with_block, defaults):
+        """The wait ceiling in seconds, or None if either half is an expression."""
+        attempts = str(with_block.get("attempts", defaults["attempts"]))
+        interval = str(with_block.get("interval-seconds", defaults["interval-seconds"]))
+        if not (attempts.isdigit() and interval.isdigit()):
+            return None
+        return int(attempts) * int(interval)
+
+    def action_defaults(self):
+        """The `attempts` and `interval-seconds` defaults the action declares."""
+        inputs = harness.composite_action("await-vm-command")["inputs"]
+        return {name: inputs[name]["default"] for name in ("attempts", "interval-seconds")}
+
+    def commands_and_ceilings(self):
+        """{command name: {workflow: ceiling}} over every job that queues and waits.
+
+        A workflow's `command` dispatch input carries an `options:` list, which is
+        the set of command names it can queue. That is how `pr-test-lifecycle.yml`
+        is known to queue `destroy` even though the step passes an expression.
+        """
+        defaults = self.action_defaults()
+        found = {}
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            parsed = harness.workflow(path.name)
+            dispatch = (harness.triggers(parsed) or {}).get("workflow_dispatch") or {}
+            options = (((dispatch.get("inputs") or {}).get("command") or {}).get("options")) or []
+
+            for job in (parsed.get("jobs") or {}).values():
+                steps = job.get("steps") or []
+                queued, ceilings = [], []
+                for step in steps:
+                    uses = step.get("uses") or ""
+                    block = step.get("with") or {}
+                    if uses == QUEUE_ACTION:
+                        named = str(block.get("command", ""))
+                        queued.extend(options if named.startswith("${{") else [named])
+                    elif uses == AWAIT_ACTION:
+                        ceilings.append(self.ceiling_seconds(block, defaults))
+                if not (queued and ceilings):
+                    continue
+                # One wait per job in every caller today; take the first so a second
+                # one added later does not silently pick up the wrong pairing.
+                seconds = ceilings[0]
+                if seconds is None:
+                    continue
+                for command in queued:
+                    found.setdefault(command, {})[path.name] = seconds
+        return found
+
+    def test_one_command_has_one_ceiling(self):
+        found = self.commands_and_ceilings()
+        self.assertNotVacuous(found, "no workflow both queues a command and waits for it")
+
+        shared = {c: w for c, w in found.items() if len(w) > 1}
+        self.assertNotVacuous(
+            shared,
+            "no command is queued by two workflows any more, so this test compares "
+            "nothing. If that is real, delete it; if a queue step stopped being "
+            "recognised, fix that instead.",
+        )
+
+        offenders = [
+            f"`{command}`: " + ", ".join(f"{w} waits {s}s" for w, s in sorted(by_workflow.items()))
+            for command, by_workflow in sorted(shared.items())
+            if len(set(by_workflow.values())) > 1
+        ]
+        self.assertEqual(
+            [],
+            offenders,
+            "the same command gets two different ceilings depending on which "
+            "workflow queued it, so the same run is a timeout from one and a "
+            "success from the other:\n  " + "\n  ".join(offenders),
+        )
 
 
 class AwaitActionBehaviourTests(unittest.TestCase):
@@ -311,7 +450,7 @@ class QueueActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
                 )
 
 
-class QueueActionBehaviourTests(unittest.TestCase):
+class QueueActionBehaviourTests(harness.HarnessAssertions, unittest.TestCase):
     """The enqueue's own behaviour, asserted once.
 
     What the command *does* -- the envelope, the drop-if-empty rule, and the
@@ -328,7 +467,62 @@ class QueueActionBehaviourTests(unittest.TestCase):
 
         self.assertTrue(QUEUE_ACTION_SCRIPT.is_file(), f"{QUEUE_ACTION_SCRIPT} is missing")
         self.assertIn("Write-VmCommand.ps1", text)
-        self.assertIn("${{ github.action_path }}", text)
+        # The action's own directory, read from the env var the runner exports
+        # rather than from a `${{ }}` expression -- the expression form cannot be
+        # quoted safely and breaks the syntax job. RunnerExpressionPlacementTests
+        # in test_powershell_job.py holds that rule for every block.
+        self.assertIn('& "$env:GITHUB_ACTION_PATH/Write-VmCommand.ps1"', text)
+
+    def test_a_default_is_not_written_down_twice(self):
+        """action.yml defaults an input; the script defaults the parameter it feeds.
+        Whoever changes one has to remember the other, and this action exists
+        because a field name in one file drifted from the same field name in
+        another: two echo loops keyed on `connectionString` while the producer
+        holding the sandbox password called it `sandboxConnectionString`.
+
+        Derived from both files rather than tabulated here, so an input added
+        tomorrow is covered without anyone editing this test.
+        """
+        inputs = harness.composite_action("queue-vm-command")["inputs"]
+
+        # The parameters of the one function the action calls. Names map from the
+        # input's kebab-case to PowerShell's PascalCase.
+        parameters = dict(
+            re.findall(
+                r"\[Parameter\([^)]*\)\]\[string\]\$(\w+)\s*=\s*'([^']*)'",
+                QUEUE_ACTION_SCRIPT.read_text(),
+            )
+        )
+        self.assertNotVacuous(
+            parameters,
+            "Found no defaulted parameters in the script. Either the param block "
+            "moved or its shape changed, and this test would pass on any pair of "
+            "files that disagree.",
+        )
+
+        compared = []
+        for name, definition in inputs.items():
+            if "default" not in definition:
+                continue
+            pascal = "".join(part.capitalize() for part in name.split("-"))
+            if pascal not in parameters:
+                continue
+
+            compared.append(name)
+            self.assertEqual(
+                str(definition["default"]),
+                parameters[pascal],
+                f"action.yml defaults `{name}` to {definition['default']!r} and "
+                f"Write-VmCommand.ps1 defaults ${pascal} to "
+                f"{parameters[pascal]!r}. Whichever is wrong, only one of them is "
+                "the one a caller gets.",
+            )
+
+        self.assertNotVacuous(
+            compared,
+            "No input lined up with a parameter, so this compared nothing. The "
+            "kebab-case to PascalCase mapping is the likely break.",
+        )
 
     def test_the_pending_path_follows_the_queue_the_caller_named(self):
         """Two callers pass a queue other than `commands`. A hardcoded prefix puts

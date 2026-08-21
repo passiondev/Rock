@@ -86,7 +86,7 @@ class ColumnZeroConventionTests(harness.HarnessAssertions, unittest.TestCase):
         for path in scripts():
             text = path.read_text(encoding="utf-8")
             for match in INDENTED_DEFINITION.finditer(text):
-                line = text.count("\n", 0, match.start()) + 1
+                line = harness.line_of(text, match.start())
                 offenders.append(f"{path.name}:{line} {match.group(0).strip()}")
 
         self.assertEqual(
@@ -107,7 +107,7 @@ class DefinitionPrecedesUseTests(harness.HarnessAssertions, unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             defined = {}
             for match in DEFINITION.finditer(text):
-                defined.setdefault(match.group(1), text.count("\n", 0, match.start()) + 1)
+                defined.setdefault(match.group(1), harness.line_of(text, match.start()))
             if not defined:
                 continue
 

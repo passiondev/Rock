@@ -512,7 +512,6 @@ class HandDeployBuildStaysCredentialFreeTests(harness.HarnessAssertions, unittes
         """The nine that do match should keep matching. Left inline in both files
         rather than extracted, for the reason in the class docstring -- so this is
         what holds them together."""
-        import json
 
         mine = self.workflow()["jobs"]["build"]["steps"]
         theirs = harness.workflow(WORKFLOW_PATH.name)["jobs"]["package"]["steps"]

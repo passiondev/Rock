@@ -18,7 +18,7 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
-    $script:ActionScript = Join-Path $PSScriptRoot '../../../.github/actions/queue-vm-command/Write-VmCommand.ps1'
+    $script:ActionScript = Get-RepositoryPath '.github/actions/queue-vm-command/Write-VmCommand.ps1'
     . (Import-ScriptFunction -Path $script:ActionScript -Name 'New-VmCommand', 'Get-RedactedCommand')
 
     $script:Password = 'hunter2-correct-horse'

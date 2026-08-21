@@ -9,10 +9,9 @@ text)` against a 918-line script passes while the two sites that set it are
 deleted, because a comment mentioning TLS keeps the token in the file.
 
 So the harness supplies the reading *and* the guard against reading too loosely.
-`assertInScope` makes the caller name the region the token has to appear in, and
-`assertNotVacuous` makes a set-derived test say out loud how many things it
-found. Both were already present in this suite, applied unevenly, in four files
-out of thirty-three.
+`assertNotVacuous` makes a set-derived test say out loud that it found anything
+at all, and `assertNoMatch` reports the line rather than just failing. Both were
+already present in this suite, applied unevenly, in four files out of thirty-three.
 
 This module is deliberately not named `test_*.py`: unittest discovery would
 collect it. `test_ci_trigger_coverage.py` scans every `*.py` here, not only the
@@ -31,18 +30,33 @@ import yaml
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
+# Only the two directories this module itself walks. `SCRIPTS_DIR`,
+# `DEPLOYMENT_DIR` and `DOCUMENTATION_DIR` were here too and nothing ever used
+# them, which looks like an oversight and is not: a test that addressed a file as
+# `DOCUMENTATION_DIR / "x.md"` would hide that path from
+# test_ci_trigger_coverage.py, which finds what the suite reads by looking for the
+# literal quoted-segment form. Adopting them would empty that scan file by file.
+# So test files spell their paths out, and these two stay because the walks below
+# are in this module, where the literal form is right here.
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
-SCRIPTS_DIR = REPO_ROOT / ".github" / "scripts"
-DEPLOYMENT_DIR = REPO_ROOT / "Deployment"
-DOCUMENTATION_DIR = REPO_ROOT / "Documentation"
 
 
-# There was a `repo_text(*parts)` here that read a file addressed from the root.
-# Nothing ever called it, and it should stay uncalled: `REPO_ROOT.joinpath(*parts)`
-# hides the path from test_ci_trigger_coverage.py, which finds what the suite reads
-# by looking for the literal quoted-segment form. Adopting it across the suite would
-# have emptied that scan and taken the CI trigger's coverage check with it.
+# Card 05 of the 2026-08-21 architecture review asked this module for four things:
+# the root, `workflow()`, `script()` and the non-vacuity guard. Three of them are
+# here. `script()` is the one that is deliberately absent, and a `repo_text(*parts)`
+# standing in for it was removed rather than adopted.
+#
+# The reason is that `REPO_ROOT.joinpath(*parts)` hides the path from
+# test_ci_trigger_coverage.py, which finds what the suite reads by looking for the
+# literal quoted-segment form: the root constant, then each directory as its own
+# quoted string. (Spelling that shape out here as an example makes this comment a
+# path the scan then goes looking for -- it is derived from every `*.py` in this
+# directory, this file included.) Rolling an accessor out
+# across the suite would have emptied that scan file by file, and the CI trigger's
+# coverage check would have gone green over a suite it could no longer see. The
+# duplication the card counted is real; it is also what keeps the paths visible.
+# Test files spell their paths out for that reason, and the cost is one line each.
 
 
 @functools.lru_cache(maxsize=None)
@@ -50,6 +64,44 @@ def workflow(name):
     """A parsed workflow. `on:` is returned under the key `True` by PyYAML, because
     YAML 1.1 reads a bare `on` as a boolean, so callers reach for `triggers()`."""
     return yaml.safe_load((WORKFLOWS_DIR / name).read_text(encoding="utf-8"))
+
+
+@functools.lru_cache(maxsize=None)
+def composite_action(name):
+    """A parsed composite action, addressed by its directory name.
+
+    Mirrors `workflow()` because the two are read the same way and for the same
+    reasons. A composite action's steps run inside the caller's job and show up in
+    the caller's run, so anything asserted about workflow steps -- that a title
+    exists, that a block is PowerShell -- has to look here too or it reports a
+    clean result over half the tree."""
+    return yaml.safe_load((ACTIONS_DIR / name / "action.yml").read_text(encoding="utf-8"))
+
+
+def composite_actions():
+    """Every composite action's directory name, sorted."""
+    return sorted(path.parent.name for path in ACTIONS_DIR.glob("*/action.yml"))
+
+
+def action_steps(parsed):
+    """The step list of a parsed composite action, or empty for any other kind.
+
+    A `using: node20` action has no steps to walk, and neither does one whose
+    `runs:` block is missing entirely."""
+    runs = parsed.get("runs") or {}
+    if runs.get("using") != "composite":
+        return []
+    return runs.get("steps") or []
+
+
+def line_of(text, index):
+    """The 1-based line number of `index` in `text`.
+
+    Hand-rolled as `text.count("\n", 0, match.start()) + 1` in six places before
+    this existed. It is correct every time it is written out, which is why it kept
+    getting written out -- but a failure message that points at the wrong line
+    costs more to debug than the assertion saved."""
+    return text.count("\n", 0, index) + 1
 
 
 def triggers(parsed):

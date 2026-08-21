@@ -142,12 +142,23 @@ class StepsTheRunbookTellsYouToWatchTests(harness.HarnessAssertions, unittest.Te
     WATCHED_STEP = re.compile(r"(?:check|watch) the run's `([^`]+)` step", re.IGNORECASE)
 
     def step_names(self):
-        """Every step title in every workflow and composite action."""
+        """Every step title in every workflow and composite action.
+
+        The actions count. A composite action's steps run inside the caller's job
+        and appear in the caller's run under their own titles, so a step that moves
+        into one is still a step the operator sees. Globbing only the workflows made
+        this scan report a clean result over a shrinking half of the tree -- and it
+        would have turned every runbook line green the moment a named step moved,
+        which is the one edit most likely to invalidate the line.
+        """
         names = set()
         for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
             parsed = harness.workflow(path.name)
             for job in (parsed.get("jobs") or {}).values():
                 names.update(s.get("name") for s in (job.get("steps") or []) if s.get("name"))
+        for action in harness.composite_actions():
+            steps = harness.action_steps(harness.composite_action(action))
+            names.update(s.get("name") for s in steps if s.get("name"))
         return names
 
     def test_every_step_a_runbook_names_still_exists_under_that_name(self):
@@ -162,7 +173,7 @@ class StepsTheRunbookTellsYouToWatchTests(harness.HarnessAssertions, unittest.Te
                 name = match.group(1)
                 watched.append(name)
                 if name not in available:
-                    line = text.count("\n", 0, match.start()) + 1
+                    line = harness.line_of(text, match.start())
                     offenders.append(f"{runbook.name}:{line} names the step {name!r}")
 
         self.assertNotVacuous(watched, "no runbook line points at a named step any more")

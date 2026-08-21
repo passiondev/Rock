@@ -1,54 +1,49 @@
-"""Hold the duplicated Google Cloud preamble identical across the workflows.
+"""One Google Cloud session, opened one way, by every workflow that needs one.
 
 Card 06 of the 2026-08-21 architecture review counted nine byte-identical
-`auth@v2` + `setup-gcloud@v2` pairs and fourteen copies of one bucket-name
-expression, and proposed a local composite action to collapse them. Neither
-collapse is available, for two separate reasons, and both are worth writing down
-because the next reader will propose the same thing.
+`auth@v2` + `setup-gcloud@v2` pairs and proposed a local composite action. This
+module first argued against it, on the grounds that `uses: ./...` loads from the
+checkout and five of the nine callers never checked out. That was wrong, and it
+is worth saying why, because the mistake is easy to repeat: the check was run
+against the tree as it stood *before* the same review's card 02 landed. Card 02
+moved the enqueue and the wait into composite actions, which forced a checkout
+into three of those five workflows. By the time the rebuttal was written, seven of
+the nine already checked out, an eighth checked out later in the same job, and the
+ninth needed one sparse checkout of a single directory.
 
-The auth pair cannot move into a local composite action because `uses: ./...`
-loads the action from the checkout. Requiring a checkout is part of the interface
-even though nothing in the `with:` block says so, and five of the nine callers do
-not meet it: `env-deploy-command.yml` and `pr-test-deploy.yml` authenticate before
-they check out, and `db-find-legacy-text-columns.yml`,
-`pr-test-diagnose-command-queue.yml` and `pr-test-lifecycle.yml` never check out
-at all. A five-line wrapper is not worth a clone of this repository, least of all
-in the scheduled teardown.
+So the action exists, at `.github/actions/gcp-session`, and what this module holds
+changed with it. Byte-identity across nine copies is no longer a thing to test --
+there is one copy. What replaces it is the cost the action brought in: a local
+action is loaded from disk, so every caller now needs a checkout that runs first
+*and* reaches the action's directory. Neither requirement appears in the `with:`
+block, and neither fails at parse time. A sparse checkout that omits one directory
+gets an "action not found" several minutes into a deploy, and only on the branch
+where somebody added the caller.
 
-The bucket expression cannot move into a step output because eleven of its
-fourteen uses sit in a job-level `env:` block, which GitHub evaluates before any
-step runs. A step output there resolves to the empty string, and every `gsutil`
-path silently becomes `gs:///...` -- a deploy that writes nowhere and reports
-success.
-
-So the copies stay, and this module holds them together instead. `.github/dependabot.yml`
-moves the pinned versions as one grouped pull request. These tests fail if a copy
-is edited alone, which is the failure a composite action would have made
-impossible and which nothing else in the suite would notice.
+The bucket expression is a separate claim from the same card and it still holds.
+Eleven of its fourteen uses sit in a job-level `env:` block, which GitHub evaluates
+before any step runs, so a step output there resolves to the empty string and every
+`gsutil` path silently becomes `gs:///...` -- a deploy that writes nowhere and
+reports success. Those copies stay, and the identity test below is what holds them
+together.
 """
 
 import re
 import unittest
 
+import yaml
+
 import pipeline_harness as harness
 
 DEPENDABOT_CONFIG = harness.REPO_ROOT / ".github" / "dependabot.yml"
 
-# Both patterns match raw text rather than parsed YAML on purpose. Parsing would
-# normalise away the indentation and key order that make these copies identical,
-# and it is drift in exactly those that this module exists to catch.
-# The version is matched loosely rather than pinned to `@v2`. Pinning it would
-# turn every Dependabot bump red, and worse, a copy bumped by hand would stop
-# matching and quietly leave the comparison set instead of showing up as drift.
-# Loose, the grouped bump moves all nine at once and stays one shape, while one
-# hand-edited copy becomes a second shape and fails.
-AUTH_PREAMBLE = re.compile(
-    r"[ \t]*- name: [^\n]*\n"
-    r"[ \t]*uses: google-github-actions/auth@[^\s]+\n"
-    r"(?:[ \t]*[^\n]*\n)*?"
-    r"[ \t]*- name: [^\n]*\n"
-    r"[ \t]*uses: google-github-actions/setup-gcloud@[^\s]+\n"
-)
+SESSION_ACTION = "gcp-session"
+SESSION_USES = f"./.github/actions/{SESSION_ACTION}"
+
+# Matched against raw text rather than parsed YAML on purpose: this is looking for
+# a hand-rolled pair anywhere in a file, including one commented back in during a
+# debugging session and never removed.
+HAND_ROLLED_AUTH = re.compile(r"uses:\s*google-github-actions/(?:auth|setup-gcloud)@")
 
 # Anchored on the closing paren of `format(...)` rather than on the first `}`,
 # because the format string itself contains `{0}` and `{1}`.
@@ -73,27 +68,58 @@ AUTHENTICATING_WORKFLOWS = [
 ]
 
 
+def _workflow_files():
+    """Every workflow file, sorted."""
+    return sorted(harness.WORKFLOWS_DIR.glob("*.yml"))
+
+
 def _matches(pattern):
     """Every match of `pattern` across the workflow directory, with its file."""
     found = []
-    for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
-        for match in pattern.finditer(path.read_text()):
+    for path in _workflow_files():
+        for match in pattern.finditer(path.read_text(encoding="utf-8")):
             found.append((path.name, match.group(0)))
     return found
 
 
-class GcpAuthPreambleTests(harness.HarnessAssertions, unittest.TestCase):
-    """The nine copies of the authentication preamble."""
+def _session_jobs():
+    """(workflow, job name, steps) for every job that opens a session."""
+    found = []
+    for path in _workflow_files():
+        parsed = harness.workflow(path.name)
+        for job_name, job in (parsed.get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            if any((step.get("uses") or "") == SESSION_USES for step in steps):
+                found.append((path.name, job_name, steps))
+    return found
 
-    def test_every_copy_is_byte_identical(self):
-        self.assertOneShape(
-            _matches(AUTH_PREAMBLE),
-            "the Google Cloud preamble",
-            "They have to stay identical, because nothing collapses them.",
+
+class OneWayInTests(harness.HarnessAssertions, unittest.TestCase):
+    """Every session goes through the action, and no workflow rolls its own."""
+
+    def test_no_workflow_authenticates_by_hand(self):
+        offenders = []
+        for path in _workflow_files():
+            text = path.read_text(encoding="utf-8")
+            for match in HAND_ROLLED_AUTH.finditer(text):
+                offenders.append(f"{path.name}:{harness.line_of(text, match.start())}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these reach for the Google Cloud actions directly instead of "
+            f"`uses: {SESSION_USES}`. The pair is one thing: authenticate without "
+            "setting up the SDK and `gsutil` is not a command several steps later, "
+            "in whichever script calls it first.\n  " + "\n  ".join(offenders),
         )
 
+    def test_the_action_is_the_only_place_the_pair_appears(self):
+        text = harness.composite_action(SESSION_ACTION)
+        names = [step.get("name") for step in harness.action_steps(text)]
+        self.assertEqual(["Authenticate to Google Cloud", "Set up Cloud SDK"], names)
+
     def test_the_expected_workflows_are_the_ones_that_authenticate(self):
-        found = sorted({name for name, _ in _matches(AUTH_PREAMBLE)})
+        found = sorted({name for name, _, _ in _session_jobs()})
         self.assertEqual(
             AUTHENTICATING_WORKFLOWS,
             found,
@@ -103,17 +129,76 @@ class GcpAuthPreambleTests(harness.HarnessAssertions, unittest.TestCase):
         )
 
     def test_the_key_comes_from_the_secret_and_is_not_inlined(self):
-        for name, text in _matches(AUTH_PREAMBLE):
-            self.assertIn(
-                "credentials_json: ${{ secrets.GCP_SA_KEY }}",
-                text,
-                f"{name} authenticates with something other than the GCP_SA_KEY "
-                "secret. A service account key belongs in a secret and nowhere else.",
-            )
+        offenders = []
+        for name, job_name, steps in _session_jobs():
+            for step in steps:
+                if (step.get("uses") or "") != SESSION_USES:
+                    continue
+                given = (step.get("with") or {}).get("credentials-json")
+                if given != "${{ secrets.GCP_SA_KEY }}":
+                    offenders.append(f"{name} job `{job_name}` passes {given!r}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "a service account key belongs in a secret and nowhere else:\n  "
+            + "\n  ".join(offenders),
+        )
+
+
+class TheCheckoutTheActionRequiresTests(harness.HarnessAssertions, unittest.TestCase):
+    """The requirement `uses: ./...` adds and the `with:` block cannot state.
+
+    A local action is read off the runner's disk. That makes a prior checkout part
+    of the interface, and a sparse one has to name the directory. Both failures look
+    identical from the YAML -- valid, reviewed, merged -- and surface as "Can't find
+    'action.yml'" in whichever run first exercises the path.
+    """
+
+    def test_every_session_job_checks_out_first(self):
+        jobs = _session_jobs()
+        self.assertNotVacuous(jobs, "no job opens a Google Cloud session any more")
+
+        offenders = []
+        for name, job_name, steps in jobs:
+            uses = [step.get("uses") or "" for step in steps]
+            at = uses.index(SESSION_USES)
+            if not any(u.startswith("actions/checkout") for u in uses[:at]):
+                offenders.append(f"{name} job `{job_name}`")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these open a session before checking out, so the action is not on disk "
+            "when the runner looks for it:\n  " + "\n  ".join(offenders),
+        )
+
+    def test_every_sparse_checkout_reaches_the_action(self):
+        offenders = []
+        for name, job_name, steps in _session_jobs():
+            uses = [step.get("uses") or "" for step in steps]
+            at = uses.index(SESSION_USES)
+            checkouts = [i for i, u in enumerate(uses[:at]) if u.startswith("actions/checkout")]
+            if not checkouts:
+                continue
+            # The last checkout before the step is the one whose working tree the
+            # step sees; an earlier one has been overwritten by it.
+            with_block = steps[checkouts[-1]].get("with") or {}
+            sparse = with_block.get("sparse-checkout")
+            if sparse and SESSION_ACTION not in sparse:
+                offenders.append(f"{name} job `{job_name}`")
+
+        self.assertEqual(
+            [],
+            offenders,
+            f"these check out sparsely without `.github/actions/{SESSION_ACTION}` in "
+            "the list, so the checkout succeeds and the action is still missing:\n  "
+            + "\n  ".join(offenders),
+        )
 
 
 class GcsBucketFallbackTests(harness.HarnessAssertions, unittest.TestCase):
-    """The fourteen copies of the bucket-name expression."""
+    """The fourteen copies of the bucket-name expression, which nothing collapses."""
 
     def test_every_copy_is_byte_identical(self):
         self.assertOneShape(
@@ -133,55 +218,53 @@ class GcsBucketFallbackTests(harness.HarnessAssertions, unittest.TestCase):
 
 
 class DependabotTests(harness.HarnessAssertions, unittest.TestCase):
-    """The config that moves the pinned versions, since no action collapses them."""
+    """The config that moves the pinned versions.
+
+    Grouping mattered more when nine copies had to move together or fail. With one
+    copy the group is no longer load-bearing, but it is still what keeps a bump to
+    `auth@v2` and a bump to `setup-gcloud@v2` in one pull request -- and those two
+    are a matched pair, so reviewing them apart is reviewing half a change.
+    """
+
+    def _actions_ecosystem(self):
+        """The `github-actions` entry of the Dependabot config, or None."""
+        config = yaml.safe_load(DEPENDABOT_CONFIG.read_text(encoding="utf-8"))
+        return next(
+            (
+                update
+                for update in config["updates"]
+                if update.get("package-ecosystem") == "github-actions"
+            ),
+            None,
+        )
 
     def test_dependabot_watches_the_actions(self):
         self.assertTrue(
             DEPENDABOT_CONFIG.exists(),
             "`.github/dependabot.yml` is gone. It is the only thing that notices "
-            "when the nine pinned copies of `auth@v2` go stale.",
+            "when the pinned versions go stale.",
         )
-        import yaml
-
-        config = yaml.safe_load(DEPENDABOT_CONFIG.read_text())
-        ecosystems = [update.get("package-ecosystem") for update in config["updates"]]
-        self.assertIn("github-actions", ecosystems)
+        self.assertIsNotNone(self._actions_ecosystem())
 
     def test_the_actions_move_as_one_pull_request(self):
-        import yaml
-
-        config = yaml.safe_load(DEPENDABOT_CONFIG.read_text())
-        actions = next(
-            update
-            for update in config["updates"]
-            if update.get("package-ecosystem") == "github-actions"
-        )
+        actions = self._actions_ecosystem()
         self.assertIn(
             "groups",
             actions,
-            "without a group, Dependabot opens one pull request per action and the "
-            "nine copies of the preamble move one at a time. Every intermediate "
-            "state fails the identical-copies test above, which is a merge queue "
-            "that cannot drain.",
+            "without a group, Dependabot opens one pull request per action, which "
+            "splits the authenticate/setup pair across two reviews.",
         )
 
 
 class GuardTests(unittest.TestCase):
-    """Prove the two patterns can fail, rather than trusting that they would."""
+    """Prove the patterns can fail, rather than trusting that they would."""
 
-    def test_a_drifted_preamble_is_caught(self):
-        drifted = (
+    def test_a_hand_rolled_pair_is_caught(self):
+        rolled = (
             "      - name: Authenticate to Google Cloud\n"
-            "        uses: google-github-actions/auth@v3\n"
-            "        with:\n"
-            "          credentials_json: ${{ secrets.GCP_SA_KEY }}\n"
-            "\n"
-            "      - name: Set up Cloud SDK\n"
-            "        uses: google-github-actions/setup-gcloud@v2\n"
+            "        uses: google-github-actions/auth@v2\n"
         )
-        original = _matches(AUTH_PREAMBLE)[0][1]
-        self.assertNotEqual(original, drifted)
-        self.assertEqual(1, len(AUTH_PREAMBLE.findall(drifted)))
+        self.assertEqual(1, len(HAND_ROLLED_AUTH.findall(rolled)))
 
     def test_a_drifted_bucket_name_is_caught(self):
         drifted = (

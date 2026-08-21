@@ -127,13 +127,28 @@ jobs:
       # the shape of the script that reads it.
       DB_NAME_REQUESTED: ${{ inputs.db_name }}
     steps:
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      # One checkout for everything this job reads from the tree: the four composite
+      # actions and the two script directories the drift check compares. It runs
+      # first because `uses: ./...` loads an action from disk, and the very next step
+      # is one. It used to check out twice, once mid-job and once again before the
+      # URL check, which is what a local action costs when nobody folds the cost
+      # back in.
+      - name: Check out the deploy scripts and composite actions
+        uses: actions/checkout@v4
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          sparse-checkout: |
+            Deployment/PrTestEnvironments
+            Deployment/Database
+            .github/actions/gcp-session
+            .github/actions/await-vm-command
+            .github/actions/queue-vm-command
+            .github/actions/verify-public-url
+          sparse-checkout-cone-mode: false
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Confirm the artifact exists before queueing
         run: |
@@ -175,21 +190,6 @@ jobs:
       # on 2026-08-19 while three green deploys kept serving a stale stylesheet.
       # Comparing the two copies costs one gsutil call and turns a silent no-op into
       # a warning on the run it affects. Open item 25.
-      # One checkout for everything this job reads from the tree: the two script
-      # directories the drift check compares, and the two composite actions used
-      # later. It used to check out twice, once here and once again before the URL
-      # check, which is what a local action costs when nobody folds the cost back in.
-      - name: Check out the deploy scripts and composite actions
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            Deployment/PrTestEnvironments
-            Deployment/Database
-            .github/actions/await-vm-command
-            .github/actions/queue-vm-command
-            .github/actions/verify-public-url
-          sparse-checkout-cone-mode: false
-
       - name: Report deploy script drift
         # Structural, not incidental: this step exists to make a problem visible and
         # must never become one. A parse error or a gsutil outage here reports

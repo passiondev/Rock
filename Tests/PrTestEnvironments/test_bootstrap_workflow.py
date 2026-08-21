@@ -13,7 +13,9 @@ class BootstrapCommandQueueWorkflowTests(unittest.TestCase):
         workflow = yaml.safe_load(text)
 
         self.assertIn("workflow_dispatch", workflow["on"])
-        self.assertIn("google-github-actions/auth@v2", text)
+        # Authenticating is the claim; the pair moved behind a composite action,
+        # and test_gcp_session_consistency.py is what holds that one place honest.
+        self.assertIn("./.github/actions/gcp-session", text)
         self.assertIn("gsutil -m cp Deployment/PrTestEnvironments/*.ps1", text)
         self.assertIn("gcloud compute instances list", text)
         self.assertIn("GCP_VM_EXTERNAL_IP", text)

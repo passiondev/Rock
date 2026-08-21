@@ -189,17 +189,15 @@ jobs:
         with:
           sparse-checkout: |
             .github/scripts/pr-test-status.js
+            .github/actions/gcp-session
             .github/actions/await-vm-command
             .github/actions/queue-vm-command
           sparse-checkout-cone-mode: false
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Queue PR environment destroy command
         uses: ./.github/actions/queue-vm-command
@@ -219,8 +217,14 @@ jobs:
           # fail-fast is off, so a failure here is triaged after the whole fleet has
           # been through, and the reader needs to know the sweep carried on.
           failure-hint: The other environments continue; re-run this workflow with pr_numbers set to whatever is left.
-          attempts: '60'
-          interval-seconds: '10'
+          # 1800 seconds, matching pr-test-lifecycle.yml and pr-test-deploy.yml.
+          # Was 600. This workflow queues the same `destroy` command the lifecycle
+          # workflow does, so the shorter ceiling meant one teardown reported a
+          # timeout while the identical command queued from there was still
+          # waiting -- and with fail-fast off, the sweep carried on and left the
+          # disk it had actually released looking un-released. The ceiling only
+          # costs time on a hung destroy; a normal one still returns in a minute.
+          attempts: '120'
 
       - name: Update sticky PR status
         if: always()

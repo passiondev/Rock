@@ -76,4 +76,41 @@ function Import-ScriptFunction {
     return [scriptblock]::Create($parts -join "`n`n")
 }
 
-Export-ModuleMember -Function Import-ScriptFunction
+function Get-RepositoryPath {
+    <#
+    .SYNOPSIS
+        Resolve a path from the repository root.
+
+    .DESCRIPTION
+        Every suite in this directory reaches back out of Tests/ to the scripts it
+        loads, and each one used to spell that as `../../../`. Six copies of a
+        relative hop is six things to fix the day this directory moves, and five of
+        them would still resolve to somewhere -- just not to the repository root.
+
+        A path that does not exist is a terminating error. The alternative is a
+        string that fails later, inside whatever tried to read it, naming a
+        directory nobody recognises.
+
+    .PARAMETER Path
+        Where to go, relative to the repository root. Forward slashes are fine on
+        Windows; Join-Path normalises them.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    # $PSScriptRoot inside a module function is the module's own directory, so the
+    # hop is written once, here, and nowhere else.
+    $root = (Resolve-Path -Path (Join-Path $PSScriptRoot '../../..')).Path
+
+    $combined = Join-Path $root $Path
+    if (-not (Test-Path -Path $combined)) {
+        throw "The repository has no '$Path'. Looked under $root."
+    }
+
+    return (Resolve-Path -Path $combined).Path
+}
+
+Export-ModuleMember -Function Import-ScriptFunction, Get-RepositoryPath

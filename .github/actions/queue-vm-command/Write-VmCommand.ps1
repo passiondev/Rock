@@ -163,13 +163,23 @@ if ([string]::IsNullOrWhiteSpace($env:VMQ_BUCKET)) {
     return
 }
 
-$secretField = 'connectionString'
+# The field name is defaulted on New-VmCommand's parameter and nowhere else.
+# action.yml defaults the input too, so VMQ_SECRET_FIELD is never blank on a real
+# run and this branch only has effect when the script is invoked by hand -- but a
+# second literal here is a second place to forget, and one field name drifting
+# from another is the exact defect this action was built to stop. Omitting the
+# argument lets the parameter default apply rather than restating it.
+$arguments = @{
+    CommandId   = $env:VMQ_COMMAND_ID
+    Command     = $env:VMQ_COMMAND
+    Payload     = $env:VMQ_PAYLOAD
+    SecretValue = $env:VMQ_SECRET_VALUE
+}
 if (![string]::IsNullOrWhiteSpace($env:VMQ_SECRET_FIELD)) {
-    $secretField = $env:VMQ_SECRET_FIELD
+    $arguments.SecretField = $env:VMQ_SECRET_FIELD
 }
 
-$queuedCommand = New-VmCommand -CommandId $env:VMQ_COMMAND_ID -Command $env:VMQ_COMMAND `
-    -Payload $env:VMQ_PAYLOAD -SecretField $secretField -SecretValue $env:VMQ_SECRET_VALUE
+$queuedCommand = New-VmCommand @arguments
 
 $queuedCommand | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
 

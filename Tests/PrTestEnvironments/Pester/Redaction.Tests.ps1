@@ -12,7 +12,7 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
-    $script:QueueScript = Join-Path $PSScriptRoot '../../../Deployment/PrTestEnvironments/Invoke-PrEnvironmentCommandQueue.ps1'
+    $script:QueueScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Invoke-PrEnvironmentCommandQueue.ps1'
     . (Import-ScriptFunction -Path $script:QueueScript -Name 'Get-RedactedText', 'Get-CommandSecrets')
 
     $script:Password = 'hunter2-correct-horse'

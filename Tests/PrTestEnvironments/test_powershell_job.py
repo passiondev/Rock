@@ -77,19 +77,16 @@ class SyntaxJobTests(unittest.TestCase):
             )
 
     def test_the_pipeline_runs_a_parse_over_the_powershell(self):
-        workflow = harness.workflow("deployment-pipeline-tests.yml")
-        job = workflow["jobs"].get("powershell")
+        """The parse exists, runs under pwsh, and covers both halves of the tree.
 
-        self.assertIsNotNone(job, "deployment-pipeline-tests.yml no longer parses the PowerShell.")
+        `parse_step()` already asserts the job and the step are there, so finding
+        it is the first half of this test rather than something to restate."""
+        parse = self.parse_step()
 
-        steps = job["steps"]
-        extracts = [s for s in steps if "extract-powershell-blocks.py" in (s.get("run") or "")]
+        job = harness.workflow("deployment-pipeline-tests.yml")["jobs"]["powershell"]
+        extracts = [s for s in job["steps"] if "extract-powershell-blocks.py" in (s.get("run") or "")]
         self.assertEqual(1, len(extracts), "The embedded blocks are no longer extracted before the parse.")
 
-        parses = [s for s in steps if "Language.Parser" in (s.get("run") or "")]
-        self.assertEqual(1, len(parses), "Nothing in the job calls the PowerShell parser.")
-
-        parse = parses[0]
         self.assertEqual("pwsh", parse.get("shell"))
         # Both halves, or the job checks one and reports on both.
         self.assertIn("Deployment", parse["run"])
@@ -150,8 +147,71 @@ class SyntaxJobTests(unittest.TestCase):
         self.assertEqual("$x = 'RUNNER_EXPRESSION'", module.substitute("$x = ${{ inputs.y }}"))
 
 
-class PesterJobTests(unittest.TestCase):
-    """The same job also runs the behaviour tests, and the same rot applies.
+class RunnerExpressionPlacementTests(harness.HarnessAssertions, unittest.TestCase):
+    """A `${{ }}` pasted against bare text is a bug twice over, and one fix clears both.
+
+    The runner substitutes the expression's value in as raw text, so
+    `${{ github.action_path }}/Write-VmCommand.ps1` is a path nothing quoted. One
+    space anywhere in that value and pwsh reads the first word as the command.
+
+    The extractor has to guess at the same line. It wraps the expression in quotes
+    so the block parses at all, which turns that path into
+    `'RUNNER_EXPRESSION'/Write-VmCommand.ps1` -- a string with a bare `/` after it,
+    and a parse error the syntax job reports against code that is fine on a runner.
+    A red job nobody can act on gets muted, and it takes the real failures with it.
+
+    Both problems go away the same way: put the expression in `env:` and read
+    `$env:NAME` inside the block, or quote it where it stands. For an action's own
+    directory the runner already exports `$env:GITHUB_ACTION_PATH`, so no
+    expression is needed there at all.
+
+    The check runs the real `substitute()` over the real blocks rather than
+    matching the YAML, so it follows the extractor: change how substitution quotes
+    things and this moves with it instead of going quietly stale.
+    """
+
+    # The shape of the parse error, before pwsh is asked. A quoted placeholder is
+    # fine next to whitespace, a bracket, a comma, a pipe, or a `.` method call --
+    # all of those legitimately follow a string. A word character, a path
+    # separator, or a `$` means it was pasted into the middle of a token.
+    JAMMED = re.compile(r"[\w/\\$]'RUNNER_EXPRESSION'|'RUNNER_EXPRESSION'[\w/\\$]")
+
+    # Inside a double-quoted string the substituted quotes are literal characters
+    # and nothing is jammed, so those spans come out before the scan. The runner
+    # is safe there too: `"a/${{ x }}/b"` is a quoted value however the expression
+    # expands. Backtick is PowerShell's escape, so a `" does not end the span.
+    DOUBLE_QUOTED = re.compile(r'"(?:`.|[^"`])*"')
+
+    def test_no_runner_expression_is_pasted_into_the_middle_of_a_token(self):
+        module = load_extractor()
+
+        blocks = []
+        for path in yaml_sources():
+            parsed = yaml.safe_load(path.read_text())
+            source = path.parent.name if path.name == "action.yml" else path.stem
+            for slug, script in module.powershell_steps(parsed, source):
+                blocks.append((path.relative_to(harness.REPO_ROOT).as_posix(), slug, script))
+
+        self.assertNotVacuous(blocks, "no pwsh blocks were found, so nothing was checked")
+
+        jammed = []
+        for relative, slug, script in blocks:
+            for line in module.substitute(script).splitlines():
+                if self.JAMMED.search(self.DOUBLE_QUOTED.sub("", line)):
+                    jammed.append(f"{relative} ({slug}): {line.strip()}")
+
+        self.assertEqual(
+            [],
+            jammed,
+            "a runner expression is pasted against bare text. On the runner that is "
+            "an unquoted value; to the syntax job it is a parse error against code "
+            "that would have run. Read it from `env:` instead, or quote it in "
+            "place:\n  " + "\n  ".join(jammed),
+        )
+
+
+class PesterJobTests(harness.HarnessAssertions, unittest.TestCase):
+    """A second job runs the behaviour tests, and the same rot applies.
 
     Parsing says the script is well formed. Pester says what it decides, which is
     where the failures have actually been -- the certificate selector preferred a
@@ -160,12 +220,48 @@ class PesterJobTests(unittest.TestCase):
     been if it had never been wired up.
     """
 
+    def pester_job(self):
+        """Whichever job runs the suite, found by what it does rather than by name.
+
+        The Pester steps sat in the parse job until they were split out for a
+        Windows runner. A lookup pinned to a job name fails for the rename and says
+        nothing about whether the suite still runs, which is the only question here.
+        """
+        jobs = harness.workflow("deployment-pipeline-tests.yml")["jobs"]
+        running = {
+            name: job
+            for name, job in jobs.items()
+            if any("Invoke-Pester" in (step.get("run") or "") for step in job["steps"])
+        }
+        self.assertEqual(
+            1,
+            len(running),
+            f"Expected exactly one job to run Pester, found {sorted(running) or 'none'}.",
+        )
+        return next(iter(running.values()))
+
     def pester_step(self):
-        job = harness.workflow("deployment-pipeline-tests.yml")["jobs"].get("powershell")
-        self.assertIsNotNone(job, "The PowerShell job is gone.")
-        runs = [s for s in job["steps"] if "Invoke-Pester" in (s.get("run") or "")]
+        """The step that runs the Pester suite."""
+        runs = [s for s in self.pester_job()["steps"] if "Invoke-Pester" in (s.get("run") or "")]
         self.assertEqual(1, len(runs), "Nothing in the pipeline runs Pester.")
         return runs[0]
+
+    def runner_images(self, job):
+        """The runner images a job actually runs on.
+
+        `runs-on` is either an image or an expression reading a matrix key. Taking
+        the literal would read `${{ matrix.os }}` as the name of an image and report
+        a job that never goes near Windows as though it did.
+        """
+        runs_on = str(job.get("runs-on", "")).strip()
+        reference = re.fullmatch(r"\$\{\{\s*matrix\.(\w+)\s*\}\}", runs_on)
+        if not reference:
+            return [runs_on]
+
+        key = reference.group(1)
+        matrix = job.get("strategy", {}).get("matrix", {})
+        self.assertIn(key, matrix, f"runs-on reads matrix.{key}, which the matrix never defines.")
+        return [str(image) for image in matrix[key]]
 
     def test_the_pipeline_runs_the_pester_suite(self):
         step = self.pester_step()
@@ -181,13 +277,52 @@ class PesterJobTests(unittest.TestCase):
         self.assertIn("exit 1", run)
 
     def test_the_job_installs_pester_before_running_it(self):
-        job = harness.workflow("deployment-pipeline-tests.yml")["jobs"]["powershell"]
-        names = [s.get("run") or "" for s in job["steps"]]
+        names = [s.get("run") or "" for s in self.pester_job()["steps"]]
         installs = [i for i, run in enumerate(names) if "Install-Module Pester" in run]
         invokes = [i for i, run in enumerate(names) if "Invoke-Pester" in run]
 
         self.assertEqual(1, len(installs), "Pester is never installed, so the run needs whatever the image ships.")
         self.assertLess(installs[0], invokes[0], "Pester is installed after the step that uses it.")
+
+    def test_the_suite_runs_on_a_windows_runner(self):
+        """The one machine these scripts ever run on is a Windows VM.
+
+        Join-Path resolves a drive qualifier through the provider, so
+        `Join-Path 'C:\\x' 'y'` finds no drive C on Linux and hands back $null. An
+        assertion written with Windows literals then compares $null to $null and
+        passes having checked nothing, which is why DeploymentTarget.Tests.ps1
+        builds every path from $TestDrive instead. That keeps the Linux leg honest
+        and leaves the platform itself unchecked. The Windows leg is what checks it.
+        """
+        images = self.runner_images(self.pester_job())
+        self.assertNotVacuous(images, "The Pester job names no runner image at all.")
+
+        self.assertTrue(
+            any("windows" in image for image in images),
+            "The Pester suite runs only on "
+            + ", ".join(images)
+            + ". The deploy target is Windows, and Linux cannot fail an assertion "
+            "about a drive letter -- it returns $null and passes.",
+        )
+        self.assertTrue(
+            any("ubuntu" in image for image in images),
+            "The Linux leg is gone. It is the cheap one and it is what every other "
+            "job in this workflow runs on, so losing it trades fast feedback for "
+            "nothing.",
+        )
+
+    def test_one_leg_failing_does_not_cancel_the_other(self):
+        """Two legs exist because they answer different questions. fail-fast left on
+        its default cancels Windows the moment Linux goes red, so the platform
+        difference -- the entire reason for the second leg -- is the first thing
+        lost on the run that would have shown it."""
+        job = self.pester_job()
+        if len(self.runner_images(job)) < 2:
+            self.skipTest("Single runner image, so there is no sibling leg to cancel.")
+
+        strategy = job.get("strategy", {})
+        self.assertIn("fail-fast", strategy, "fail-fast is unset, so it defaults to true.")
+        self.assertFalse(strategy["fail-fast"], "fail-fast is on, so the first leg to fail cancels the rest.")
 
     def test_the_run_refuses_to_report_success_on_zero_tests(self):
         """A -Path that matches nothing returns zero failures, and so does a
@@ -226,20 +361,22 @@ class PesterJobTests(unittest.TestCase):
         """
         quoted = re.compile(r"""['"]([^'"]*?[A-Za-z0-9_-]+\.ps1)['"]""")
         deployment = harness.REPO_ROOT / "Deployment" / "PrTestEnvironments"
-        checked = 0
+        found = {}
 
         for suite in sorted(PESTER_DIR.glob("*.ps1")):
-            for literal in quoted.findall(suite.read_text(encoding="utf-8")):
-                checked += 1
+            literals = quoted.findall(suite.read_text(encoding="utf-8"))
+            found[suite.name] = literals
 
+            for literal in literals:
                 # A literal with a path in it is resolved the way the suite itself
-                # resolves it, relative to $PSScriptRoot. The scripts under test are
-                # no longer all in one directory: the queue action keeps its
-                # PowerShell in .github/actions/ so that action.yml stays a wrapper
-                # and the logic inside it can be executed. A bare filename comes from
-                # a -ForEach table and is still a deploy script.
+                # resolves it: Get-RepositoryPath takes a path from the repository
+                # root. The scripts under test are no longer all in one directory --
+                # the queue action keeps its PowerShell in .github/actions/ so that
+                # action.yml stays a wrapper and the logic inside it can be
+                # executed. A bare filename comes from a -ForEach table and is still
+                # a deploy script.
                 if "/" in literal:
-                    script = (PESTER_DIR / literal).resolve()
+                    script = harness.REPO_ROOT / literal
                     where = literal
                 else:
                     script = deployment / literal
@@ -250,9 +387,18 @@ class PesterJobTests(unittest.TestCase):
                     f"{suite.name} loads {literal}, which is not at {where}.",
                 )
 
-        # Nine references across four suites at the time of writing. The floor is
-        # there so a regex that stops matching reads as a failure and not as a pass.
-        self.assertGreaterEqual(checked, 9, f"Only found {checked} script references; the suites name more than that.")
+        # Per suite rather than a total across all of them. A suite in this
+        # directory exists to run a script, so one that names none has had its
+        # loader rewritten into a shape this regex no longer sees -- and a total
+        # stays comfortably above any floor while that happens to a single file.
+        self.assertNotVacuous(found, f"{PESTER_DIR} holds no suites at all.")
+        silent = sorted(name for name, literals in found.items() if not literals)
+        self.assertEqual(
+            [],
+            silent,
+            "These suites name no script, so nothing here checked them: "
+            + ", ".join(silent),
+        )
 
 
 class GuardTests(unittest.TestCase):

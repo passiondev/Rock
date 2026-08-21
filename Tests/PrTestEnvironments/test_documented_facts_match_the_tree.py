@@ -202,7 +202,7 @@ class ReferencedPathsExistTests(harness.HarnessAssertions, unittest.TestCase):
                     continue
                 if any(entry.startswith(named.rstrip("/") + "/") for entry in tracked):
                     continue
-                line = text.count("\n", 0, match.start()) + 1
+                line = harness.line_of(text, match.start())
                 offenders.append(f"{path.name}:{line} names `{named}`, which is not in the tree")
 
         self.assertFalse(

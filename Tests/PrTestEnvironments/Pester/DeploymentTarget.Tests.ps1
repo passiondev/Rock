@@ -27,7 +27,7 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
-    $script:DeployScript = Join-Path $PSScriptRoot '../../../Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
+    $script:DeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
     . (Import-ScriptFunction -Path $script:DeployScript -Name 'Resolve-DeploymentTarget')
 }
 

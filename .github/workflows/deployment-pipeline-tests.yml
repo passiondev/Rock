@@ -248,23 +248,51 @@ jobs:
           if ($filesWithErrors -gt 0) {
             exit 1
           }
+  # Parsing proves the scripts are well formed. It says nothing about what they
+  # decide, and what they decide is what has actually gone wrong: on 2026-08-10
+  # the certificate selector ranked a two-year self-signed placeholder above
+  # every ninety-day Let's Encrypt certificate, so each deploy quietly rebound
+  # the site to an untrusted certificate while renewal reported success. The
+  # Python suite could see the sort expression. It could not see which
+  # certificate came out.
+  #
+  # Why this is a job of its own rather than a matrix over the parse: a
+  # PowerShell AST parse gives the same answer on every platform, so running it
+  # twice costs a Windows runner and buys nothing. What is platform dependent is
+  # what these tests decide.
+  #
+  # Why it runs on Windows: every path these scripts build is a Windows path,
+  # and the only machine they ever run on is a Windows VM. Join-Path resolves a
+  # drive qualifier through the provider, so `Join-Path 'C:\x' 'y'` finds no
+  # drive C on Linux and returns $null -- an assertion written with Windows
+  # literals then compares $null to $null and passes having checked nothing.
+  # The suites build every path from $TestDrive so the Linux leg stays honest,
+  # and the windows-latest leg is what lets them say anything about the
+  # platform they actually ship to. See the header of
+  # Tests/PrTestEnvironments/Pester/DeploymentTarget.Tests.ps1.
+  #
+  # Still out of scope on both legs: anything needing IIS, a service account or
+  # a database. This is pure decision logic with the certificate store faked at
+  # the seam.
+  pester:
+    name: Run the Pester tests
+    strategy:
+      # Off, because the two legs answer different questions. A Linux failure
+      # cancelling the Windows leg would hide the platform difference that is
+      # the whole reason for running twice.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
 
-      # Parsing proves the scripts are well formed. It says nothing about what they
-      # decide, and what they decide is what has actually gone wrong: on 2026-08-10
-      # the certificate selector ranked a two-year self-signed placeholder above
-      # every ninety-day Let's Encrypt certificate, so each deploy quietly rebound
-      # the site to an untrusted certificate while renewal reported success. The
-      # Python suite could see the sort expression. It could not see which
-      # certificate came out.
-      #
-      # These run on the same Linux runner as everything else, so they gate every
-      # pull request at the same cost. That bounds what they can cover: pure
-      # decision logic, with the certificate store faked at the seam. Anything that
-      # genuinely needs IIS, a service account or a database is not in here and
-      # wants a Windows runner it has not been given yet.
       - name: Install Pester
         shell: pwsh
         run: |
+          # Windows images ship Pester 3.4.0 alongside whatever else is there, and
+          # 3.x does not understand the syntax these suites are written in. Match
+          # on the version rather than on the module being present at all.
           $existing = Get-Module -ListAvailable Pester |
             Where-Object { $_.Version -ge [version]'5.0.0' }
           if ($existing) {

@@ -71,7 +71,7 @@ Describe '<Function>' -ForEach @(
 ) {
     BeforeAll {
         . (Import-ScriptFunction `
-            -Path (Join-Path $PSScriptRoot "../../../Deployment/PrTestEnvironments/$Script") `
+            -Path (Get-RepositoryPath "Deployment/PrTestEnvironments/$Script") `
             -Name $Function)
 
         $script:Selector = $Function

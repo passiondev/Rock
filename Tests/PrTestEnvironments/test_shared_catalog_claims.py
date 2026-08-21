@@ -82,7 +82,7 @@ class SharedCatalogClaimTests(unittest.TestCase):
         for relative, text in self.surface_texts():
             for pattern, why in UNSAFE_CLAIMS:
                 for match in re.finditer(pattern, text):
-                    line = text.count("\n", 0, match.start()) + 1
+                    line = harness.line_of(text, match.start())
                     offenders.append(f"{relative}:{line} {why} ({match.group(0)!r})")
 
         self.assertFalse(offenders, "the catalog is a straight copy of production:\n  " + "\n  ".join(offenders))
@@ -92,7 +92,7 @@ class SharedCatalogClaimTests(unittest.TestCase):
         for relative, text in self.surface_texts():
             for pattern, why in UNSAFE_REFRESH_CLAIMS:
                 for match in re.finditer(pattern, text):
-                    line = text.count("\n", 0, match.start()) + 1
+                    line = harness.line_of(text, match.start())
                     # The correction itself has to be able to name the thing it
                     # is correcting, so allow a match that is being denied.
                     window = text[max(0, match.start() - 120):match.start()]
@@ -107,13 +107,17 @@ class SharedCatalogClaimTests(unittest.TestCase):
         """Absence of the false claim is not the same as presence of the true
         one. These three are where somebody decides whether to paste a
         screenshot into a ticket, so they have to say it outright."""
-        required = {
-            "Documentation/PR-Test-Environments-Developer-Runbook.md": "not sanitized",
-            ".github/PULL_REQUEST_TEMPLATE.md": "real\ncongregant data",
-            ".github/scripts/pr-test-status.js": "not a sanitized one",
-        }
-        for relative, needle in required.items():
-            text = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        # Written out one quoted segment at a time for the same reason the module
+        # header gives: joined from a string, these three paths are invisible to
+        # test_ci_trigger_coverage.py and nothing checks the CI trigger against them.
+        required = [
+            (REPO_ROOT / "Documentation" / "PR-Test-Environments-Developer-Runbook.md", "not sanitized"),
+            (REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md", "real\ncongregant data"),
+            (REPO_ROOT / ".github" / "scripts" / "pr-test-status.js", "not a sanitized one"),
+        ]
+        for path, needle in required:
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            text = path.read_text(encoding="utf-8")
             self.assertIn(
                 needle,
                 text,

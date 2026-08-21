@@ -14,7 +14,7 @@
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
-    $script:DeploymentDir = Join-Path $PSScriptRoot '../../../Deployment/PrTestEnvironments'
+    $script:DeploymentDir = Get-RepositoryPath 'Deployment/PrTestEnvironments'
     $script:CleanupScript = Join-Path $script:DeploymentDir 'Invoke-PrEnvironmentCleanup.ps1'
 
     . (Import-ScriptFunction -Path $script:CleanupScript -Name 'Get-ManifestActivityUtc')
@@ -32,7 +32,7 @@ Describe 'ConvertTo-ManifestHashtable' {
     Context '<Script>' -ForEach $copies {
         BeforeAll {
             . (Import-ScriptFunction `
-                -Path (Join-Path $PSScriptRoot "../../../Deployment/PrTestEnvironments/$Script") `
+                -Path (Get-RepositoryPath "Deployment/PrTestEnvironments/$Script") `
                 -Name 'ConvertTo-ManifestHashtable')
         }
 

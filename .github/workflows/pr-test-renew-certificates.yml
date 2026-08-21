@@ -21,16 +21,14 @@ jobs:
         with:
           sparse-checkout: |
             Deployment/PrTestEnvironments
+            .github/actions/gcp-session
             .github/actions/await-vm-command
             .github/actions/queue-vm-command
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Upload latest deployment scripts
         shell: pwsh

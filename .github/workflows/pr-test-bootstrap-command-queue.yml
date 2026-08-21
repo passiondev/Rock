@@ -16,6 +16,7 @@ jobs:
           sparse-checkout: |
             Deployment/PrTestEnvironments
             Deployment/Database
+            .github/actions/gcp-session
 
       - name: Check the deployment scripts parse
         shell: pwsh
@@ -40,13 +41,10 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Ensure Cloud Storage bucket exists
         shell: pwsh

@@ -14,13 +14,20 @@ jobs:
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       DIAGNOSTIC_ID: diagnostics-${{ github.run_id }}
     steps:
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      # This workflow reads nothing else from the tree -- the diagnostics below are
+      # inline PowerShell. The checkout exists only because `uses: ./...` loads a
+      # local action from disk, so it takes the one directory that action lives in.
+      - name: Check out the Google Cloud session action
+        uses: actions/checkout@v4
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          sparse-checkout: |
+            .github/actions/gcp-session
+          sparse-checkout-cone-mode: false
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Run diagnostics through VM startup script
         shell: pwsh

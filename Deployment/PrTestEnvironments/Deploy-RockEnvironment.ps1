@@ -28,6 +28,29 @@ InPlace deliberately writes its manifest somewhere else, so a certificate
 renewal run on the test VM can never reach a production site.
 #>
 
+# On the sixteen parameters below, and why they are still sixteen.
+#
+# Card 08 of the 2026-08-21 architecture review read this block as a shallow
+# interface and proposed replacing it with a Target the caller names once,
+# carrying only the fields belonging to its own mode. That was not taken, and the
+# reason belongs here rather than in a commit message nobody will find:
+#
+#   PowerShell has no discriminated union to express "these four fields, but only
+#   in DedicatedSite". The one runtime caller,
+#   Invoke-PrEnvironmentCommandQueue.ps1, assembles a hashtable from untyped queue
+#   JSON and splats it -- so a Target type would sit between an untyped hashtable
+#   on one side and a flat parameter list on the other, translating without
+#   checking anything. That is a layer, not a seam.
+#
+# What the card was actually reaching for was the mode logic, which was thirty
+# lines of top-level script that nothing could call. That is now
+# Resolve-DeploymentTarget, with Pester tests that call it, and it refuses the
+# mode mismatch the flat list used to swallow: DedicatedSite accepted
+# TargetSitePath and TargetAppPoolName and silently dropped them, so an operator
+# could dispatch a deploy naming a directory, watch it report success, and get a
+# different one. The depth went behind the function. The parameter list stayed
+# where every caller and every runbook already expects it.
+
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)]

@@ -76,4 +76,12 @@ runs:
         VMQ_PAYLOAD: ${{ inputs.payload }}
         VMQ_SECRET_FIELD: ${{ inputs.secret-field }}
         VMQ_SECRET_VALUE: ${{ inputs.secret-value }}
-      run: ${{ github.action_path }}/Write-VmCommand.ps1
+      # $env:GITHUB_ACTION_PATH, not ${{ github.action_path }}. The runner sets
+      # both to the same directory, but an expression is pasted in as raw text:
+      # unquoted here, so one space in the path and pwsh reads the first word as
+      # the command. The env var can be quoted where it stands, and it keeps the
+      # block parseable so the syntax job can check it -- see
+      # RunnerExpressionPlacementTests in Tests/PrTestEnvironments/test_powershell_job.py.
+      # Block scalar because a bare `&` opens a YAML anchor.
+      run: |
+        & "$env:GITHUB_ACTION_PATH/Write-VmCommand.ps1"
