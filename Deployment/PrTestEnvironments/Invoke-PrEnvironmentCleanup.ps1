@@ -76,13 +76,35 @@ function ConvertTo-ManifestHashtable {
 function Get-ManifestActivityUtc {
     param([Parameter(Mandatory = $true)]$Manifest)
 
+    # The newest of these, not the first one present.
+    #
+    # This list used to be walked in order with the first match returned. Nothing in
+    # this repository has ever written lastLifecycleAtUtc, so the first entry never
+    # matched, and deployedAtUtc then shadowed stoppedAtUtc on every manifest that
+    # carried both -- which is every environment that was ever deployed and then
+    # stopped.
+    #
+    # The caller below destroys a stopped environment once this timestamp is
+    # DestroyAfterDays old. Reading the deploy date in place of the stop date meant an
+    # environment deployed months ago and stopped this morning reported months of
+    # idleness and was destroyed on the very next pass, with no grace period at all.
+    #
+    # Taking the maximum can only move the timestamp later, so it can only ever delay
+    # a destroy. That is the safe direction to be wrong in for something irreversible.
+    $activity = [DateTime]::MinValue.ToUniversalTime()
+
     foreach ($propertyName in @("lastLifecycleAtUtc", "deployedAtUtc", "stoppedAtUtc", "destroyedAtUtc")) {
-        if ($Manifest.ContainsKey($propertyName) -and ![string]::IsNullOrWhiteSpace($Manifest[$propertyName])) {
-            return ([DateTime]::Parse($Manifest[$propertyName])).ToUniversalTime()
+        if (!$Manifest.ContainsKey($propertyName) -or [string]::IsNullOrWhiteSpace($Manifest[$propertyName])) {
+            continue
+        }
+
+        $candidate = ([DateTime]::Parse($Manifest[$propertyName])).ToUniversalTime()
+        if ($candidate -gt $activity) {
+            $activity = $candidate
         }
     }
 
-    return [DateTime]::MinValue.ToUniversalTime()
+    return $activity
 }
 
 function Update-GitHubStatusIfConfigured {

@@ -26,6 +26,7 @@ import pipeline_harness as harness
 PIPELINE_WORKFLOW = harness.REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
 EXTRACTOR = harness.REPO_ROOT / ".github" / "scripts" / "extract-powershell-blocks.py"
 AWAIT_ACTION_FILE = harness.REPO_ROOT / ".github" / "actions" / "await-vm-command" / "action.yml"
+PESTER_DIR = harness.REPO_ROOT / "Tests" / "PrTestEnvironments" / "Pester"
 
 # Deliberately naive, and that is the point: it sees what a person skimming the
 # YAML would see. It cannot count blocks -- one `defaults:` line covers a whole
@@ -120,6 +121,98 @@ class SyntaxJobTests(unittest.TestCase):
 
         self.assertEqual("Get-Content 'RUNNER_EXPRESSION' -Raw", module.substitute("Get-Content '${{ steps.a.outputs.b }}' -Raw"))
         self.assertEqual("$x = 'RUNNER_EXPRESSION'", module.substitute("$x = ${{ inputs.y }}"))
+
+
+class PesterJobTests(unittest.TestCase):
+    """The same job also runs the behaviour tests, and the same rot applies.
+
+    Parsing says the script is well formed. Pester says what it decides, which is
+    where the failures have actually been -- the certificate selector preferred a
+    self-signed placeholder for months while every test in this suite passed. A
+    Pester suite nobody runs is worth exactly as much as the parse job would have
+    been if it had never been wired up.
+    """
+
+    def pester_step(self):
+        job = harness.workflow("deployment-pipeline-tests.yml")["jobs"].get("powershell")
+        self.assertIsNotNone(job, "The PowerShell job is gone.")
+        runs = [s for s in job["steps"] if "Invoke-Pester" in (s.get("run") or "")]
+        self.assertEqual(1, len(runs), "Nothing in the pipeline runs Pester.")
+        return runs[0]
+
+    def test_the_pipeline_runs_the_pester_suite(self):
+        step = self.pester_step()
+        self.assertEqual("pwsh", step.get("shell"))
+
+        run = step["run"]
+        self.assertIn("Tests/PrTestEnvironments/Pester", run)
+        # -PassThru is what makes the result inspectable. Without it the step reads
+        # the exit code of a cmdlet that does not set one, and a failing suite goes
+        # green.
+        self.assertIn("-PassThru", run)
+        self.assertIn("FailedCount", run)
+        self.assertIn("exit 1", run)
+
+    def test_the_job_installs_pester_before_running_it(self):
+        job = harness.workflow("deployment-pipeline-tests.yml")["jobs"]["powershell"]
+        names = [s.get("run") or "" for s in job["steps"]]
+        installs = [i for i, run in enumerate(names) if "Install-Module Pester" in run]
+        invokes = [i for i, run in enumerate(names) if "Invoke-Pester" in run]
+
+        self.assertEqual(1, len(installs), "Pester is never installed, so the run needs whatever the image ships.")
+        self.assertLess(installs[0], invokes[0], "Pester is installed after the step that uses it.")
+
+    def test_the_run_refuses_to_report_success_on_zero_tests(self):
+        """A -Path that matches nothing returns zero failures, and so does a
+        discovery error. Both are the same green as a passing suite unless the step
+        says otherwise."""
+        run = self.pester_step()["run"]
+        self.assertIn("PassedCount", run)
+        self.assertIn("throw", run)
+
+    def test_the_path_the_job_names_holds_the_tests(self):
+        """Read the directory out of the step rather than restating it here. A
+        constant would pass while the job pointed somewhere empty, which is the
+        exact failure the step's own zero-test guard exists to catch -- and a test
+        that cannot catch it is decoration."""
+        run = self.pester_step()["run"]
+        named = re.search(r"Invoke-Pester\s+-Path\s+(\S+)", run)
+        self.assertIsNotNone(named, "Cannot tell which path the job runs Pester over.")
+
+        target = harness.REPO_ROOT / named.group(1).strip("'\"")
+        self.assertTrue(target.is_dir(), f"The pipeline points Pester at {named.group(1)}, which is not a directory.")
+
+        suites = sorted(target.glob("*.Tests.ps1"))
+        self.assertTrue(suites, f"{named.group(1)} holds no *.Tests.ps1, so the run would discover nothing.")
+        # The constant is what the rest of this file reads. If the job has moved on
+        # from it, the two have drifted and one of them is stale.
+        self.assertEqual(PESTER_DIR.resolve(), target.resolve())
+
+    def test_every_suite_names_a_script_that_still_exists(self):
+        """A suite reaches into Deployment/ by name, including through the -ForEach
+        tables that run one behaviour suite against several copies of a function.
+        Rename a script and the failure lands in CI as a broken test rather than
+        here as a moved file.
+
+        Quoted literals only. The same names appear in prose above each suite, and a
+        comment saying `Deployment/PrTestEnvironments/*.ps1` is a glob, not a path.
+        """
+        quoted = re.compile(r"""['"]([^'"]*?[A-Za-z0-9_-]+\.ps1)['"]""")
+        deployment = harness.REPO_ROOT / "Deployment" / "PrTestEnvironments"
+        checked = 0
+
+        for suite in sorted(PESTER_DIR.glob("*.ps1")):
+            for literal in quoted.findall(suite.read_text(encoding="utf-8")):
+                checked += 1
+                script = deployment / pathlib.PurePosixPath(literal).name
+                self.assertTrue(
+                    script.is_file(),
+                    f"{suite.name} loads {literal}, which is not in Deployment/PrTestEnvironments/.",
+                )
+
+        # Six references across three suites at the time of writing. The floor is
+        # there so a regex that stops matching reads as a failure and not as a pass.
+        self.assertGreaterEqual(checked, 6, f"Only found {checked} script references; the suites name more than that.")
 
 
 class GuardTests(unittest.TestCase):

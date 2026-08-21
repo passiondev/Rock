@@ -178,7 +178,7 @@ jobs:
   # test_powershell_edition_compatibility.py is what catches those, and this job
   # does not replace it.
   powershell:
-    name: Parse the PowerShell
+    name: Check the PowerShell
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -234,5 +234,47 @@ jobs:
 
           Write-Host "Parsed $($targets.Count) files. $failed had errors."
           if ($failed -gt 0) {
+            exit 1
+          }
+
+      # Parsing proves the scripts are well formed. It says nothing about what they
+      # decide, and what they decide is what has actually gone wrong: on 2026-08-10
+      # the certificate selector ranked a two-year self-signed placeholder above
+      # every ninety-day Let's Encrypt certificate, so each deploy quietly rebound
+      # the site to an untrusted certificate while renewal reported success. The
+      # Python suite could see the sort expression. It could not see which
+      # certificate came out.
+      #
+      # These run on the same Linux runner as everything else, so they gate every
+      # pull request at the same cost. That bounds what they can cover: pure
+      # decision logic, with the certificate store faked at the seam. Anything that
+      # genuinely needs IIS, a service account or a database is not in here and
+      # wants a Windows runner it has not been given yet.
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          $existing = Get-Module -ListAvailable Pester |
+            Where-Object { $_.Version -ge [version]'5.0.0' }
+          if ($existing) {
+            Write-Host "Pester $(($existing | Sort-Object Version -Descending)[0].Version) is already available."
+          } else {
+            Install-Module Pester -Force -Scope CurrentUser -SkipPublisherCheck -MinimumVersion 5.0.0
+          }
+
+      - name: Run the Pester tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path Tests/PrTestEnvironments/Pester -Output Detailed -PassThru
+
+          # A path that matches nothing, or a discovery failure, both come back with
+          # zero failures. Green on nothing is the outcome this whole job exists to
+          # stop reporting.
+          if ($result.PassedCount + $result.FailedCount -lt 1) {
+            throw 'Pester ran no tests. Either the path moved or discovery failed.'
+          }
+
+          Write-Host "$($result.PassedCount) passed, $($result.FailedCount) failed."
+          if ($result.FailedCount -gt 0) {
             exit 1
           }
