@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Replaces email addresses and phone numbers in a prod-derived staging catalog
     with deterministic, undeliverable substitutes. Dry run unless -Apply.
@@ -465,23 +465,42 @@ $AnonymizationTargets = @(
         SetClause = "Email = 'person' + CAST(Id AS varchar(12)) + '@staging.invalid'"
     },
     @{
-        Name      = 'PhoneNumber (Number, NumberFormatted, Extension)'
+        Name      = 'PhoneNumber (Number, NumberFormatted, FullNumber, Extension)'
         Table     = 'dbo.PhoneNumber'
-        # NumberReversed is the one that gets forgotten. Rock maintains it to make
-        # "ends with" searches indexable, so leaving it holding the reverse of the
-        # real number would leave the real number in the catalog, searchable, under
-        # a column nobody thinks of as a phone number.
+        # Two columns here hold the real number without looking like phone number
+        # columns, and they have to be handled in opposite ways.
         #
-        # It is not assigned here because it cannot be: CreateDatabase declares it
-        # [NumberReversed] AS (reverse([Number])) PERSISTED, and SQL Server refuses
+        # NumberReversed exists so that "ends with" searches can use an index. It is
+        # not assigned here because it cannot be: CreateDatabase declares it
+        # [NumberReversed] AS (reverse([Number])) PERSISTED, and SQL Server rejects
         # an UPDATE that writes a computed column. Rewriting Number is what clears
         # it -- the engine recomputes the reverse from the new value, which is both
         # correct and impossible to get out of step. Get-ComputedColumnAssignment
         # enforces that this stays true.
-        Predicate = "Number IS NOT NULL AND Number <> '' AND Number <> ('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7))$phoneNumberKeep"
+        #
+        # FullNumber is the opposite trap, and the more dangerous one, because it
+        # reads as computed and is not. The column is a plain [nvarchar](23) NOT
+        # NULL; only the C# property computes it, as CountryCode + Number behind a
+        # private setter that EF fills on save. Raw SQL never runs that, so an
+        # UPDATE that rewrites Number alone leaves FullNumber holding the real
+        # number -- indexed by IX_FullNumber, and matched directly by
+        # PersonService.GetPersonFromMobilePhoneNumber and the SMS action pipeline.
+        # Staging would still resolve a real number to the right person. So it is
+        # assigned, reproducing the C# concatenation exactly: a null CountryCode
+        # concatenates as empty in C# but poisons the whole expression in SQL,
+        # hence ISNULL.
+        #
+        # The predicate carries a second arm for the same reason. Keying only on
+        # Number would make a row whose Number is already a substitute invisible to
+        # a later run, stranding whatever FullNumber still holds. The second arm
+        # asks the leak question directly -- FullNumber disagrees with the number it
+        # is supposed to mirror -- so the target repairs drift instead of skipping
+        # it, and still settles to zero rows once everything agrees.
+        Predicate = "((Number IS NOT NULL AND Number <> '' AND Number <> ('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7))) OR (FullNumber <> '' AND FullNumber <> ISNULL(CountryCode, '') + ISNULL(Number, '')))$phoneNumberKeep"
         SetClause = @"
 Number = '555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7),
             NumberFormatted = '(555) ' + SUBSTRING('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7), 4, 3) + '-' + RIGHT('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7), 4),
+            FullNumber = ISNULL(CountryCode, '') + '555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7),
             Extension = NULL
 "@
     },
