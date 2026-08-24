@@ -241,6 +241,62 @@ foreach ($keepDomain in $KeepEmailDomains) {
     }
 }
 
+function Get-ComputedColumnAssignment {
+    <#
+        .SYNOPSIS
+            Names any computed column a SetClause tries to write.
+
+        .DESCRIPTION
+            SQL Server rejects "UPDATE ... SET <computed> = ..." when it binds the
+            statement, before it touches a row. That timing is the problem: the dry
+            run only ever issues COUNT(*) against the predicate, so it never binds
+            the SetClause and reports a clean plan. The failure then surfaces
+            halfway through the apply, with every earlier target already committed
+            and no transaction spanning them.
+
+            That is exactly how RockStaging20260824 ended up with Person.Email
+            rewritten and nothing else, on 2026-08-24: PhoneNumber.NumberReversed is
+            declared AS (reverse([Number])) PERSISTED.
+
+            Ask the catalog rather than parsing the SQL. sys.computed_columns is
+            authoritative and per-catalog, so this also catches local drift where a
+            column is computed here but not in CreateDatabase.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][System.Data.SqlClient.SqlConnection] $Connection,
+        [Parameter(Mandatory = $true)][string] $Table,
+        [Parameter(Mandatory = $true)][string] $SetClause,
+        [Parameter(Mandatory = $false)][int] $TimeoutSeconds = 600
+    )
+
+    # $Table is a literal from $AnonymizationTargets, never an argument, so it is
+    # not an injection path. Kept as interpolation to match the rest of the script.
+    $computedColumns = Invoke-Rows -Connection $Connection -TimeoutSeconds $TimeoutSeconds -Query @"
+SELECT c.[name] AS ColumnName
+FROM sys.computed_columns c
+WHERE c.[object_id] = OBJECT_ID('$Table');
+"@
+
+    $offenders = @()
+    foreach ($computedColumn in $computedColumns) {
+        $columnName = [string]$computedColumn['ColumnName']
+        if ([string]::IsNullOrWhiteSpace($columnName)) {
+            continue
+        }
+
+        # Match "Name =" only where Name starts an assignment: at the head of the
+        # clause, or after a comma or newline. Without that anchor, a column named
+        # in an expression on the right-hand side reads as an assignment to it.
+        $escapedName = [regex]::Escape($columnName)
+        if ($SetClause -match "(?im)(^|[,\r\n])\s*\[?$escapedName\]?\s*=") {
+            $offenders += $columnName
+        }
+    }
+
+    return ,$offenders
+}
+
+
 function Get-DomainExclusion {
     <#
         .SYNOPSIS
@@ -409,17 +465,23 @@ $AnonymizationTargets = @(
         SetClause = "Email = 'person' + CAST(Id AS varchar(12)) + '@staging.invalid'"
     },
     @{
-        Name      = 'PhoneNumber (Number, NumberFormatted, NumberReversed, Extension)'
+        Name      = 'PhoneNumber (Number, NumberFormatted, Extension)'
         Table     = 'dbo.PhoneNumber'
         # NumberReversed is the one that gets forgotten. Rock maintains it to make
         # "ends with" searches indexable, so leaving it holding the reverse of the
-        # real number leaves the real number in the catalog, searchable, under a
-        # column nobody thinks of as a phone number.
+        # real number would leave the real number in the catalog, searchable, under
+        # a column nobody thinks of as a phone number.
+        #
+        # It is not assigned here because it cannot be: CreateDatabase declares it
+        # [NumberReversed] AS (reverse([Number])) PERSISTED, and SQL Server refuses
+        # an UPDATE that writes a computed column. Rewriting Number is what clears
+        # it -- the engine recomputes the reverse from the new value, which is both
+        # correct and impossible to get out of step. Get-ComputedColumnAssignment
+        # enforces that this stays true.
         Predicate = "Number IS NOT NULL AND Number <> '' AND Number <> ('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7))$phoneNumberKeep"
         SetClause = @"
 Number = '555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7),
             NumberFormatted = '(555) ' + SUBSTRING('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7), 4, 3) + '-' + RIGHT('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7), 4),
-            NumberReversed = REVERSE('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7)),
             Extension = NULL
 "@
     },
@@ -566,6 +628,24 @@ try {
         }
     }
     Write-Host ""
+
+    # Bind-time check for every target before any of them runs. Whole-catalog, and
+    # ahead of the first write, because the point is to fail while nothing has been
+    # rewritten rather than between two targets.
+    $computedColumnFaults = @()
+    foreach ($target in $AnonymizationTargets) {
+        $offenders = Get-ComputedColumnAssignment -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
+            -Table $target.Table -SetClause $target.SetClause
+        foreach ($offender in $offenders) {
+            $computedColumnFaults += "$($target.Table).$offender"
+        }
+    }
+
+    if ($computedColumnFaults.Count -gt 0) {
+        throw ("Refusing to run: these are computed columns and SQL Server will reject any UPDATE that writes them -- " +
+            ($computedColumnFaults -join ', ') +
+            ". Remove them from the SetClause; rewriting the column they are computed from is what clears them.")
+    }
 
     foreach ($target in $AnonymizationTargets) {
         $pending = Invoke-Scalar -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
