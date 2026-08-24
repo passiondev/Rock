@@ -298,16 +298,21 @@ class ColumnCoverageTests(unittest.TestCase):
 
     def test_the_reversed_phone_number_is_covered(self):
         """The one that gets forgotten. Rock maintains NumberReversed so that "ends
-        with" searches can use an index. Rewriting Number and leaving it holding the
-        reverse of the real number leaves the real number in the catalog, still
-        searchable, under a column nobody thinks of as a phone number."""
-        body = _strip_comments(ANONYMIZER.read_text())
+        with" searches can use an index. Leaving it holding the reverse of the real
+        number leaves the real number in the catalog, still searchable, under a
+        column nobody thinks of as a phone number.
 
-        self.assertIn("NumberReversed", body)
-        self.assertIn(
-            "REVERSE(",
-            body,
-            "NumberReversed is named but not recomputed from the substitute",
+        It is cleared by rewriting Number, not by assigning it: the column is
+        declared AS (reverse([Number])) PERSISTED, so SQL Server recomputes it and
+        rejects any UPDATE that writes it directly. See ComputedColumnTests."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+        phone = next(v for k, v in targets.items() if k.startswith("PhoneNumber"))
+
+        self.assertRegex(
+            phone,
+            r"(^|[,\r\n])\s*\[?Number\]?\s*=",
+            "Number is not rewritten, so the computed NumberReversed keeps the "
+            "reverse of the real number",
         )
 
     def test_the_formatted_phone_number_is_covered(self):
@@ -432,7 +437,7 @@ class KeepListTests(unittest.TestCase):
 
         expected = {
             "Person.Email": "$personEmailKeep",
-            "PhoneNumber (Number, NumberFormatted, NumberReversed, Extension)": "$phoneNumberKeep",
+            "PhoneNumber (Number, NumberFormatted, Extension)": "$phoneNumberKeep",
             "PersonSearchKey.SearchValue (email-shaped)": "$searchValueKeep",
             "UserLogin.UserName (email-shaped)": "$userNameKeep",
         }
@@ -519,6 +524,26 @@ class KeepListTests(unittest.TestCase):
             body,
             r"KeepEmailDomains\s*=\s*@\(\s*['\"]",
             "a real domain is hard-coded as the default keep list",
+        )
+
+    def test_the_census_slices_the_domain_exactly(self):
+        """The census is the only thing that shows what the catalog actually holds,
+        so it is the check a misspelled keep list gets caught by. LEN() ignores
+        trailing spaces and RIGHT() does not, so slicing with the two together
+        reports a shifted domain for any address stored with a trailing space --
+        and a garbled census reads as an unfamiliar domain, not as a bug."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertNotIn(
+            "RIGHT(Email, LEN(Email)",
+            body,
+            "the census slices the domain with RIGHT/LEN, which disagree about "
+            "trailing spaces; use SUBSTRING from CHARINDEX instead",
+        )
+        self.assertIn(
+            "SUBSTRING(Email, CHARINDEX('@', Email) + 1",
+            body,
+            "the census does not slice the domain from the '@' onward",
         )
 
 
@@ -639,6 +664,58 @@ class KeepListIsReachableTests(unittest.TestCase):
                 names,
                 f"the {job} job queues the keep list without checking its shape",
             )
+
+
+class ComputedColumnTests(unittest.TestCase):
+    """On 2026-08-24 an apply against RockStaging20260824 rewrote Person.Email in
+    full and then died on PhoneNumber, because NumberReversed is declared
+    AS (reverse([Number])) PERSISTED and SQL Server rejects an UPDATE that writes a
+    computed column. Nothing spans the targets in one transaction, so the catalog
+    was left half anonymized."""
+
+    def test_the_phone_target_does_not_write_the_computed_column(self):
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+        phone = next(v for k, v in targets.items() if k.startswith("PhoneNumber"))
+
+        self.assertNotRegex(
+            phone,
+            r"(^|[,\r\n])\s*\[?NumberReversed\]?\s*=",
+            "the SetClause assigns NumberReversed, which is computed; rewriting "
+            "Number is what clears it",
+        )
+
+    def test_a_computed_column_is_refused_before_the_first_write(self):
+        """The dry run only issues COUNT(*) against the predicate, so it never binds
+        the SetClause. Without a check of its own it reports a clean plan for a
+        statement SQL Server will reject."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertIn(
+            "sys.computed_columns",
+            body,
+            "nothing asks the catalog which columns are computed",
+        )
+
+        guard = body.index("$computedColumnFaults")
+        loop = body.index("foreach ($target in $AnonymizationTargets) {\n        $pending")
+        self.assertLess(
+            guard,
+            loop,
+            "the computed-column check runs after the loop that writes, so it "
+            "cannot stop a half-finished apply",
+        )
+
+    def test_the_computed_column_check_throws(self):
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        fault = body.index("$computedColumnFaults.Count -gt 0")
+        following = body[fault : fault + 400]
+        self.assertIn(
+            "throw",
+            following,
+            "a computed column is reported but not refused, so the apply proceeds "
+            "and fails partway",
+        )
 
 
 class ConnectionStringHandlingTests(unittest.TestCase):
