@@ -406,6 +406,88 @@ class ColumnCoverageTests(unittest.TestCase):
             "exists to avoid making",
         )
 
+    def test_phone_numbers_in_free_text_are_reported_too(self):
+        """Every residual probe was email-shaped except the address one, so the
+        phone columns the run rewrites had no residual reporting at all. The
+        report could show PhoneNumber swept clean while the same number sat in
+        the note attached to the person."""
+        body = ANONYMIZER.read_text()
+        probes = body[body.index("$ResidualPiiProbes") : body.index("$connection = New-Object")]
+
+        for table in [
+            "dbo.PhoneNumber",
+            "dbo.Note",
+            "dbo.History",
+            "dbo.AttributeValue",
+        ]:
+            self.assertIn(
+                table,
+                probes,
+                f"{table} has no phone-shaped residual probe",
+            )
+
+        self.assertEqual(
+            4,
+            probes.count("Get-PhoneShapedPredicate"),
+            "the phone-shaped probes should be the four free-text columns a "
+            "number can survive in",
+        )
+
+    def test_each_probe_says_which_question_it_answers(self):
+        """'Note.Text' appearing twice with two different counts is unreadable.
+        The suffix is what makes a row of the report mean something."""
+        body = ANONYMIZER.read_text()
+        probes = body[body.index("$ResidualPiiProbes") : body.index("$connection = New-Object")]
+
+        for name in re.findall(r"Name = '([^']+)'", probes):
+            self.assertTrue(
+                name.endswith("-shaped)") or name.startswith("Location"),
+                f"probe '{name}' does not say whether it is looking for an "
+                f"email or a phone number",
+            )
+
+    def test_the_phone_probe_scans_each_table_once(self):
+        """Three shapes against Note, History and AttributeValue is three full
+        scans of three large tables if they are issued as three probes. They are
+        OR-ed into one predicate instead, which is why the builder takes a list
+        of columns rather than a single column."""
+        body = ANONYMIZER.read_text()
+        builder = body[
+            body.index("function Get-PhoneShapedPredicate")
+            : body.index("function Invoke-Scalar")
+        ]
+
+        self.assertIn(
+            "[string[]] $Column",
+            builder,
+            "the builder takes one column, so History needs two probes and two scans",
+        )
+        self.assertIn(
+            '-join " OR "',
+            builder,
+            "the shapes must be OR-ed into a single predicate",
+        )
+
+    def test_the_phone_shapes_stay_tight(self):
+        """A pattern loose enough to catch a bare 4045551234 also catches order
+        numbers, giving amounts in cents, and most timestamps -- and a probe that
+        fires on every row says nothing about whether phone PII survived."""
+        body = ANONYMIZER.read_text()
+        builder = body[
+            body.index("function Get-PhoneShapedPredicate")
+            : body.index("function Invoke-Scalar")
+        ]
+
+        quoted = re.findall(r'"([^"]*)"', builder)
+        shapes = [candidate for candidate in quoted if "[0-9]" in candidate]
+        self.assertEqual(3, len(shapes), f"expected three shapes, found {shapes}")
+
+        for shape in shapes:
+            self.assertTrue(
+                any(separator in shape for separator in ("-", ".", ") ")),
+                f"shape '{shape}' has no separator, so it matches any ten digits",
+            )
+
 
 def _anonymization_targets(text):
     """Split the $AnonymizationTargets array into one chunk per target.
