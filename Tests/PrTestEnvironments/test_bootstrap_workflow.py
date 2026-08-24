@@ -1,9 +1,10 @@
-import pathlib
 import unittest
 
 import yaml
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+import pipeline_harness as harness
+
+REPO_ROOT = harness.REPO_ROOT
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-bootstrap-command-queue.yml"
 
 class BootstrapCommandQueueWorkflowTests(unittest.TestCase):
@@ -12,7 +13,9 @@ class BootstrapCommandQueueWorkflowTests(unittest.TestCase):
         workflow = yaml.safe_load(text)
 
         self.assertIn("workflow_dispatch", workflow["on"])
-        self.assertIn("google-github-actions/auth@v2", text)
+        # Authenticating is the claim; the pair moved behind a composite action,
+        # and test_gcp_session_consistency.py is what holds that one place honest.
+        self.assertIn("./.github/actions/gcp-session", text)
         self.assertIn("gsutil -m cp Deployment/PrTestEnvironments/*.ps1", text)
         self.assertIn("gcloud compute instances list", text)
         self.assertIn("GCP_VM_EXTERNAL_IP", text)

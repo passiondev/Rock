@@ -8,8 +8,10 @@ import subprocess
 import tempfile
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 PROTECTION_SCRIPT = REPO_ROOT / "Deployment" / "Repository" / "set-trunk-protection.sh"
 
 # The dry run prints the ruleset already in place and then the one it would send.

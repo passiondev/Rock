@@ -1,10 +1,11 @@
-import pathlib
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "pr-test-deploy.yml"
 
 
@@ -24,11 +25,14 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
 
         self.assertIn("./.github/workflows/pr-test-artifact.yml", text)
         self.assertIn("secrets: inherit", text)
-        self.assertIn("commands/pending", text)
-        self.assertIn("commands/results", text)
-        self.assertIn("Poll PR environment command result", text)
-        self.assertIn("$i -lt 120", text)
-        self.assertIn("Start-Sleep -Seconds 15", text)
+        # Queueing the command is `.github/actions/queue-vm-command` now. Where it
+        # writes, and that the echo redacts, are asserted once in
+        # test_local_composite_actions.py instead of once per producer -- which is
+        # how two of the six came to redact a field name the third does not use.
+        # The wait itself is .github/actions/await-vm-command now, and its
+        # behaviour is asserted once in test_local_composite_actions.py rather
+        # than once per producer. What stays here is what this workflow chooses.
+        self.assertIn("attempts: '120'", text)
         self.assertIn("artifactGcsPath", text)
         self.assertIn("rock-dev.connect.passion.team", text)
         self.assertNotIn("sshpass", text)

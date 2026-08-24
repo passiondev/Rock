@@ -1,0 +1,44 @@
+# Card 06 of the 2026-08-21 architecture review proposed folding the nine identical
+# `auth@v2` + `setup-gcloud@v2` preambles into a local composite action, so that a
+# version bump is one edit instead of nine. The duplication is real. A composite
+# action is the wrong instrument for it.
+#
+# A local action is loaded from the checkout, so `uses: ./.github/actions/...`
+# silently requires that the job already ran `actions/checkout`. That precondition
+# is part of the interface, and five of the nine callers do not meet it: two
+# authenticate before they check out, and three -- the legacy-column finder, the
+# queue diagnostic, and the lifecycle sweep -- never check out at all. Buying a
+# five-line wrapper with a full clone of a repository this size, in the teardown
+# path that runs on a schedule, is a bad trade. `env-deploy-command.yml` already
+# checks out twice in one job to load `verify-public-url`, which is what that trade
+# looks like once it is paid.
+#
+# Dependabot answers the actual question -- who notices when a pinned action goes
+# stale -- for every action in every workflow, and it changes nothing on the deploy
+# path. The nine copies stay, and `test_gcp_session_consistency.py` holds them
+# byte-identical so they cannot drift apart between bumps.
+version: 2
+
+updates:
+  # Actions only. NuGet is deliberately absent: this repository is a fork of Rock,
+  # its package set is chosen upstream, and a bot opening pull requests against it
+  # would be noise at best. Adding an ecosystem here is a decision to review what it
+  # opens.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # One pull request that moves every action, rather than one per action. The
+    # nine GCP preambles have to move together or they are no longer nine copies of
+    # one thing, and the test below fails on the half-finished state.
+    groups:
+      actions:
+        patterns:
+          - '*'
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      # Trivial by the repository's convention: a version bump is not release-note
+      # material. See CLAUDE.md on `+` versus `-`.
+      prefix: '-'

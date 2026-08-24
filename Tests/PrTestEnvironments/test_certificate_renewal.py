@@ -1,7 +1,8 @@
-import pathlib
 import unittest
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+import pipeline_harness as harness
+
+REPO_ROOT = harness.REPO_ROOT
 RENEWAL_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCertificateRenewal.ps1"
 QUEUE_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
 BOOTSTRAP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-bootstrap-command-queue.yml"
@@ -40,13 +41,17 @@ class CertificateRenewalTests(unittest.TestCase):
             "schedule:",
             "add-tags", "remove-tags", "pr-test-acme-http",
             "renew-certificate",
-            "commands/pending", "commands/results",
             "Remove temporary ACME HTTP-01 network tag",
             "if: always()"
         ]:
             self.assertIn(expected, text)
         self.assertNotIn("sshpass", text)
         self.assertNotIn("Deploy over SSH", text)
+
+        # Waiting for the result is .github/actions/await-vm-command and queueing is
+        # .github/actions/queue-vm-command, both shared with the other five
+        # producers; test_local_composite_actions.py asserts that this workflow uses
+        # them and how they behave.
 
 
 class CertificateBindResilienceTests(unittest.TestCase):

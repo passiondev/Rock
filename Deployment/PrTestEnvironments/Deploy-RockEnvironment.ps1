@@ -28,6 +28,29 @@ InPlace deliberately writes its manifest somewhere else, so a certificate
 renewal run on the test VM can never reach a production site.
 #>
 
+# On the sixteen parameters below, and why they are still sixteen.
+#
+# Card 08 of the 2026-08-21 architecture review read this block as a shallow
+# interface and proposed replacing it with a Target the caller names once,
+# carrying only the fields belonging to its own mode. That was not taken, and the
+# reason belongs here rather than in a commit message nobody will find:
+#
+#   PowerShell has no discriminated union to express "these four fields, but only
+#   in DedicatedSite". The one runtime caller,
+#   Invoke-PrEnvironmentCommandQueue.ps1, assembles a hashtable from untyped queue
+#   JSON and splats it -- so a Target type would sit between an untyped hashtable
+#   on one side and a flat parameter list on the other, translating without
+#   checking anything. That is a layer, not a seam.
+#
+# What the card was actually reaching for was the mode logic, which was thirty
+# lines of top-level script that nothing could call. That is now
+# Resolve-DeploymentTarget, with Pester tests that call it, and it refuses the
+# mode mismatch the flat list used to swallow: DedicatedSite accepted
+# TargetSitePath and TargetAppPoolName and silently dropped them, so an operator
+# could dispatch a deploy naming a directory, watch it report success, and get a
+# different one. The depth went behind the function. The parameter list stayed
+# where every caller and every runbook already expects it.
+
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)]
@@ -138,28 +161,101 @@ $EnvironmentPath = Join-Path $EnvironmentRoot $EnvironmentName
 $ArtifactPath = Join-Path $EnvironmentPath "artifact.zip"
 $ExtractPath = Join-Path $EnvironmentPath "extract"
 
-if ($Mode -eq 'DedicatedSite') {
-    $SiteName = "rock-$EnvironmentName"
-    $AppPoolName = "rock-$EnvironmentName"
-    $SitePath = Join-Path $EnvironmentPath "site"
-    $ManifestPath = Join-Path $EnvironmentPath "env.json"
-}
-else {
+# Which site this deploy acts on. A function rather than thirty lines of
+# top-level script because two of its outcomes are unrecoverable if wrong --
+# overwriting the wrong live directory, and putting a production manifest where
+# the certificate renewal job will find it -- and nothing could call it to check.
+# Tests/PrTestEnvironments/Pester/DeploymentTarget.Tests.ps1 now can.
+function Resolve-DeploymentTarget {
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('DedicatedSite', 'InPlace')]
+        [string]
+        $Mode,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentName,
+
+        # Where the deploy does its work -- the artifact download and the extract
+        # -- in both modes. Only DedicatedSite also serves the site from it.
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentPath,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $TargetSitePath,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $TargetSiteName = 'Default Web Site',
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $TargetAppPoolName,
+
+        [Parameter(Mandatory = $false)]
+        [string]
+        $BackupRoot = "C:\RockBackups"
+    )
+
+    if ($Mode -eq 'DedicatedSite') {
+        # These used to be accepted and silently dropped. env-deploy-command.yml
+        # forwards targetSitePath and targetSiteName whenever the workflow input
+        # is non-empty and never checks them against the mode, so an operator
+        # could ask for one directory, watch the deploy report success, and get
+        # another.
+        #
+        # Only the two parameters with no default can be checked from in here.
+        # TargetSiteName and BackupRoot always arrive populated, which makes
+        # "passed" and "defaulted" indistinguishable.
+        if (![string]::IsNullOrWhiteSpace($TargetSitePath)) {
+            throw "TargetSitePath does not apply when Mode is DedicatedSite: a dedicated site is placed under its environment path and named after its environment. Remove it, or pass -Mode InPlace."
+        }
+        if (![string]::IsNullOrWhiteSpace($TargetAppPoolName)) {
+            throw "TargetAppPoolName does not apply when Mode is DedicatedSite: the app pool is named after the environment. Remove it, or pass -Mode InPlace."
+        }
+
+        return @{
+            SiteName     = "rock-$EnvironmentName"
+            AppPoolName  = "rock-$EnvironmentName"
+            SitePath     = Join-Path $EnvironmentPath "site"
+            ManifestPath = Join-Path $EnvironmentPath "env.json"
+        }
+    }
+
     if ([string]::IsNullOrWhiteSpace($TargetSitePath)) {
         throw "TargetSitePath is required when Mode is InPlace."
     }
     if (!(Test-Path $TargetSitePath)) {
         throw "TargetSitePath does not exist: $TargetSitePath"
     }
-    $SiteName = $TargetSiteName
-    $AppPoolName = if ([string]::IsNullOrWhiteSpace($TargetAppPoolName)) {
+
+    $resolvedAppPool = if ([string]::IsNullOrWhiteSpace($TargetAppPoolName)) {
         (Get-ItemProperty "IIS:\Sites\$TargetSiteName" -Name applicationPool).Value
     } else { $TargetAppPoolName }
-    $SitePath = $TargetSitePath
-    # Never under $EnvironmentRoot: the certificate renewal job walks that tree
-    # and stops/starts every site it finds a manifest for.
-    $ManifestPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) "env.json"
+
+    return @{
+        SiteName    = $TargetSiteName
+        AppPoolName = $resolvedAppPool
+        SitePath    = $TargetSitePath
+        # Never under $EnvironmentRoot: the certificate renewal job walks that tree
+        # and stops/starts every site it finds a manifest for.
+        ManifestPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) "env.json"
+    }
 }
+
+$DeploymentTarget = Resolve-DeploymentTarget -Mode $Mode -EnvironmentName $EnvironmentName `
+    -EnvironmentPath $EnvironmentPath -TargetSitePath $TargetSitePath -TargetSiteName $TargetSiteName `
+    -TargetAppPoolName $TargetAppPoolName -BackupRoot $BackupRoot
+
+$SiteName = $DeploymentTarget.SiteName
+$AppPoolName = $DeploymentTarget.AppPoolName
+$SitePath = $DeploymentTarget.SitePath
+$ManifestPath = $DeploymentTarget.ManifestPath
 
 function Ensure-Directory {
     param([Parameter(Mandatory = $true)][string]$Path)

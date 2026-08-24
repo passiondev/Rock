@@ -1,11 +1,12 @@
-import pathlib
 import re
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 DESTROY_ALL_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-destroy-all.yml"
 LIFECYCLE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-lifecycle.yml"
 STATUS_SCRIPT = REPO_ROOT / ".github" / "scripts" / "pr-test-status.js"
@@ -189,21 +190,21 @@ class DestroyAllQueueTests(unittest.TestCase):
         self.scripts = _all_run_scripts(self.workflow)
 
     def test_it_queues_the_command_type_the_agent_already_understands(self):
-        lifecycle = LIFECYCLE_WORKFLOW.read_text()
-        queue_path = "pr-environments/commands/pending"
-
-        self.assertIn(queue_path, lifecycle, "the lifecycle queue path moved; update this test")
-        self.assertIn(
-            queue_path,
-            self.scripts,
-            "the teardown does not write to the queue the VM agent polls",
-        )
+        # Where the command lands is `.github/actions/queue-vm-command`, asserted
+        # once in test_local_composite_actions.py. The verb is still this
+        # workflow's own decision, so it stays here -- it is read out of the
+        # action call rather than out of a line of PowerShell.
+        verbs = {
+            str((step.get("with") or {}).get("command") or "").strip()
+            for job in (self.workflow.get("jobs") or {}).values()
+            for step in (job.get("steps") or [])
+            if (step.get("uses") or "") == "./.github/actions/queue-vm-command"
+        }
 
         # Assert the verb positively rather than banning a substring: the workflow's
         # own file name and command ids reasonably contain the words "destroy all",
         # and a test that forbids the string would be satisfied by renaming rather
         # than by queueing the right thing.
-        verbs = set(re.findall(r'(?<![\w-])command\s*=\s*"([^"]*)"', self.scripts))
         self.assertEqual(
             verbs,
             {"destroy"},

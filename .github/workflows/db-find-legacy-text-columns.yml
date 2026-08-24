@@ -89,13 +89,19 @@ jobs:
       # the script they would be reshaping is the one holding a live connection string.
       POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
     steps:
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      # `uses: ./...` loads the action from the working tree. Sparse and non-cone:
+      # this job wants one action.yml and nothing else from the repository.
+      - name: Check out the await action
+        uses: actions/checkout@v4
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          sparse-checkout: |
+            .github/actions
+          sparse-checkout-cone-mode: false
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
 
       # Which catalog was scanned is the single most important fact in the output and
       # the one the log cannot show, because the connection string is redacted. A
@@ -124,84 +130,37 @@ jobs:
           "| Sized scan | $env:MEASURE_SIZES |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Queue find-legacy-text-columns command
-        run: |
-          $command = [ordered]@{
-            commandId        = $env:COMMAND_ID
-            command          = "find-legacy-text-columns"
-            connectionString = $env:CONNECTION_STRING
-            requestedAtUtc   = (Get-Date).ToUniversalTime().ToString("o")
-          }
-          if ($env:MEASURE_SIZES -eq 'true') {
-            $command.measureSizes = $true
-          }
-
-          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-
-          # Rebuilt key by key rather than regex-scrubbed, so a password containing a
-          # quote cannot leak a fragment past the substitution.
-          $redacted = [ordered]@{}
-          foreach ($key in $command.Keys) {
-            if ($key -eq 'connectionString') { $redacted[$key] = '<redacted>' }
-            else { $redacted[$key] = $command[$key] }
-          }
-          $redacted | ConvertTo-Json -Depth 10
-
-          gsutil cp command.json "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/pending/$env:COMMAND_ID.json"
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: find-legacy-text-columns
+          payload: |
+            {"measureSizes": ${{ env.MEASURE_SIZES == 'true' }}}
+          secret-value: ${{ env.CONNECTION_STRING }}
 
       - name: Wait for the VM to report the findings
+        id: await
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: The scan
+          attempts: ${{ env.POLL_ATTEMPTS }}
+          interval-seconds: '10'
+
+      # The findings ARE the output of this command, so unlike a deploy the log goes
+      # in the summary whole rather than as a 60-line tail -- truncating it would cut
+      # off the columns an operator has to act on. That is specific enough to this
+      # one command to belong here rather than as another input on the action. The
+      # agent redacts before uploading.
+      - name: Put the findings in the job summary
+        if: always() && steps.await.outputs.log-path != ''
+        shell: pwsh
         run: |
-          $resultUri = "gs://$env:GCS_BUCKET/pr-environments/$env:QUEUE_NAME/results/$env:COMMAND_ID.json"
-          # Parsed, not pasted. A dispatch input is a string whatever its declared
-          # type, so this both keeps it out of the script body and turns a nonsense
-          # value into an immediate error rather than a loop that never runs.
-          $attempts = 0
-          if (-not [int]::TryParse($env:POLL_ATTEMPTS, [ref]$attempts) -or $attempts -lt 1) {
-            throw "poll_attempts must be a positive whole number; got '$env:POLL_ATTEMPTS'."
-          }
-
-          function Show-CommandLog {
-            param([string]$LogObject)
-
-            if ([string]::IsNullOrWhiteSpace($LogObject)) {
-              Write-Host "The VM reported no output log. Re-run the bootstrap workflow so the VM picks up the current queue agent."
-              return
-            }
-
-            $logUri = "gs://$env:GCS_BUCKET/$LogObject"
-            gsutil -q cp $logUri command-output.log 2>$null
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "Could not download the command output from $logUri."
-              return
-            }
-
-            # The findings ARE the output, so unlike a deploy this goes in the summary
-            # whole rather than as a 60-line tail -- truncating it would cut off the
-            # columns an operator has to act on. The agent redacts before uploading.
-            $logText = Get-Content command-output.log -Raw
-            Write-Host "::group::Findings from the VM"
-            Write-Host $logText
-            Write-Host "::endgroup::"
-
-            "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            $logText | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          }
-
-          for ($i = 0; $i -lt $attempts; $i++) {
-            gsutil -q cp $resultUri result.json 2>$null
-            if ($LASTEXITCODE -eq 0) {
-              $result = Get-Content result.json -Raw | ConvertFrom-Json
-
-              $logObject = $null
-              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
-              Show-CommandLog -LogObject $logObject
-
-              if ($result.status -eq "succeeded") { exit 0 }
-
-              Write-Host "::error::The scan failed on the VM: $($result.error)"
-              exit 1
-            }
-            Start-Sleep -Seconds 10
-          }
-          throw "Timed out waiting for a result at $resultUri."
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

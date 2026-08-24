@@ -1,11 +1,12 @@
-import pathlib
 import re
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
 # GitHub constrains `boolean` to true/false, `number` to digits, and `choice` to the

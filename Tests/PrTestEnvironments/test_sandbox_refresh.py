@@ -1,8 +1,9 @@
-import pathlib
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 REFRESH_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-SandboxRefreshWithPrEnvironments.ps1"
 ISSUE = REPO_ROOT / "Documentation" / "Discussion Docs" / "PR-Test-Environments-Issues" / "09-sandbox-db-refresh-coordination.md"
 

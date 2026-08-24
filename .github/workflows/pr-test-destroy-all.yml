@@ -31,7 +31,13 @@ name: PR Test Environment Destroy All
 
 permissions:
   contents: read
-  pull-requests: read
+  # pull-requests: write, not read. pr-test-status.js manages the `rock:` state
+  # label through issues.addLabels/removeLabel, and for a pull request GitHub bills
+  # label writes against `pull-requests`, not `issues`. Declaring read here cost
+  # three green teardowns a 403 on their final bookkeeping step: the environments
+  # were gone and the labels still advertised them. pr-test-deploy.yml already
+  # declared write, which is why only these two ever failed.
+  pull-requests: write
   issues: write
 
 concurrency:
@@ -189,60 +195,40 @@ jobs:
         with:
           sparse-checkout: |
             .github/scripts/pr-test-status.js
+            .github/actions
           sparse-checkout-cone-mode: false
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Queue PR environment destroy command
-        shell: pwsh
-        run: |
-          $command = [ordered]@{
-            commandId = $env:COMMAND_ID
-            command = "destroy"
-            prNumber = [int]$env:PR_NUMBER
-            requestedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-          }
-          $command | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Encoding utf8
-          gsutil cp command.json gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/pending/$env:COMMAND_ID.json
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: destroy
+          payload: |
+            {"prNumber": ${{ env.PR_NUMBER }}}
 
-      - name: Poll PR environment command result
-        shell: pwsh
-        run: |
-          $resultUri = "gs://$env:PR_TEST_GCS_BUCKET/pr-environments/commands/results/$env:COMMAND_ID.json"
-          for ($i = 0; $i -lt 60; $i++) {
-            gsutil -q cp $resultUri result.json 2>$null
-            if ($LASTEXITCODE -eq 0) {
-              $result = Get-Content result.json -Raw | ConvertFrom-Json
-              $result | ConvertTo-Json -Depth 10
-
-              # fail-fast is off, so a failure here is triaged after the whole fleet
-              # has been through. Print the VM's own log now: by the time anybody
-              # reads this run, the only record of why one teardown failed is what
-              # this step captured.
-              $logObject = $null
-              if ($result.PSObject.Properties.Name -contains 'logObject') { $logObject = [string]$result.logObject }
-              if (![string]::IsNullOrWhiteSpace($logObject)) {
-                gsutil -q cp "gs://$env:PR_TEST_GCS_BUCKET/$logObject" command-output.log 2>$null
-                if ($LASTEXITCODE -eq 0) {
-                  Write-Host "::group::Teardown output from the VM"
-                  Get-Content command-output.log -Raw | Write-Host
-                  Write-Host "::endgroup::"
-                }
-              }
-
-              if ($result.status -eq "succeeded") { exit 0 }
-              Write-Host "::error::Teardown of PR #$env:PR_NUMBER failed on the VM: $($result.error). The other environments continue; re-run this workflow with pr_numbers set to whatever is left."
-              exit 1
-            }
-            Start-Sleep -Seconds 10
-          }
-          throw "Timed out waiting for PR environment command result: $resultUri"
+      - name: Wait for the VM to report the result
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: Teardown of PR #${{ env.PR_NUMBER }}
+          # fail-fast is off, so a failure here is triaged after the whole fleet has
+          # been through, and the reader needs to know the sweep carried on.
+          failure-hint: The other environments continue; re-run this workflow with pr_numbers set to whatever is left.
+          # 1800 seconds, matching pr-test-lifecycle.yml and pr-test-deploy.yml.
+          # Was 600. This workflow queues the same `destroy` command the lifecycle
+          # workflow does, so the shorter ceiling meant one teardown reported a
+          # timeout while the identical command queued from there was still
+          # waiting -- and with fail-fast off, the sweep carried on and left the
+          # disk it had actually released looking un-released. The ceiling only
+          # costs time on a hung destroy; a normal one still returns in a minute.
+          attempts: '120'
 
       - name: Update sticky PR status
         if: always()

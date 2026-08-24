@@ -7,15 +7,16 @@ properties that make the production path safe.
 """
 
 import collections
-import pathlib
 import re
 import subprocess
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 DEPLOY_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Deploy-RockEnvironment.ps1"
 QUEUE_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
 TASK_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Install-PrEnvironmentCommandQueueTask.ps1"
@@ -272,18 +273,57 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         its manifest is written under that root."""
         text = DEPLOY_SCRIPT.read_text()
         self.assertIn('$EnvironmentRoot = "C:\\RockTestEnvs"', text)
-        self.assertIn('$ManifestPath = Join-Path $EnvironmentPath "env.json"', text)
+        # Where the manifest actually lands moved into Resolve-DeploymentTarget and
+        # is checked by running it: Pester/DeploymentTarget.Tests.ps1, "puts the
+        # manifest beside the site it describes".
         self.assertIn('status = "deployed"', text)
         self.assertIn("hostName = $HostName", text)
         self.assertIn("siteName = $SiteName", text)
 
-    def test_in_place_manifest_is_kept_out_of_the_renewal_search_path(self):
-        """The renewal job stops and starts every site it finds a manifest for. A
-        production manifest under C:\\RockTestEnvs would put production in the blast
-        radius of a certificate job running on the test VM."""
-        text = DEPLOY_SCRIPT.read_text()
-        in_place_manifest = "$ManifestPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) \"env.json\""
-        self.assertIn(in_place_manifest, text)
+    # The production manifest staying out of the certificate renewal job's search
+    # path used to be asserted here, as a string match on the assignment. That
+    # decision now lives in Resolve-DeploymentTarget, and
+    # Pester/DeploymentTarget.Tests.ps1 checks it by calling the function and
+    # looking at the path that comes back -- "keeps the manifest out of the
+    # environment root" and "puts the manifest under the backup root instead".
+    # Reading the line proved it was written. Running it proves it is true.
+
+    def test_no_caller_pairs_a_dedicated_site_with_an_in_place_target(self):
+        """Resolve-DeploymentTarget now throws on that pair rather than dropping it,
+        which turns a silent mis-deploy into a loud refusal. That is the right
+        trade for a hand-dispatched run, and the wrong one to discover on a
+        scheduled staging deploy -- so the two callers that exist are checked here
+        instead."""
+        in_place_only = ("target_site_path", "target_site_name")
+        checked = 0
+
+        # `workflow_path`, not `workflow`: in this suite `harness.workflow(...)` is a
+        # parsed dictionary, and one name for two kinds of thing is how a `.get()`
+        # ends up on a Path.
+        for workflow_path in (STAGING_WORKFLOW, PRODUCTION_WORKFLOW):
+            parsed = yaml.safe_load(workflow_path.read_text())
+            for name, job in parsed["jobs"].items():
+                if "env-deploy-command.yml" not in (job.get("uses") or ""):
+                    continue
+
+                checked += 1
+                passed = job.get("with") or {}
+                mode = passed.get("mode")
+                self.assertIn(mode, ("DedicatedSite", "InPlace"), f"{workflow_path.name}:{name} passes mode {mode!r}.")
+
+                if mode == "InPlace":
+                    continue
+
+                for parameter in in_place_only:
+                    self.assertNotIn(
+                        parameter,
+                        passed,
+                        f"{workflow_path.name}:{name} deploys DedicatedSite but passes "
+                        f"{parameter}. The deploy script rejects that pair, so this "
+                        f"run would fail before it copied anything.",
+                    )
+
+        self.assertEqual(2, checked, f"Expected the staging and production callers; found {checked}.")
 
     def test_deploy_waits_for_the_site_to_answer_before_reporting_success(self):
         """Rock runs EF and plugin migrations on the first request after a deploy,
@@ -325,10 +365,26 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
     def test_health_check_forces_a_modern_tls_version(self):
         """PowerShell 5.1 can default ServicePointManager to SSL3/TLS1.0, which a
         hardened IIS refuses. It surfaces as 'the underlying connection was closed',
-        which reads like the site is down rather than like the probe is broken."""
+        which reads like the site is down rather than like the probe is broken.
+
+        This test used to be `assertIn("SecurityProtocol", text)` against the whole
+        918-line script, which could not fail: the token also appears in the
+        comment explaining why the line is there, so deleting both real sites left
+        it green. TLS is set at two independent probe paths and both need it --
+        `Invoke-SiteProbe` is what the deploy polls with, `Test-EnvironmentHealth`
+        is what decides the deploy succeeded -- so name both.
+        """
         text = DEPLOY_SCRIPT.read_text()
-        self.assertIn("SecurityProtocol", text)
-        self.assertIn("Tls12", text)
+
+        for function_name in ("Invoke-SiteProbe", "Test-EnvironmentHealth"):
+            body = harness.powershell_function(text, function_name)
+            self.assertIn(
+                "[Net.ServicePointManager]::SecurityProtocol",
+                body,
+                f"{function_name} no longer sets SecurityProtocol, so on a hardened "
+                "IIS its probe fails with a message that reads like the site is down",
+            )
+            self.assertIn("Tls12", body, f"{function_name} sets SecurityProtocol to something other than Tls12")
 
     def test_app_pool_is_stopped_and_drained_before_files_are_replaced(self):
         text = DEPLOY_SCRIPT.read_text()
@@ -461,21 +517,50 @@ class ArtifactReuseTests(unittest.TestCase):
 
 
 class CommandWorkflowTests(unittest.TestCase):
+    def queue_step(self):
+        """The step that puts the deploy-environment command on the VM queue.
+
+        Found by the action it calls rather than by name, so renaming the step
+        does not quietly turn the assertions below into a check of nothing.
+        """
+        parsed = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        steps = [
+            step
+            for job in (parsed.get("jobs") or {}).values()
+            for step in (job.get("steps") or [])
+            if (step.get("uses") or "") == "./.github/actions/queue-vm-command"
+        ]
+        self.assertEqual(
+            1, len(steps), "expected exactly one queue step in the deploy command workflow"
+        )
+        return steps[0]
+
     def test_command_workflow_fails_fast_when_the_artifact_is_missing(self):
         text = COMMAND_WORKFLOW.read_text()
         self.assertIn("gsutil -q stat", text)
         self.assertIn("::error::Artifact not found", text)
 
-    def test_timeout_message_names_the_actual_cause(self):
-        """A missing result object means the queue worker never ran. 'Timed out'
-        alone sent three months of failures to the wrong place."""
-        text = COMMAND_WORKFLOW.read_text()
-        self.assertIn("scheduled task is running on the target VM", text)
+    # test_timeout_message_names_the_actual_cause moved to
+    # test_local_composite_actions.py. This workflow was the only one of six that
+    # carried that message, which is the argument the shared wait was built on --
+    # asserting it here would have gone on passing while the other five stayed
+    # wrong.
 
-    def test_connection_string_is_redacted_from_logs(self):
-        """The repo is public and these logs get screenshotted in training."""
-        text = COMMAND_WORKFLOW.read_text()
-        self.assertIn("<redacted>", text)
+    def test_connection_string_travels_as_a_secret_rather_than_in_the_payload(self):
+        """The repo is public and these logs get screenshotted in training.
+
+        The redaction itself is `.github/actions/queue-vm-command`, executed by
+        Tests/PrTestEnvironments/Pester/QueueCommand.Tests.ps1 and wired up in
+        test_local_composite_actions.py. What is this workflow's own decision is
+        which channel the connection string travels on: `secret-value` keeps it
+        out of the interpolated JSON payload, where a password containing a quote
+        would break the JSON and be written into the expanded workflow text.
+        """
+        step = self.queue_step()
+        supplied = step.get("with") or {}
+
+        self.assertIn("CONNECTION_STRING", str(supplied.get("secret-value") or ""))
+        self.assertNotIn("CONNECTION_STRING", str(supplied.get("payload") or ""))
 
     def test_db_name_is_optional_so_an_environment_that_names_no_catalog_is_unchanged(self):
         """Adding this input must not touch the pr-* sites. An unset caller variable

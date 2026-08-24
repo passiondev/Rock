@@ -1,7 +1,9 @@
-name: PTP-14803 Build Artifact (build only)
+name: Hand-deploy set (build only, no cloud credentials)
 
-# Build-only. Produces the four files we hand-deploy for PTP-14803 / PTP-14804
-# and nothing else.
+# Build-only. Produces a small set of compiled files to hand-deploy, and nothing
+# else. Born as the PTP-14803 / PTP-14804 vehicle, which is what the file is
+# still named; the capability is not ticket-specific and the last real use was a
+# `workflow_dispatch` against `fix/forward-port-to-19` on 2026-08-18.
 #
 # Deliberately does NOT authenticate to Google Cloud, write to any GCS bucket,
 # touch any VM, or reference any database secret. pr-test-deploy.yml does all of
@@ -17,10 +19,13 @@ name: PTP-14803 Build Artifact (build only)
 # stale DLL. Every step here hard-exits, and the verify step asserts our changes
 # are actually present in the compiled output before anything is uploaded.
 
+# Dispatch only. This carried `push: [deploy/ptp-14803-18.4.1]` until 2026-08-21,
+# which was the whole reason it read as an orphan: the one branch that could fire
+# it is on item 9's prune list, and pruning it would have left a 311-line workflow
+# with no trigger and no obvious owner. Nobody has pushed that branch since; every
+# real use has been a dispatch against some other branch, which is what this build
+# is for. Removing the trigger decouples the workflow from the branch's fate.
 "on":
-  push:
-    branches:
-      - deploy/ptp-14803-18.4.1
   workflow_dispatch:
 
 permissions:

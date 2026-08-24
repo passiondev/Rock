@@ -1,8 +1,9 @@
-import pathlib
 import unittest
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 STOP_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Stop-PrEnvironment.ps1"
 DESTROY_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Destroy-PrEnvironment.ps1"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-lifecycle.yml"
@@ -35,9 +36,17 @@ class PrTestLifecycleTests(unittest.TestCase):
         self.assertIn('rock:stop', text)
         self.assertIn('rock:destroy', text)
         self.assertIn('merged', text)
-        self.assertIn('commands/pending', text)
-        self.assertIn('commands/results', text)
-        self.assertIn('Poll PR environment command result', text)
+        # Queueing the command is `.github/actions/queue-vm-command` now. Where it
+        # writes, and that the echo redacts, are asserted once in
+        # test_local_composite_actions.py instead of once per producer -- which is
+        # how two of the six came to redact a field name the third does not use.
+        # What stays here is the verb, because the VM agent only knows the verbs it
+        # shipped with at bootstrap and this workflow picks between two of them.
+        self.assertIn('command: ${{ env.COMMAND }}', text)
+        # The wait itself is .github/actions/await-vm-command now, and its
+        # behaviour is asserted once in test_local_composite_actions.py rather
+        # than once per producer. What stays here is what this workflow chooses.
+        self.assertIn("attempts: '120'", text)
         self.assertIn('updatePrTestStatus', text)
         self.assertIn('removeLabel', text)
 

@@ -214,6 +214,14 @@ $CommandTimeoutsSeconds = @{
     # which on a read-only diagnostic is the worst kind of wrong answer: it looks
     # like the catalog is unreadable rather than merely large.
     'find-legacy-text-columns' = 1800
+    # Batched UPDATEs over every Person and PhoneNumber row in a prod-derived
+    # catalog. The dry run is five COUNT(*)s and returns in seconds; -Apply rewrites
+    # millions of rows and is the case this number has to cover. Killing it part-way
+    # is survivable -- every batch commits on its own and the predicates skip rows
+    # already done, so a rerun resumes -- but a half-anonymized catalog reported as a
+    # failure invites someone to conclude the run did nothing and leave real
+    # addresses in place.
+    'anonymize-staging' = 3600
 }
 $FallbackCommandTimeoutSeconds = 600
 
@@ -286,6 +294,41 @@ $CommandRunner = {
             }
 
             & (Join-Path $DeployRoot "Find-LegacyTextColumns.ps1") @arguments
+        }
+        "anonymize-staging" {
+            # Replaces real email addresses and phone numbers in a prod-derived
+            # staging catalog with undeliverable substitutes. Here for the same
+            # reason the finder is: the catalog is reachable from this VM and from
+            # nowhere else.
+            #
+            # Unlike the finder this one writes, so the arm carries its own gates
+            # rather than trusting the caller to have set them. The script refuses
+            # the production instance by address and refuses a catalog that does not
+            # match expectedCatalog, and it is a dry run without apply. Those checks
+            # live in the script because that is where they are enforced; they are
+            # restated here because this arm is what a queued JSON document can
+            # reach, and a command is easier to hand-write than a script is to edit.
+            if (-not ($Command.PSObject.Properties.Name -contains 'connectionString')) {
+                throw "anonymize-staging requires a connectionString."
+            }
+            # No fallback and no default. Every other optional field on every other
+            # command degrades to something sensible when it is missing; this one
+            # must not, because the value it carries is the operator stating which
+            # catalog they mean to destroy contact data in. Absent means unstated,
+            # and unstated is not a catalog name.
+            if (-not ($Command.PSObject.Properties.Name -contains 'expectedCatalog') -or
+                [string]::IsNullOrWhiteSpace([string]$Command.expectedCatalog)) {
+                throw "anonymize-staging requires an expectedCatalog naming the catalog to rewrite."
+            }
+            $arguments = @{
+                ConnectionString = [string]$Command.connectionString
+                ExpectedCatalog  = [string]$Command.expectedCatalog
+            }
+            if (($Command.PSObject.Properties.Name -contains 'apply') -and $Command.apply) {
+                $arguments['Apply'] = $true
+            }
+
+            & (Join-Path $DeployRoot "Invoke-StagingAnonymization.ps1") @arguments
         }
         default { throw "Unknown command: $($Command.command)" }
     }

@@ -1,7 +1,8 @@
-import pathlib
 import unittest
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+import pipeline_harness as harness
+
+REPO_ROOT = harness.REPO_ROOT
 QUEUE_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
 BOOTSTRAP_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Install-PrEnvironmentCommandQueueTask.ps1"
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-test-deploy.yml"
@@ -30,12 +31,15 @@ class CommandQueueTests(unittest.TestCase):
     def test_workflows_upload_commands_and_poll_results_without_ssh(self):
         for path in [DEPLOY_WORKFLOW, LIFECYCLE_WORKFLOW]:
             text = path.read_text()
-            self.assertIn("commands/pending", text)
-            self.assertIn("commands/results", text)
-            self.assertIn("gsutil cp", text)
-            self.assertIn("Poll PR environment command result", text)
+            self.assertIn("./.github/actions/queue-vm-command", text)
             self.assertNotIn("sshpass", text)
             self.assertNotIn("Deploy over SSH", text)
+
+            # Both halves of the queue protocol moved into shared actions:
+            # queue-vm-command and await-vm-command. test_local_composite_actions.py
+            # asserts every producer uses both and that neither kept a private copy,
+            # which is a stronger claim than the strings this used to match. What is
+            # left here is the property the class is named for: no SSH.
 
 if __name__ == "__main__":
     unittest.main()

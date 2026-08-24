@@ -1,0 +1,43 @@
+name: Open a Google Cloud session
+description: Authenticate the run to Google Cloud and put gcloud on PATH.
+
+# These two steps were copied into nine workflows, byte for byte, and the copies
+# were held identical by a test that compared them to each other. That test could
+# say they had drifted apart. It could not say which one was right, and it could
+# not stop a tenth workflow from authenticating some other way.
+#
+# The pair is one thing, not two. `auth@v2` writes a credentials file and exports
+# GOOGLE_APPLICATION_CREDENTIALS; `setup-gcloud@v2` puts the CLI on PATH and points
+# it at that file. Take either away and the failure lands somewhere else entirely:
+# without the first, gcloud runs and reports a permission error against the wrong
+# identity; without the second, `gsutil` is simply not a command, several steps
+# later, in whichever script happened to call it first.
+#
+# `uses: ./...` loads this from the checkout, so a caller has to check out before
+# it authenticates. Every caller already did, or was one reordered step away --
+# `pr-test-diagnose-command-queue.yml` was the only one that gained a checkout it
+# did not have, and it takes a sparse one that fetches this directory alone.
+inputs:
+  # The description is written without expression braces on purpose. GitHub
+  # evaluates an expression in this field like any other, and a composite action
+  # has no secrets context, so spelling the example out in full made the file
+  # fail template validation at this line -- taking all nine callers down at
+  # their authentication step, for a reason that had nothing to do with
+  # authentication. A YAML comment is inert; an input description is not.
+  credentials-json:
+    description: The service account key. Pass the GCP_SA_KEY secret; nothing else belongs here.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The two titles are unchanged from the copies this replaces. A composite
+    # action's steps appear in the caller's run under their own names, so an
+    # operator following a runbook sees exactly what they saw before.
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ inputs.credentials-json }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2

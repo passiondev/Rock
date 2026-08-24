@@ -1,12 +1,13 @@
 import json
-import pathlib
 import re
 import unittest
 
 import yaml
 
+import pipeline_harness as harness
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+REPO_ROOT = harness.REPO_ROOT
 PRODUCTION_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "production-deploy.yml"
 CONFIG_PATH = REPO_ROOT / ".github" / "pr-test-environments.json"
 

@@ -419,8 +419,9 @@ So theme and asset edits **do** show up now. If one doesn't:
 
 ### Trap 2: The database is shared, and it resets
 
-Every PR environment points at **one** shared, sanitized sandbox database and shared file
-storage. That means:
+Every PR environment points at **one** shared sandbox database and shared file
+storage. "Sandbox" names the role, not the contents: it is a straight copy of a production
+backup. That means:
 
 - Data you create (a test person, a registration) is visible in **everyone's** PR
   environment.
@@ -432,8 +433,10 @@ storage. That means:
   so it accumulates everyone's leftovers and every PR's migrations, and it drifts further
   from production every week. Don't treat "it worked in a PR environment" as "it works
   against production-like data."
-- It's sanitized, not fake-from-scratch — still treat it as sensitive. No screenshots of
-  it in public places.
+- **It is not sanitized.** This section said it was until 2026-08-21; the sanitization step
+  that word referred to has never existed (open item 24). Real names, addresses and giving
+  history, on a public URL behind nothing but Rock's login. No screenshots into tickets, no
+  sharing the URL outside the team.
 
 ### Trap 3: A migration in your PR changes the shared database for everyone
 
@@ -565,7 +568,7 @@ site that owns its whole directory, which production is not.
 ### Trap 8: PRs from forks never deploy
 
 Only branches in `passiondev/Rock` itself can deploy, because these environments sit on
-shared infrastructure with sanitized data. A PR opened from your personal fork is skipped
+shared infrastructure holding a copy of production data. A PR opened from your personal fork is skipped
 with no environment and no error on the PR. If this happens, you need write access on the
 repo — see Part 1.
 
@@ -837,7 +840,7 @@ Two cautions:
 | **Obsidian** | Rock's newer Vue.js-based block framework. |
 | **PR / pull request** | A request to merge a branch, and the page where testing and review happen. |
 | **SHA** | The unique ID of a commit, e.g. `aea0dba`. The status comment shows which one is deployed. |
-| **Sandbox DB** | The shared, sanitized, daily-refreshed database all PR environments use. |
+| **Sandbox DB** | The one database all PR environments share. A straight copy of a production backup: not sanitized, and not refreshed on any schedule. |
 | **Sticky comment** | The single automated status comment the robot keeps rewriting on your PR. |
 | **VM** | The Windows virtual machine in Google Cloud that hosts the sites. |
 | **WebForms** | The older ASP.NET framework most of Rock is built on. `.ascx` files are its building blocks. |

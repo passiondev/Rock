@@ -65,6 +65,8 @@ name: Deployment Pipeline Tests
       # version guard nobody tested.
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
+      # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
+      - 'CONTEXT.md'
   # The path list is repeated rather than shared through a YAML anchor: PyYAML
   # resolves anchors happily, so the suite's own YAML tests would pass while
   # GitHub Actions -- which does not support them -- rejected the file.
@@ -87,6 +89,8 @@ name: Deployment Pipeline Tests
       - 'Rock.JavaScript.Obsidian.Blocks/**'
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
+      # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
+      - 'CONTEXT.md'
   workflow_dispatch:
 
 permissions:
@@ -103,6 +107,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # test_upgrade_diff.py compares two long-lived trunks, and checkout@v4 fetches only
+      # the ref that triggered the run -- so without this step every one of its
+      # real-cutover assertions hits its SkipTest branch and the suite reports OK having
+      # checked nothing. A test that always skips is the same thing as a test that does
+      # not exist, which is the failure this whole workflow was created to stop.
+      #
+      # A shallow fetch of the two tips is all it needs: ls-tree wants the trees, and
+      # `git diff A..B` compares the commits directly rather than through a merge base.
+      # Full history of a repository this size would cost minutes per run.
+      #
+      # Branch names come from the config rather than being written here, so the cutover
+      # that flips those pins moves this too. Failure is tolerated on purpose -- a fork,
+      # or the window after an old trunk is finally deleted, should skip those tests
+      # rather than fail the whole suite.
+      - name: Fetch both trunks for the upgrade-diff tests
+        continue-on-error: true
+        run: |
+          branches=$(python3 -c "import json; c = json.load(open('.github/pr-test-environments.json')); print('\n'.join(c[k] for k in ('baseBranch', 'productionBranch') if c.get(k)))")
+          for branch in $branches; do
+            git fetch --depth=1 origin "$branch:refs/remotes/origin/$branch" || true
+          done
+
+      # The fork-local register is checked by re-deriving it against the upstream release
+      # it names, which needs a tag origin does not carry. Without this the two derivation
+      # tests skip and the register's claim to be derived holds only on a laptop.
+      #
+      # Both the tag and the remote come out of the register itself, so there is no second
+      # place to update at a cutover. Failure is tolerated here because the tests are the
+      # real guard: _require_ref fails rather than skips when GITHUB_ACTIONS is set, so a
+      # fetch that silently stops working shows up as a red test and not as a quiet skip.
+      - name: Fetch the upstream release the fork-local register names
+        continue-on-error: true
+        run: |
+          read -r remote tag <<<"$(python3 -c "
+          import pathlib, re
+          register = pathlib.Path('Documentation/Fork-Local-Changes.md').read_text()
+          tag = re.search(r'\*\*Measured against upstream\*\* \`([^\`]+)\`', register).group(1)
+          remote = re.search(r'\*\*Upstream remote\*\* \`([^\`]+)\`', register).group(1)
+          print(remote, tag)
+          ")"
+          git fetch --depth=1 "$remote" "refs/tags/$tag:refs/tags/$tag" || true
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -114,3 +160,161 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -v -s Tests/PrTestEnvironments -p "test_*.py"
+
+  # The suite above asserts on the *text* of the PowerShell -- that the overlay
+  # passes /XC /XN /XO, that the version guard reads the right line. Nothing had
+  # ever asked whether any of it parses.
+  #
+  # That gap had teeth on 2026-08-21, when six copies of the command-queue wait
+  # collapsed into .github/actions/await-vm-command. A hundred lines of PowerShell
+  # moved, and the first thing that would have run them was a production deploy.
+  #
+  # Scoped to what this pipeline owns: the twelve scripts under Deployment/ and the
+  # blocks embedded in the workflows. The other eight .ps1 files in the tree are
+  # upstream Rock code that this repository does not maintain.
+  #
+  # Syntax only. The runner has pwsh 7 and the VM has Windows PowerShell 5.1, so a
+  # 7-only construct parses clean here and fails there --
+  # test_powershell_edition_compatibility.py is what catches those, and this job
+  # does not replace it.
+  #
+  # Parsing and Pester share a job on purpose, though they are two different
+  # techniques and a code review will read that as one job changing for two
+  # reasons. They answer one question -- is the PowerShell in this repository
+  # sound -- and splitting them buys a tidier boundary at the cost of a second
+  # checkout and a second toolchain install on every pull request. Being cheap
+  # enough to gate every pull request is the trade this whole workflow was set up
+  # to make, so the boundary loses.
+  powershell:
+    name: Check the PowerShell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install PyYAML
+        run: python -m pip install --disable-pip-version-check --quiet pyyaml
+
+      # PowerShell inside a workflow is a string until a runner expands it, so it
+      # has to come out of the YAML before a parser can see it.
+      - name: Extract the PowerShell embedded in the YAML
+        run: python3 .github/scripts/extract-powershell-blocks.py "$RUNNER_TEMP/powershell-blocks"
+
+      - name: Parse every script and extracted block
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $targets = @()
+          $targets += Get-ChildItem -Path Deployment -Recurse -Filter *.ps1 -File
+          # A composite action can keep its PowerShell in a script beside action.yml
+          # rather than inline in it, which is the only way the Pester suite can
+          # execute it. That puts it outside both Deployment/ and the extractor.
+          $targets += Get-ChildItem -Path .github/actions -Recurse -Filter *.ps1 -File
+          $targets += Get-ChildItem -Path "$env:RUNNER_TEMP/powershell-blocks" -Filter *.ps1 -File
+
+          if ($targets.Count -lt 1) {
+            throw 'Found no PowerShell to parse. Either the paths moved or the extractor produced nothing, and a job that checks nothing should not report success.'
+          }
+
+          $filesWithErrors = 0
+          foreach ($file in $targets) {
+            # An extracted block sits in a temp directory under a slug, so the
+            # annotation would name a path nobody can open. Its first line records
+            # where the block actually came from.
+            $origin = $file.FullName
+            $firstLine = Get-Content -Path $file.FullName -TotalCount 1
+            if ($firstLine -match '^# extracted from (.+)$') {
+              $origin = $Matches[1]
+            }
+
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+
+            if ($errors.Count -gt 0) {
+              $filesWithErrors++
+              foreach ($parseError in $errors) {
+                $line = $parseError.Extent.StartLineNumber
+                Write-Host "::error file=$origin,line=$line::$($parseError.Message)"
+              }
+            }
+          }
+
+          Write-Host "Parsed $($targets.Count) files. $filesWithErrors had errors."
+          if ($filesWithErrors -gt 0) {
+            exit 1
+          }
+  # Parsing proves the scripts are well formed. It says nothing about what they
+  # decide, and what they decide is what has actually gone wrong: on 2026-08-10
+  # the certificate selector ranked a two-year self-signed placeholder above
+  # every ninety-day Let's Encrypt certificate, so each deploy quietly rebound
+  # the site to an untrusted certificate while renewal reported success. The
+  # Python suite could see the sort expression. It could not see which
+  # certificate came out.
+  #
+  # Why this is a job of its own rather than a matrix over the parse: a
+  # PowerShell AST parse gives the same answer on every platform, so running it
+  # twice costs a Windows runner and buys nothing. What is platform dependent is
+  # what these tests decide.
+  #
+  # Why it runs on Windows: every path these scripts build is a Windows path,
+  # and the only machine they ever run on is a Windows VM. Join-Path resolves a
+  # drive qualifier through the provider, so `Join-Path 'C:\x' 'y'` finds no
+  # drive C on Linux and returns $null -- an assertion written with Windows
+  # literals then compares $null to $null and passes having checked nothing.
+  # The suites build every path from $TestDrive so the Linux leg stays honest,
+  # and the windows-latest leg is what lets them say anything about the
+  # platform they actually ship to. See the header of
+  # Tests/PrTestEnvironments/Pester/DeploymentTarget.Tests.ps1.
+  #
+  # Still out of scope on both legs: anything needing IIS, a service account or
+  # a database. This is pure decision logic with the certificate store faked at
+  # the seam.
+  pester:
+    name: Check what the PowerShell decides
+    strategy:
+      # Off, because the two legs answer different questions. A Linux failure
+      # cancelling the Windows leg would hide the platform difference that is
+      # the whole reason for running twice.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          # Windows images ship Pester 3.4.0 alongside whatever else is there, and
+          # 3.x does not understand the syntax these suites are written in. Match
+          # on the version rather than on the module being present at all.
+          $existing = Get-Module -ListAvailable Pester |
+            Where-Object { $_.Version -ge [version]'5.0.0' }
+          if ($existing) {
+            Write-Host "Pester $(($existing | Sort-Object Version -Descending)[0].Version) is already available."
+          } else {
+            Install-Module Pester -Force -Scope CurrentUser -SkipPublisherCheck -MinimumVersion 5.0.0
+          }
+
+      - name: Run the Pester tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $result = Invoke-Pester -Path Tests/PrTestEnvironments/Pester -Output Detailed -PassThru
+
+          # A path that matches nothing, or a discovery failure, both come back with
+          # zero failures. Green on nothing is the outcome this whole job exists to
+          # stop reporting.
+          if ($result.PassedCount + $result.FailedCount -lt 1) {
+            throw 'Pester ran no tests. Either the path moved or discovery failed.'
+          }
+
+          Write-Host "$($result.PassedCount) passed, $($result.FailedCount) failed."
+          if ($result.FailedCount -gt 0) {
+            exit 1
+          }

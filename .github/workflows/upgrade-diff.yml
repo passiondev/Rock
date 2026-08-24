@@ -1,0 +1,98 @@
+name: Upgrade Diff
+
+# What a Rock upgrade quietly took away, reported before the trunk moves.
+#
+# Every other check in Tests/PrTestEnvironments re-derives its facts from the current
+# checkout. That is right for a branch and wrong for a cutover: a file that moved from
+# committed to generated leaves an entirely ordinary tree behind, and is only wrong
+# relative to the version we came from. Nothing held that comparison until this existed,
+# and three v19 incidents came out of the gap -- styles-v2 going 178 tracked files to 1,
+# Rock.Version/AssemblySharedInfo.cs deleted while five workflows still named it, and
+# item 26's legacy-column workflow disappearing upstream. Each was found in production,
+# by symptom, weeks apart.
+#
+# Dispatch-only on purpose. The subject is a comparison between two long-lived branches,
+# so as a pull-request gate it would spend its life comparing a branch to itself.
+#
+# A workflow_dispatch job that nobody fires is its own failure mode -- that is precisely
+# how production-deploy.yml stayed green while being unable to deploy (item 23). The
+# answer here is that the logic does not live in this file. It lives in
+# Deployment/Repository/upgrade_diff.py, and Tests/PrTestEnvironments/test_upgrade_diff.py
+# runs it against the real 18.4.1 -> 19.3.4 pair on every pipeline-tests run. This file is
+# an entry point, not the guard.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      old_ref:
+        description: 'Outgoing trunk: the branch being replaced, named passion-<version>'
+        required: true
+      new_ref:
+        description: 'Incoming trunk: the branch being moved to, named passion-<version>'
+        required: true
+      since_migration:
+        description: >-
+          Optional. The target database's highest __MigrationHistory id, read
+          read-only. Without it the report only considers migrations added between the
+          two refs -- and the internal site's theme repoint was not one of those. It
+          shipped in 18.4.1 and had simply never run here.
+        required: false
+
+# Deliberately no defaults on the refs. A cutover is a deliberate act and typing two
+# branch names is its smallest part, whereas a stale default produces a confidently
+# wrong report about the wrong pair of branches.
+
+permissions:
+  contents: read
+
+jobs:
+  diff:
+    name: Report what the upgrade removed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both refs have to be real objects locally, and neither is the ref this workflow
+      # was dispatched on. A shallow fetch of the two tips is enough: ls-tree needs only
+      # the trees, and `git diff A..B` compares the two commits directly rather than
+      # against a merge base, so the absent common history costs nothing.
+      #
+      # The refs go through `env:` rather than into the script text. Every input here is
+      # free-text, `${{ }}` pastes its value into the file before bash ever sees it, and
+      # a branch name is allowed to contain a backtick. test_workflow_input_injection.py
+      # enforces this across every workflow in the directory.
+      - name: Fetch both trunks
+        env:
+          OLD_REF: ${{ inputs.old_ref }}
+          NEW_REF: ${{ inputs.new_ref }}
+        run: |
+          git fetch --depth=1 origin \
+            "$OLD_REF:refs/remotes/origin/$OLD_REF" \
+            "$NEW_REF:refs/remotes/origin/$NEW_REF"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # No pip install. The tool is stdlib plus git, which is the property that lets it
+      # run anywhere the repository does, including on a laptop mid-cutover.
+      #
+      # The report goes to the run summary, where it can be read and pasted into the
+      # open-items register without opening a log. `shell: bash` is load-bearing: it
+      # brings `-o pipefail`, without which the pipe into tee would discard the tool's
+      # exit code and a report full of findings would be a green run.
+      - name: Report
+        shell: bash
+        env:
+          OLD_REF: ${{ inputs.old_ref }}
+          NEW_REF: ${{ inputs.new_ref }}
+          SINCE_MIGRATION: ${{ inputs.since_migration }}
+        run: |
+          since=()
+          if [ -n "$SINCE_MIGRATION" ]; then
+            since=(--since-migration "$SINCE_MIGRATION")
+          fi
+
+          python3 Deployment/Repository/upgrade_diff.py cutover \
+            "origin/$OLD_REF" "origin/$NEW_REF" "${since[@]}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"

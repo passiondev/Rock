@@ -1,0 +1,87 @@
+name: Queue a VM command
+description: >
+  Build a command for the VM queue, echo it with the secrets removed, and upload
+  it to the pending directory the queue agent watches.
+
+inputs:
+  bucket:
+    description: The GCS bucket holding the command queue.
+    required: true
+  command-id:
+    description: >
+      The id for this command. The caller generates it because the caller needs
+      it again for the wait that follows.
+    required: true
+  command:
+    description: The verb the queue agent dispatches on, for example `deploy`.
+    required: true
+  payload:
+    description: >
+      A JSON object of fields for this command on top of the envelope. Fields
+      whose value is null or blank are dropped, so a caller can interpolate an
+      optional input straight in rather than branching on it. A false boolean is
+      kept. Setting `commandId`, `command` or `requestedAtUtc` here is an error.
+    required: false
+    default: '{}'
+  queue-name:
+    description: >
+      The queue directory under `pr-environments/`. The PR fleet uses the
+      default. Named queues exist so that a VM only picks up the commands meant
+      for it.
+    required: false
+    default: commands
+  secret-field:
+    description: >
+      Field name to carry `secret-value` under. It is a separate input from
+      `payload` so a connection string never passes through an interpolated JSON
+      literal, where a password containing a quote would both break the JSON and
+      be written into the expanded workflow text.
+    required: false
+    default: connectionString
+  secret-value:
+    description: >
+      The connection string for this command, or empty for a command that needs
+      none. Production deploys deliberately send none, so that the one already on
+      the VM is the only one that exists.
+    required: false
+    default: ''
+
+# The other half of `await-vm-command`. Six workflows queue a command and wait for
+# it; the wait was folded into one action first, and this is the enqueue.
+#
+# The reason it is worth its own action is not the twenty-odd duplicated lines. It
+# is that two of the six echoed the command into a public Actions log through a
+# redaction loop keyed on the literal field name `connectionString`, while the
+# producer holding the sandbox password calls that field
+# `sandboxConnectionString`. Nothing leaked, because that producer happens not to
+# echo -- so the defect was one copied step away from a plaintext password in a
+# public log, and no review of any single file would have shown it. The queue
+# agent on the VM has redacted both names since it was written.
+#
+# Redaction now happens once, keys on the shape of the field name rather than a
+# list of known names, and falls back to the `password=` keyword for a field the
+# name rule misses. It lives in Write-VmCommand.ps1 rather than inline here so
+# that Pester can execute it: PowerShell embedded in YAML is a string that nothing
+# runs until a runner expands it, which is how the two loops drifted apart.
+runs:
+  using: composite
+  steps:
+    - name: Queue the command
+      shell: pwsh
+      env:
+        VMQ_BUCKET: ${{ inputs.bucket }}
+        VMQ_QUEUE: ${{ inputs.queue-name }}
+        VMQ_COMMAND_ID: ${{ inputs.command-id }}
+        VMQ_COMMAND: ${{ inputs.command }}
+        VMQ_PAYLOAD: ${{ inputs.payload }}
+        VMQ_SECRET_FIELD: ${{ inputs.secret-field }}
+        VMQ_SECRET_VALUE: ${{ inputs.secret-value }}
+      # $env:GITHUB_ACTION_PATH, not ${{ github.action_path }}. The runner sets
+      # both to the same directory, but an expression is pasted in as raw text:
+      # unquoted here, so one space in the path and pwsh reads the first word as
+      # the command. The env var can be quoted where it stands, and it keeps the
+      # block parseable so the syntax job can check it -- see
+      # RunnerExpressionPlacementTests in Tests/PrTestEnvironments/test_powershell_job.py.
+      # Block scalar because a bare `&` opens a YAML anchor.
+      run: |
+        & "$env:GITHUB_ACTION_PATH/Write-VmCommand.ps1"
