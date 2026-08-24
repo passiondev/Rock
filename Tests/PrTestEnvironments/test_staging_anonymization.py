@@ -521,6 +521,26 @@ class KeepListTests(unittest.TestCase):
             "a real domain is hard-coded as the default keep list",
         )
 
+    def test_the_census_slices_the_domain_exactly(self):
+        """The census is the only thing that shows what the catalog actually holds,
+        so it is the check a misspelled keep list gets caught by. LEN() ignores
+        trailing spaces and RIGHT() does not, so slicing with the two together
+        reports a shifted domain for any address stored with a trailing space --
+        and a garbled census reads as an unfamiliar domain, not as a bug."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertNotIn(
+            "RIGHT(Email, LEN(Email)",
+            body,
+            "the census slices the domain with RIGHT/LEN, which disagree about "
+            "trailing spaces; use SUBSTRING from CHARINDEX instead",
+        )
+        self.assertIn(
+            "SUBSTRING(Email, CHARINDEX('@', Email) + 1",
+            body,
+            "the census does not slice the domain from the '@' onward",
+        )
+
 
 class LoginIsAnonymizedTests(unittest.TestCase):
     """UserLogin.UserName is what Rock authenticates against -- Person.Email is

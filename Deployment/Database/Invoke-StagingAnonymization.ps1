@@ -498,11 +498,11 @@ $ResidualPiiProbes = @(
 # Counts of domains, not addresses. Aggregate, so it is safe in a job summary.
 $DomainCensusQuery = @"
 SELECT TOP 25
-    LOWER(RIGHT(Email, LEN(Email) - CHARINDEX('@', Email))) AS Domain,
+    LOWER(LTRIM(RTRIM(SUBSTRING(Email, CHARINDEX('@', Email) + 1, 255)))) AS Domain,
     COUNT(*) AS People
 FROM dbo.Person
 WHERE Email IS NOT NULL AND Email <> '' AND CHARINDEX('@', Email) > 0
-GROUP BY LOWER(RIGHT(Email, LEN(Email) - CHARINDEX('@', Email)))
+GROUP BY LOWER(LTRIM(RTRIM(SUBSTRING(Email, CHARINDEX('@', Email) + 1, 255))))
 ORDER BY COUNT(*) DESC;
 "@
 
