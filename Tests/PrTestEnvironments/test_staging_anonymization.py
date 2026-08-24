@@ -315,6 +315,71 @@ class ColumnCoverageTests(unittest.TestCase):
             "reverse of the real number",
         )
 
+    def test_the_full_phone_number_is_rewritten(self):
+        """FullNumber is the trap that reads as computed and is not. The column is
+        a plain [nvarchar](23) NOT NULL; only the C# property derives it, as
+        CountryCode + Number behind a private setter EF fills on save. Raw SQL
+        never runs that, so rewriting Number alone leaves the real number sitting
+        in FullNumber -- indexed by IX_FullNumber and matched directly by
+        PersonService.GetPersonFromMobilePhoneNumber, which means staging still
+        resolves a real number to the right person."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+        phone = next(v for k, v in targets.items() if k.startswith("PhoneNumber"))
+        set_clause = phone[phone.index("SetClause") :]
+
+        self.assertRegex(
+            set_clause,
+            r"(^|[,\r\n])\s*\[?FullNumber\]?\s*=",
+            "FullNumber is not assigned, so it keeps the real number under an "
+            "indexed column that phone lookup queries by name",
+        )
+
+    def test_the_full_phone_number_matches_the_csharp_concatenation(self):
+        """Rock computes FullNumber as CountryCode + Number, and a null CountryCode
+        concatenates as empty in C#. In SQL a null poisons the whole expression,
+        which would write NULL into a NOT NULL column and fail the run. ISNULL is
+        what keeps the two definitions the same."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+        phone = next(v for k, v in targets.items() if k.startswith("PhoneNumber"))
+        set_clause = phone[phone.index("SetClause") :]
+        assignment = re.search(r"FullNumber\s*=\s*([^\r\n]+)", set_clause).group(1)
+
+        self.assertIn(
+            "ISNULL(CountryCode",
+            assignment,
+            "a null CountryCode makes the concatenation NULL, which fails against "
+            "a NOT NULL column",
+        )
+        self.assertIn(
+            "'555'",
+            assignment,
+            "FullNumber is not built from the substitute number, so it disagrees "
+            "with Number",
+        )
+
+    def test_the_phone_predicate_repairs_a_stale_full_number(self):
+        """Keying the predicate only on Number makes a row whose Number is already
+        a substitute invisible to a later run. If FullNumber were left behind by an
+        earlier partial run -- which is exactly how this script has failed before
+        -- no subsequent run would ever reach it. The second arm asks the leak
+        question directly instead."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+        phone = next(v for k, v in targets.items() if k.startswith("PhoneNumber"))
+        predicate = re.search(r"Predicate\s*=\s*\"(.+)\"", phone).group(1)
+
+        self.assertIn(
+            "FullNumber",
+            predicate,
+            "the predicate cannot see a stale FullNumber, so a half-anonymized row "
+            "stays half-anonymized on every later run",
+        )
+        self.assertIn(
+            " OR ",
+            predicate,
+            "the FullNumber arm is not an alternative to the Number arm, so it "
+            "narrows the target rather than widening it",
+        )
+
     def test_the_formatted_phone_number_is_covered(self):
         body = _strip_comments(ANONYMIZER.read_text())
 
@@ -437,7 +502,7 @@ class KeepListTests(unittest.TestCase):
 
         expected = {
             "Person.Email": "$personEmailKeep",
-            "PhoneNumber (Number, NumberFormatted, Extension)": "$phoneNumberKeep",
+            "PhoneNumber (Number, NumberFormatted, FullNumber, Extension)": "$phoneNumberKeep",
             "PersonSearchKey.SearchValue (email-shaped)": "$searchValueKeep",
             "UserLogin.UserName (email-shaped)": "$userNameKeep",
         }
