@@ -40,6 +40,24 @@ name: DB - Anonymize staging PII
 # safe to expose on a dispatch box at all, and it lives in the script rather than
 # here because here is not where it would be enforced.
 #
+# WHO STAYS REACHABLE
+#
+# keep_email_domains names the domains left holding their real values. Without it
+# this workflow makes the one thing staging most needs to prove -- that mail goes
+# out and arrives -- untestable, and locks out the people doing the proving, since
+# Rock authenticates against UserLogin.UserName and most of those are addresses.
+#
+# It tightens the environment rather than loosening it. Afterwards the only
+# addresses staging can reach belong to people who agreed to be reached, so the
+# classic staging accident -- a test communication that goes to the real recipient
+# list -- delivers to the testers instead of to the congregation.
+#
+# It matches on domain, which is the whole of its accuracy: a tester whose Rock
+# login is a personal address is not on a staff domain and will be locked out. The
+# dry run prints a kept count per domain and the catalog's actual domain list.
+# Read both before approving -- a misspelled domain matches nothing, anonymizes
+# everyone, and still reports success.
+#
 # NOTE ON THE APPROVAL GATE: it is only as strong as the `staging-anonymize`
 # environment's protection rules. An environment with no required reviewers is
 # created on first use and approves itself. Add a reviewer in repository settings,
@@ -71,6 +89,16 @@ name: DB - Anonymize staging PII
         required: false
         default: false
         type: boolean
+      keep_email_domains:
+        description: >-
+          Comma-separated email domains to leave alone, so testers can still sign
+          in, see their own record and receive mail -- for example
+          staff.example,staff.example.org. Matching rows keep their real email,
+          phone number, alternate addresses and login; everybody else is
+          anonymized, logins included. Empty anonymizes everyone.
+        required: false
+        default: ''
+        type: string
       queue_name:
         description: >-
           Command queue to post to. The default is the queue the test VM's agent
@@ -112,6 +140,7 @@ jobs:
       COMMAND_ID: anonymize-plan-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       EXPECTED_CATALOG: ${{ inputs.expected_catalog }}
+      KEEP_EMAIL_DOMAINS: ${{ inputs.keep_email_domains }}
       GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       # Built exactly as env-deploy-command.yml builds it, from the same secrets, so
       # a catalog the deploy can write is a catalog this can rewrite. No `||`
@@ -146,6 +175,22 @@ jobs:
             exit 1
           }
 
+      # Concatenated into the queued JSON document, so a quote here would produce a
+      # command the agent cannot parse. The script validates these again on the far
+      # side -- this copy exists so a typo fails in ten seconds with a message rather
+      # than in ten minutes as a poll timeout.
+      - name: Validate the keep list
+        if: inputs.keep_email_domains != ''
+        run: |
+          foreach ($domain in ($env:KEEP_EMAIL_DOMAINS -split ',')) {
+            $candidate = $domain.Trim().TrimStart('@').ToLowerInvariant()
+            if ($candidate -eq '') { continue }
+            if ($candidate -notmatch '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') {
+              Write-Host "::error::keep_email_domains must be bare domains separated by commas: '$domain' is not one"
+              exit 1
+            }
+          }
+
       # The connection string is redacted in the log, so this is the only place the
       # run says which catalog it is aimed at. A row count attributed to the wrong
       # catalog is worse than no row count -- it would read as staging being clean on
@@ -158,6 +203,8 @@ jobs:
           "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Catalog | ``$env:EXPECTED_CATALOG`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Mode | dry run |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $keep = if ($env:KEEP_EMAIL_DOMAINS) { "``$env:KEEP_EMAIL_DOMAINS``" } else { "_nothing -- everyone is anonymized_" }
+          "| Domains kept | $keep |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Queue the dry run
         uses: ./.github/actions/queue-vm-command
@@ -167,7 +214,7 @@ jobs:
           command-id: ${{ env.COMMAND_ID }}
           command: anonymize-staging
           payload: |
-            {"expectedCatalog": "${{ inputs.expected_catalog }}", "apply": false}
+            {"expectedCatalog": "${{ inputs.expected_catalog }}", "apply": false, "keepEmailDomains": "${{ inputs.keep_email_domains }}"}
           secret-value: ${{ env.CONNECTION_STRING }}
 
       - name: Wait for the VM to report the plan
@@ -212,6 +259,7 @@ jobs:
       COMMAND_ID: anonymize-apply-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       EXPECTED_CATALOG: ${{ inputs.expected_catalog }}
+      KEEP_EMAIL_DOMAINS: ${{ inputs.keep_email_domains }}
       GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       CONNECTION_STRING: ${{ format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name, secrets.DB_USER, secrets.DB_PASSWORD) }}
       POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
@@ -235,6 +283,22 @@ jobs:
             exit 1
           }
 
+      # Concatenated into the queued JSON document, so a quote here would produce a
+      # command the agent cannot parse. The script validates these again on the far
+      # side -- this copy exists so a typo fails in ten seconds with a message rather
+      # than in ten minutes as a poll timeout.
+      - name: Validate the keep list
+        if: inputs.keep_email_domains != ''
+        run: |
+          foreach ($domain in ($env:KEEP_EMAIL_DOMAINS -split ',')) {
+            $candidate = $domain.Trim().TrimStart('@').ToLowerInvariant()
+            if ($candidate -eq '') { continue }
+            if ($candidate -notmatch '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$') {
+              Write-Host "::error::keep_email_domains must be bare domains separated by commas: '$domain' is not one"
+              exit 1
+            }
+          }
+
       - name: Record what is being rewritten
         run: |
           "### Staging anonymization -- apply" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
@@ -242,6 +306,8 @@ jobs:
           "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Catalog | ``$env:EXPECTED_CATALOG`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $keep = if ($env:KEEP_EMAIL_DOMAINS) { "``$env:KEEP_EMAIL_DOMAINS``" } else { "_nothing -- everyone is anonymized_" }
+          "| Domains kept | $keep |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Approved by | ${{ github.actor }} |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Rollback | re-import the seeding .bak from GCS |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
@@ -253,7 +319,7 @@ jobs:
           command-id: ${{ env.COMMAND_ID }}
           command: anonymize-staging
           payload: |
-            {"expectedCatalog": "${{ inputs.expected_catalog }}", "apply": true}
+            {"expectedCatalog": "${{ inputs.expected_catalog }}", "apply": true, "keepEmailDomains": "${{ inputs.keep_email_domains }}"}
           secret-value: ${{ env.CONNECTION_STRING }}
 
       - name: Wait for the VM to finish
