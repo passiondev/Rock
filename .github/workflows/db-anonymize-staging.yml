@@ -1,0 +1,276 @@
+name: DB - Anonymize staging PII
+
+# Runs Deployment/Database/Invoke-StagingAnonymization.ps1 against a catalog,
+# replacing every email address and phone number with an undeliverable substitute.
+#
+# Staging is seeded from a production backup, so on the day it is restored it holds
+# every congregant's real contact details on a box whose whole purpose is that
+# people try things on it -- including sending a communication. This removes the
+# ability to reach a real person, which is a stronger guarantee than everyone
+# remembering not to press send.
+#
+# Why it goes through the deploy VM rather than connecting from this runner is the
+# same reason db-find-legacy-text-columns.yml gives: the Cloud SQL instance is
+# Private Service Connect only (`ipv4Enabled: false`), so a GitHub-hosted runner has
+# no route to it, and Cloud SQL scopes a database to its owner, so a purpose-made
+# login gets error 916 rather than a way in. The VM is inside the VPC and already
+# holds a working connection string.
+#
+# WHERE THIS DIFFERS FROM THE FINDER, AND WHY
+#
+# The finder reads. This writes, and what it writes over cannot be recovered from
+# inside the catalog -- see the .NOTES block in the script for why there is
+# deliberately no pre-image table. So three of the finder's conveniences are removed
+# here on purpose:
+#
+#   * db_name is required. The finder falls back to secrets.DB_NAME when its box is
+#     left empty, which is right for a read. The same fallback here would aim a
+#     destructive write at the catalog the whole pr-* fleet shares because somebody
+#     tabbed past a field.
+#   * expected_catalog is required and is checked against DB_NAME() on the far side.
+#     The sandbox instance hosts a catalog called RockConnectProd, character for
+#     character the name production uses, so the name alone cannot tell you which
+#     server you reached. Naming it is how the operator states intent.
+#   * apply is a separate job behind an environment approval, and it runs after the
+#     dry run in the same run, so the approver is looking at the actual row counts
+#     when they decide.
+#
+# The script carries its own refusals as well -- it declines the production instance
+# by address before it opens a connection. That check is what makes this command
+# safe to expose on a dispatch box at all, and it lives in the script rather than
+# here because here is not where it would be enforced.
+#
+# NOTE ON THE APPROVAL GATE: it is only as strong as the `staging-anonymize`
+# environment's protection rules. An environment with no required reviewers is
+# created on first use and approves itself. Add a reviewer in repository settings,
+# or this gate is decorative.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      db_name:
+        description: >-
+          Catalog to anonymize. Required -- there is deliberately no fallback,
+          because the fallback elsewhere in this repository is the catalog shared
+          by every pr-* site.
+        required: true
+        type: string
+      expected_catalog:
+        description: >-
+          The same catalog name again. Checked against DB_NAME() on the VM and the
+          run is refused if they differ. This is not redundancy: db_name builds the
+          connection string, and this is the assertion about where that string
+          actually landed.
+        required: true
+        type: string
+      apply:
+        description: >-
+          Write. Leave unchecked for a dry run that reports what would change and
+          touches nothing. Checking this adds a second job behind an environment
+          approval, which runs after the dry run below.
+        required: false
+        default: false
+        type: boolean
+      queue_name:
+        description: >-
+          Command queue to post to. The default is the queue the test VM's agent
+          polls; production installs its own agent against a different one, so this
+          exists to reach that VM rather than to be changed casually.
+        required: false
+        default: commands
+        type: string
+      poll_attempts:
+        description: >-
+          Ten-second polls to wait for a result. The default outlasts the agent's own
+          3600s timeout on this command, so a slow run comes back as the agent's
+          verdict rather than as a workflow timeout.
+        required: false
+        default: 400
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialised with itself. Two concurrent runs against one catalog would interleave
+  # batches harmlessly -- the predicates are idempotent -- but their logs would
+  # interleave too, and the row counts are the only evidence the run produced.
+  group: db-anonymize-staging
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Dry run
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      log-path: ${{ steps.await.outputs.log-path }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      COMMAND_ID: anonymize-plan-${{ github.run_id }}-${{ github.run_attempt }}
+      QUEUE_NAME: ${{ inputs.queue_name }}
+      EXPECTED_CATALOG: ${{ inputs.expected_catalog }}
+      GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      # Built exactly as env-deploy-command.yml builds it, from the same secrets, so
+      # a catalog the deploy can write is a catalog this can rewrite. No `||`
+      # fallback on the catalog, unlike the finder -- see the header.
+      CONNECTION_STRING: ${{ format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name, secrets.DB_USER, secrets.DB_PASSWORD) }}
+      # Through env: rather than interpolated into the step, for the reason
+      # db-find-legacy-text-columns.yml gives -- a value typed into a dispatch box
+      # should not be able to change the shape of the script that reads it, and the
+      # script here is the one holding a live connection string.
+      POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
+    steps:
+      - name: Check out the queue actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      # queue_name is concatenated into a GCS object path, and the agent validates
+      # its own QueueName against exactly this pattern before it will poll a prefix.
+      # A dispatch that placed a command outside the queue the VM watches fails as a
+      # silent timeout rather than an error.
+      - name: Validate the queue name
+        run: |
+          if ($env:QUEUE_NAME -notmatch '^[a-z][a-z0-9-]{1,30}$') {
+            Write-Host "::error::queue_name must be lowercase letters, digits and hyphens, starting with a letter: '$env:QUEUE_NAME'"
+            exit 1
+          }
+
+      # The connection string is redacted in the log, so this is the only place the
+      # run says which catalog it is aimed at. A row count attributed to the wrong
+      # catalog is worse than no row count -- it would read as staging being clean on
+      # the strength of a scan of something else.
+      - name: Report which catalog will be rewritten
+        run: |
+          "### Staging anonymization -- dry run" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Catalog | ``$env:EXPECTED_CATALOG`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Mode | dry run |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Queue the dry run
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: anonymize-staging
+          payload: |
+            {"expectedCatalog": "${{ inputs.expected_catalog }}", "apply": false}
+          secret-value: ${{ env.CONNECTION_STRING }}
+
+      - name: Wait for the VM to report the plan
+        id: await
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: The dry run
+          attempts: ${{ env.POLL_ATTEMPTS }}
+          interval-seconds: '10'
+
+      # Whole, not a tail. The counts ARE the output, and they are what the approver
+      # on the next job is being asked to approve.
+      - name: Put the plan in the job summary
+        if: always() && steps.await.outputs.log-path != ''
+        run: |
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+  apply:
+    name: Apply
+    needs: plan
+    if: inputs.apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # The gate. It waits here with the dry run's row counts already in the summary
+    # above, so the approver is deciding against the actual numbers rather than
+    # against a description of them.
+    #
+    # Worth knowing: an environment with no required reviewers approves itself. This
+    # job declaring one is necessary and not sufficient.
+    environment:
+      name: staging-anonymize
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      COMMAND_ID: anonymize-apply-${{ github.run_id }}-${{ github.run_attempt }}
+      QUEUE_NAME: ${{ inputs.queue_name }}
+      EXPECTED_CATALOG: ${{ inputs.expected_catalog }}
+      GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      CONNECTION_STRING: ${{ format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name, secrets.DB_USER, secrets.DB_PASSWORD) }}
+      POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
+    steps:
+      - name: Check out the queue actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions
+          sparse-checkout-cone-mode: false
+
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Validate the queue name
+        run: |
+          if ($env:QUEUE_NAME -notmatch '^[a-z][a-z0-9-]{1,30}$') {
+            Write-Host "::error::queue_name must be lowercase letters, digits and hyphens, starting with a letter: '$env:QUEUE_NAME'"
+            exit 1
+          }
+
+      - name: Record what is being rewritten
+        run: |
+          "### Staging anonymization -- apply" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Catalog | ``$env:EXPECTED_CATALOG`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Approved by | ${{ github.actor }} |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Rollback | re-import the seeding .bak from GCS |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Queue the apply
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: anonymize-staging
+          payload: |
+            {"expectedCatalog": "${{ inputs.expected_catalog }}", "apply": true}
+          secret-value: ${{ env.CONNECTION_STRING }}
+
+      - name: Wait for the VM to finish
+        id: await
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: The anonymization
+          attempts: ${{ env.POLL_ATTEMPTS }}
+          interval-seconds: '10'
+
+      - name: Put the result in the job summary
+        if: always() && steps.await.outputs.log-path != ''
+        run: |
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
