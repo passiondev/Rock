@@ -100,7 +100,12 @@ function Invoke-ReadQuery {
         $table = New-Object System.Data.DataTable
         $reader = $command.ExecuteReader()
         try { $table.Load($reader) } finally { $reader.Dispose() }
-        return $table
+        # Comma-wrapped on purpose. PowerShell enumerates a DataTable on the way
+        # out of a function, so a bare `return $table` hands the caller DataRow
+        # objects and every `.Rows` access downstream fails with "The property
+        # 'Rows' cannot be found on this object." The comma returns a one-element
+        # array holding the table, which unrolls back to the table itself.
+        return ,$table
     }
     finally {
         $command.Dispose()
