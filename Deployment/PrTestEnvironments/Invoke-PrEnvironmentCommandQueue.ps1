@@ -7,7 +7,19 @@ param(
     # polled the same pending/ prefix they would race for every command and each
     # would run roughly half of them -- a staging deploy could land on production.
     # The default keeps the existing test-VM queue exactly where it is.
-    [Parameter(Mandatory = $false)][string]$QueueName = "commands"
+    [Parameter(Mandatory = $false)][string]$QueueName = "commands",
+
+    # Where the agent refreshes its own scripts from, and therefore the only thing
+    # deciding which repository ref this host executes. The queue name already keeps
+    # two hosts from taking each other's commands; it does not keep them from running
+    # each other's code. Left as one literal, a production agent would re-download
+    # staging's scripts once a minute, so any .ps1 uploaded by the staging bootstrap
+    # would be running on production inside 60 seconds with no review in between.
+    #
+    # The default is the prefix the test VM's installed task already reads. That task
+    # was written without this argument and keeps running without it, so moving the
+    # default is the one change here that cannot be rolled back from the repository.
+    [Parameter(Mandatory = $false)][string]$BootstrapPrefix = "pr-environments/bootstrap/latest/"
 )
 
 Set-StrictMode -Version Latest
@@ -17,10 +29,18 @@ if ($QueueName -notmatch '^[a-z][a-z0-9-]{1,30}$') {
     throw "QueueName must be lowercase letters, digits and hyphens, starting with a letter: '$QueueName'."
 }
 
+# $BootstrapPrefix is interpolated into a GCS list query and every name it returns is
+# downloaded, parsed and then executed as this host's deployment scripts. Two ways to
+# get that wrong are worth failing on rather than discovering later: an empty prefix
+# lists the entire bucket, and a prefix missing its trailing slash also matches its
+# siblings, so "pr-environments/bootstrap/prod" would pull "bootstrap/prod-old/" too.
+if ($BootstrapPrefix -notmatch '^pr-environments/[a-z0-9][a-z0-9/-]*/$') {
+    throw "BootstrapPrefix must start with 'pr-environments/' and end with '/': '$BootstrapPrefix'."
+}
+
 $PendingPrefix = "pr-environments/$QueueName/pending/"
 $ProcessingPrefix = "pr-environments/$QueueName/processing/"
 $ResultsPrefix = "pr-environments/$QueueName/results/"
-$BootstrapPrefix = "pr-environments/bootstrap/latest/"
 $LocalQueue = Join-Path $DeployRoot "queue"
 New-Item -ItemType Directory -Path $LocalQueue -Force | Out-Null
 

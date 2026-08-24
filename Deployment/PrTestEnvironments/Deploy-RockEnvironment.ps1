@@ -143,6 +143,38 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# When this run started, captured before anything else so every step below can be
+# placed against it. Script scope rather than a parameter: a deploy has exactly one
+# start, and passing it around would let a caller claim a different one.
+$script:DeployStartedUtc = (Get-Date).ToUniversalTime()
+
+function Write-DeployStep {
+    <#
+        .SYNOPSIS
+        One line of the deploy timeline: absolute UTC, elapsed, and what happened.
+
+        .DESCRIPTION
+        The agent uploads this script's output as the deploy's only durable record.
+        Every deploy-staging-* object in the bucket is 435 bytes, which is the
+        header and nothing else -- the script printed its parameters and then went
+        quiet for the eleven minutes that mattered.
+
+        Absolute UTC because the reader is correlating against GCS object times, a
+        Cloud SQL restore point and an IIS log, none of which are in local time.
+        Elapsed alongside it because "which step took nine minutes" is the question
+        actually being asked, and subtracting timestamps by hand at 2am is how the
+        wrong step gets blamed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $now = (Get-Date).ToUniversalTime()
+    $elapsed = $now - $script:DeployStartedUtc
+    Write-Host ("[{0}Z +{1:hh\:mm\:ss}] {2}" -f $now.ToString("s"), $elapsed, $Message)
+}
+
 Import-Module WebAdministration
 
 if ($EnvironmentName -notmatch '^[a-z][a-z0-9-]{1,30}$') {
@@ -765,24 +797,24 @@ function Test-EnvironmentHealth {
     if (![string]::IsNullOrWhiteSpace($HostHeader)) {
         $probeUrl = 'https://127.0.0.1/'
         $probeHostHeader = $HostHeader
-        Write-Host "Health check probing $probeUrl with Host: $probeHostHeader (public URL $Url is verified from the runner, not from this box)."
+        Write-DeployStep "Health check probing $probeUrl with Host: $probeHostHeader (public URL $Url is verified from the runner, not from this box)."
     }
 
     while ((Get-Date) -lt $deadline) {
         $attempt++
         $probe = Invoke-SiteProbe -Url $probeUrl -HostHeader $probeHostHeader -TimeoutSeconds 60
         if ($probe.Ok) {
-            Write-Host "Health check passed: $probeUrl returned $($probe.StatusCode) on attempt $attempt."
+            Write-DeployStep "Health check passed: $probeUrl returned $($probe.StatusCode) on attempt $attempt."
             return $true
         }
         if ($probe.StatusCode -gt 0) { $lastError = "HTTP $($probe.StatusCode)" }
         else { $lastError = $probe.Error }
-        Write-Host "Health check attempt ${attempt}: $lastError"
+        Write-DeployStep "Health check attempt ${attempt}: $lastError"
 
         if (![string]::IsNullOrWhiteSpace($AppPoolName) -and
             ((Get-Date) - $lastRecycle).TotalSeconds -ge $RecycleAfterSeconds -and
             (Get-Date).AddSeconds(60) -lt $deadline) {
-            Write-Host "Still unhealthy after $([int]((Get-Date) - $lastRecycle).TotalSeconds)s; recycling app pool $AppPoolName to discard any cached startup failure."
+            Write-DeployStep "Still unhealthy after $([int]((Get-Date) - $lastRecycle).TotalSeconds)s; recycling app pool $AppPoolName to discard any cached startup failure."
             try {
                 Stop-EnvironmentAppPool -Name $AppPoolName
                 Start-WebAppPool -Name $AppPoolName -ErrorAction Continue
@@ -819,6 +851,7 @@ try {
     Write-Host "  host        : $HostName"
     Write-Host "  site path   : $SitePath"
     Write-Host "  iis site    : $SiteName (app pool $AppPoolName)"
+    Write-DeployStep "Deploy started."
 
     if ($Mode -eq 'InPlace' -and -not $Apply) {
         Write-Host ""
@@ -832,13 +865,25 @@ try {
     }
 
     if (Test-Path $ArtifactPath) { Remove-Item $ArtifactPath -Force }
+    Write-DeployStep "Downloading the artifact from $ArtifactGcsPath."
     Copy-GcsObjectToFile -GcsUri $ArtifactGcsPath -DestinationPath $ArtifactPath
+
+    # The size is the cheapest check that the right thing arrived. A Rock artifact
+    # is hundreds of megabytes; a truncated download or an object that turned out
+    # to be an error document is obvious here and nowhere else until the site 500s.
+    $artifactMegabytes = [math]::Round((Get-Item $ArtifactPath).Length / 1MB, 1)
+    Write-DeployStep "Artifact downloaded ($artifactMegabytes MB)."
 
     if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force }
     Ensure-Directory -Path $ExtractPath
     Expand-Archive -Path $ArtifactPath -DestinationPath $ExtractPath -Force
     Remove-PluginBuildArtifacts -Path $ExtractPath
+    Write-DeployStep "Artifact extracted to $ExtractPath."
 
+    # From here until the app pool starts again, the site is down. Both ends of
+    # that window are stamped so the outage can be measured after the fact rather
+    # than estimated from when somebody noticed.
+    Write-DeployStep "Stopping app pool $AppPoolName. The site is offline from here."
     Stop-EnvironmentAppPool -Name $AppPoolName
 
     if ($Mode -eq 'DedicatedSite') {
@@ -937,7 +982,7 @@ try {
     else {
         $backupPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) ((Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss") + "-$Sha")
         Ensure-Directory -Path $backupPath
-        Write-Host "Backing up $SitePath to $backupPath (excluding preserved user data)."
+        Write-DeployStep "Backing up $SitePath to $backupPath (excluding preserved user data)."
 
         # Back up what the deploy can actually damage: build output and config.
         # Uploaded Content is excluded because it is not being touched and copying
@@ -947,12 +992,12 @@ try {
             $backupExclusions += '/XD'
             $backupExclusions += (Join-Path $SitePath $directory)
         }
-        & robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NJH /NJS /NP
+        & robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NP
         $backupExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($backupExit -gt 7) {
             throw "Backup failed with robocopy exit code $backupExit; refusing to deploy."
         }
-        Write-Host "Backup complete."
+        Write-DeployStep "Backup complete."
 
         # Copy the artifact over the live site. No /MIR and no /PURGE: files the
         # server legitimately owns must survive, and a purge here would delete
@@ -966,12 +1011,14 @@ try {
             $copyExclusions += '/XF'
             $copyExclusions += (Join-Path $ExtractPath $file)
         }
-        & robocopy $ExtractPath $SitePath /E @copyExclusions /R:3 /W:5 /NFL /NDL /NJH /NJS /NP
+        Write-DeployStep "Copying the artifact over $SitePath."
+        & robocopy $ExtractPath $SitePath /E @copyExclusions /R:3 /W:5 /NFL /NDL /NP
         $copyExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($copyExit -gt 7) {
             throw "Deploy copy failed with robocopy exit code $copyExit. The previous site files are backed up at $backupPath."
         }
 
+        Write-DeployStep "Copy complete."
         Write-RuntimeConfiguration -Path $SitePath -PublicRoot "https://$HostName" -Connection $ConnectionString
         Ensure-Directory -Path (Split-Path -Parent $ManifestPath)
     }
@@ -991,10 +1038,11 @@ try {
     }
     $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $ManifestPath -Encoding UTF8 -Force
 
+    Write-DeployStep "Starting app pool $AppPoolName and site $SiteName."
     if (Test-Path "IIS:\AppPools\$AppPoolName") { Start-WebAppPool -Name $AppPoolName -ErrorAction Continue }
     if (Test-Path "IIS:\Sites\$SiteName") { Start-Website -Name $SiteName -ErrorAction Continue }
 
-    Write-Host "Deployed $EnvironmentName ($Sha) to https://$HostName"
+    Write-DeployStep "Deployed $EnvironmentName ($Sha) to https://$HostName"
 
     if (-not (Test-EnvironmentHealth -Url "https://$HostName/" -TimeoutSeconds $HealthCheckTimeoutSeconds -HostHeader $HostName -AppPoolName $AppPoolName)) {
         # Gather the evidence while it is still fresh, and never let a problem
@@ -1006,6 +1054,18 @@ try {
             throw "Deploy completed but the site did not become healthy. Roll back from $backupPath if needed."
         }
         throw "Deploy completed but https://$HostName/ did not become healthy within $HealthCheckTimeoutSeconds seconds."
+    }
+
+    # Repeated at the end on purpose. It was printed once, before the copy, and by
+    # now it is thousands of characters up a log somebody is reading because
+    # something went wrong. $backupPath only exists on the InPlace branch -- a
+    # dedicated site is replaced wholesale and has nothing to roll back to -- and
+    # Set-StrictMode makes reading it anywhere else a terminating error.
+    if ($Mode -eq 'InPlace') {
+        Write-DeployStep "Done. Roll back with: robocopy $backupPath $SitePath /E"
+    }
+    else {
+        Write-DeployStep "Done."
     }
 }
 finally {

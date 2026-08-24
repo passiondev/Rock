@@ -75,6 +75,7 @@ AUTHENTICATING_WORKFLOWS = [
     "pr-test-diagnose-command-queue.yml",
     "pr-test-lifecycle.yml",
     "pr-test-renew-certificates.yml",
+    "production-bootstrap-command-queue.yml",
 ]
 
 

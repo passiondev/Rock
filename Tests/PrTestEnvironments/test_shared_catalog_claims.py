@@ -60,6 +60,15 @@ NOT_A_SURFACE = {
     # corrected. A guard against the claim cannot run over the document that
     # explains the guard.
     "Documentation/Training/DevOps-Open-Items-Rock-CICD.md",
+    # The production upgrade runbook is about production's own catalog. It matches
+    # the sweep for two incidental reasons -- it points the reader at the PR
+    # environment runbooks, and the scheduled task production installs is named
+    # `Rock PR Environment Command Queue` because the installer is shared with the
+    # test fleet. Neither makes it a catalog surface. The claims above are about the
+    # sandbox copy on `connect-restore-test`; production's catalog carries the same
+    # NAME, `RockConnectProd`, on a different instance, and checking this file for
+    # promises about the sandbox's data would be checking the wrong database.
+    "Documentation/Production-Upgrade-Runbook.md",
 }
 
 # What makes a file a candidate: it is prose an engineer or operator reads, and it

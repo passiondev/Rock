@@ -7,9 +7,18 @@ import pipeline_harness as harness
 REPO_ROOT = harness.REPO_ROOT
 DEV_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Developer-Runbook.md"
 OP_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Operator-Runbook.md"
+PROD_RUNBOOK = REPO_ROOT / "Documentation" / "Production-Upgrade-Runbook.md"
+
+PRODUCTION_BOOTSTRAP_WORKFLOW = harness.WORKFLOWS_DIR / "production-bootstrap-command-queue.yml"
+PRODUCTION_DEPLOY_WORKFLOW = harness.WORKFLOWS_DIR / "production-deploy.yml"
 
 
-class RunbookTests(unittest.TestCase):
+class RunbookAssertions:
+    """Shared by every runbook class here. A mixin rather than a base class with
+    tests on it: subclassing RunbookTests to reach `assertCovers` would inherit its
+    four test methods too and run the developer and operator runbooks a second time
+    under the subclass's name, which reads as coverage and is a copy."""
+
     def assertCovers(self, path, needles, why):
         """assertIn against a runbook prints the entire runbook into the failure,
         which buries the one term that is missing. Report the missing terms and
@@ -18,6 +27,8 @@ class RunbookTests(unittest.TestCase):
         missing = [needle for needle in needles if needle not in text]
         self.assertFalse(missing, f"{path.name}: {why}: missing {missing}")
 
+
+class RunbookTests(RunbookAssertions, unittest.TestCase):
     def test_developer_runbook_covers_commands_access_and_shared_data(self):
         self.assertCovers(DEV_RUNBOOK, [
             'rock:start',
@@ -119,10 +130,6 @@ class RunbookTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StepsTheRunbookTellsYouToWatchTests(harness.HarnessAssertions, unittest.TestCase):
     """A runbook that names a step by its exact title is only useful while the step
     still carries that title.
@@ -167,7 +174,7 @@ class StepsTheRunbookTellsYouToWatchTests(harness.HarnessAssertions, unittest.Te
 
         watched = []
         offenders = []
-        for runbook in (DEV_RUNBOOK, OP_RUNBOOK):
+        for runbook in (DEV_RUNBOOK, OP_RUNBOOK, PROD_RUNBOOK):
             text = runbook.read_text(encoding="utf-8")
             for match in self.WATCHED_STEP.finditer(text):
                 name = match.group(1)
@@ -183,3 +190,192 @@ class StepsTheRunbookTellsYouToWatchTests(harness.HarnessAssertions, unittest.Te
             "these send an operator looking for a step title no workflow carries:\n  "
             + "\n  ".join(offenders),
         )
+
+
+class ProductionUpgradeRunbookTests(RunbookAssertions, unittest.TestCase):
+    """Production's upgrade is the one procedure in this repository where the
+    pipeline deliberately stops short and hands off to prose.
+
+    Every other control here is a guard that refuses. This one cannot be: the
+    ordering is forced by three guards that each read a different ref, the reboot
+    is forced by a Compute Engine scope rule, and the backup is forced by nothing
+    at all -- `production-deploy.yml` stops demanding `acknowledge_version_change`
+    the moment `productionBranch` is repointed, and says in its own comments that
+    the runbook is where the backup requirement lives from then on. So these tests
+    guard a document rather than code, and they are the only thing standing under
+    that handoff.
+    """
+
+    # Steps this runbook sends an operator to read. Named here rather than left to
+    # the prose scan in StepsTheRunbookTellsYouToWatchTests, which only matches the
+    # "watch the run's X step" phrasing -- most of these are cited in sentences that
+    # read better without it, and a step title that moved would take the citation
+    # with it and fail nothing.
+    CITED_STEPS = [
+        "Refuse a ref that is not the production branch",
+        "Say what happened",
+        "Restart the production VM to apply it",
+        "Wait for the agent to report in",
+        "Resolve SHA and summarize the request",
+        "Refuse a ref that is not on the production branch",
+        "Refuse a ref from a different Rock version",
+        "Record approval",
+    ]
+
+    def workflow_step_names(self):
+        names = set()
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            parsed = harness.workflow(path.name)
+            for job in (parsed.get("jobs") or {}).values():
+                names.update(s.get("name") for s in (job.get("steps") or []) if s.get("name"))
+        return names
+
+    def test_it_covers_the_ordering_the_guards_force(self):
+        """The order is not a preference and not inferable from any one workflow.
+        `production-deploy.yml` refuses a ref off `productionBranch`; the bootstrap
+        refuses a ref that is not exactly `productionBranch`; and `workflow_dispatch`
+        only lists a workflow that exists on the default branch. While those two
+        branches differ the bootstrap file has to exist on both, which is the
+        constraint that actually decides the order -- repoint first, and one branch
+        satisfies every guard."""
+        self.assertCovers(PROD_RUNBOOK, [
+            'productionBranch',
+            'production-bootstrap-command-queue.yml',
+            'restart_vm',
+            'commands-prod',
+            'pr-environments/bootstrap/prod/',
+            'connect-srv-prod',
+            'connect-prod',
+            'RockConnectProd',
+            'default branch',
+            'EXPECTED_PRODUCTION_BRANCH',
+            'PRODUCTION_PIN_SITES',
+        ], "the production upgrade runbook no longer covers the forced ordering")
+
+    def test_it_says_the_reboot_is_unavoidable_and_gives_both_reasons(self):
+        """"Restart production" is the line most likely to be argued away by
+        somebody who has not hit the wall, and there are two independent walls, so
+        removing either reason still leaves a reader thinking the other has a way
+        round it. Scopes cap IAM and can only be edited while the instance is
+        stopped; a startup script runs at boot and never otherwise."""
+        text = PROD_RUNBOOK.read_text()
+
+        self.assertIn('devstorage.read_only', text)
+        self.assertIn('devstorage.read_write', text)
+        self.assertIn('stopped', text)
+        self.assertIn('windows-startup-script-ps1', text)
+
+        # The scope edit overwrites the whole list, and production's list carries the
+        # two the Ops Agent needs. A runbook that does not say so invites somebody
+        # reading the gcloud docs to "simplify" the workflow's union back into a
+        # single --scopes= value and silently take production's logging with it.
+        self.assertIn('logging.write', text)
+        self.assertIn('monitoring.write', text)
+
+    def test_it_carries_the_backup_requirement_the_deploy_guard_hands_off(self):
+        """`production-deploy.yml` stops demanding the acknowledgement checkbox once
+        `productionBranch` moves -- deliberately, because a guard that fires on
+        routine work gets ticked without being read. Its comment names the runbook as
+        where the backup requirement goes instead. Assert both halves: if the comment
+        ever stops delegating, this test should be reconsidered rather than kept
+        green by a document nobody is being sent to."""
+        # One line of that comment, not a phrase spanning its wrap -- and asserted
+        # with a message rather than assertIn, which would print the whole workflow
+        # into the failure and bury the sentence that moved.
+        guard = PRODUCTION_DEPLOY_WORKFLOW.read_text()
+        self.assertTrue(
+            "cutover checklist is where the backup requirement is attached" in guard,
+            "production-deploy.yml no longer hands the backup requirement to a runbook; "
+            "check whether the guard took it back before relaxing this file",
+        )
+
+        self.assertCovers(PROD_RUNBOOK, [
+            'gcloud sql backups create',
+            'connect-prod',
+            'point-in-time recovery',
+            'acknowledge_version_change',
+        ], "the runbook the deploy guard delegates its backup requirement to does not "
+           "actually require a backup")
+
+    def test_it_refuses_the_belief_that_reinstalling_the_old_binaries_is_a_rollback(self):
+        """The plausible-sounding version is the dangerous one. A deploy that backs
+        the site up first reads as reversible, and it is -- right up until the first
+        request runs migrations. EF commits each migration separately, so a failure
+        part-way leaves the schema between two minors, and 18.4.1 could not start
+        against that catalog either when this was measured on staging.
+
+        Pin the correction rather than the reassurance."""
+        text = PROD_RUNBOOK.read_text()
+
+        self.assertIn('Binaries roll back. The database does not.', text)
+        self.assertIn('DbMigrator', text)
+        self.assertIn("Invalid column name 'ScheduleReminderSystemEmailId'", text)
+
+        # The one property that makes an instance-level restore safe here, and the
+        # reason it is not safe on the sandbox instance. Losing this line turns a
+        # correct instruction into a habit that destroys three other catalogs.
+        rollback = text.split('## Rollback', 1)[1].split('\n## ', 1)[0]
+        self.assertIn('exactly one user database', rollback)
+
+    def test_every_step_it_cites_still_exists_under_that_name(self):
+        available = self.workflow_step_names()
+        self.assertTrue(available, "no workflow step names were found")
+
+        text = PROD_RUNBOOK.read_text()
+        missing_from_workflows = [s for s in self.CITED_STEPS if s not in available]
+        missing_from_runbook = [s for s in self.CITED_STEPS if f'`{s}`' not in text]
+
+        self.assertEqual(
+            [], missing_from_workflows,
+            "the runbook sends an operator looking for step titles no workflow carries: "
+            + ", ".join(missing_from_workflows),
+        )
+        self.assertEqual(
+            [], missing_from_runbook,
+            "these are listed here as cited but the runbook no longer cites them, so this "
+            "list has stopped guarding anything: " + ", ".join(missing_from_runbook),
+        )
+
+    def test_the_literals_it_tells_you_to_verify_match_the_workflow(self):
+        """Step 4 tells the operator to read the installed task's command line and
+        check two values against this document. Both are copied out of the workflow,
+        so the check is only worth running while the copies agree -- otherwise it
+        sends someone to confirm production is configured a way it deliberately is
+        not, and the honest answer looks like a fault."""
+        workflow = PRODUCTION_BOOTSTRAP_WORKFLOW.read_text()
+        text = PROD_RUNBOOK.read_text()
+
+        # `ROCK-BOOTSTRAP: refusing to install` is here for a different reason than
+        # the rest. The runbook tells the operator that seeing it after a stray boot
+        # is the correct outcome and not a fault to chase. If the startup script
+        # stopped printing that exact text, the advice would send someone hunting a
+        # message that no longer exists, on the one day nobody has time for it.
+        literals = [
+            'commands-prod',
+            'pr-environments/bootstrap/prod/',
+            'connect-srv-prod',
+            'ROCK-BOOTSTRAP: refusing to install',
+        ]
+        for literal in literals:
+            self.assertIn(
+                literal, workflow,
+                f"the bootstrap workflow no longer uses {literal!r}, which the runbook "
+                f"tells an operator to verify on the VM",
+            )
+            self.assertIn(literal, text)
+
+        # The staging prefix must not appear as an instruction. Both hosts re-download
+        # their scripts from whatever prefix their task names, once a minute, so a
+        # production agent on the staging prefix runs staging's next upload as SYSTEM
+        # within the minute. It is named in the runbook only as the thing to refuse.
+        for line in text.splitlines():
+            if 'bootstrap/latest/' in line:
+                self.assertIn(
+                    'would execute', line,
+                    "the production runbook names the staging bootstrap prefix outside the "
+                    "sentence explaining why production must not be pointed at it",
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,441 @@
+name: Production Bootstrap Command Queue
+
+# Gives connect-srv-prod the agent that production-deploy.yml already assumes is
+# there. That workflow queues its command to `commands-prod` and then polls for a
+# result object; nothing has ever read that prefix, so the deploy queues work no
+# host picks up and waits for an answer no host writes, until it times out.
+#
+# Deliberately a separate workflow from pr-test-bootstrap-command-queue.yml rather
+# than a parameter on it. The staging bootstrap resolves its VM from
+# GCP_VM_EXTERNAL_IP and restarts whatever it finds, and it is dispatched freely.
+# One workflow that can restart either box is one wrong dropdown away from
+# restarting the wrong one.
+#
+# The startup script below resembles staging's and is deliberately not shared with
+# it. Two reasons, and the second is the load-bearing one. First, the bodies differ
+# where it matters: this one refuses to install without a GCS write scope, which
+# staging does not need because it already runs on cloud-platform, and it prints a
+# marker the run then verifies. Second, this text is generated into a script that
+# runs as SYSTEM on production at every boot. Sharing it would mean one edit could
+# change what boots on both boxes at once, and staging's copy is the one that gets
+# edited casually. The duplication is the price of that blast radius staying small.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      restart_vm:
+        description: >-
+          Restart connect-srv-prod. Required for the agent to actually appear:
+          the startup script only runs at boot, and the storage scope it needs
+          can only be changed while the instance is stopped. Leave unchecked to
+          stage everything and pick the window later.
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Everything that can fail without touching production, before anyone is asked
+  # to approve. A reviewer should never be woken up to approve a run that was
+  # going to fail on a syntax error.
+  validate:
+    name: Check the ref and the scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments
+            Deployment/Database
+
+      - name: Refuse a ref that is not the production branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # This publishes .ps1 files that a SYSTEM-privileged scheduled task on the
+          # production web server downloads and runs, once a minute, forever. Without
+          # this check that is a stronger capability than production-deploy.yml, which
+          # refuses any ref not on the production branch -- you could not deploy a
+          # feature branch's code but you could hand production a feature branch's
+          # deployment scripts.
+          #
+          # Equality here, where the deploy guard uses ancestry. The deploy accepts
+          # `behind` because its own `ref` input documents rollback as a use case.
+          # A bootstrap has no rollback: you install the agent from the branch
+          # production runs, and if that branch is wrong the answer is to fix the
+          # branch. Equality is a much smaller thing to get right than the compare
+          # API, so it stays here rather than being shared with the deploy guard.
+          #
+          # Read from the DEFAULT BRANCH over the API, never from the checkout: the
+          # checkout is the ref being judged, so a branch shipping its own
+          # pr-test-environments.json would approve itself.
+          config_path=".github/pr-test-environments.json"
+          production_branch="$(
+            gh api "repos/$REPOSITORY/contents/$config_path?ref=$DEFAULT_BRANCH" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null \
+              | jq -r '.productionBranch // empty' 2>/dev/null || true
+          )"
+
+          if [ -z "$production_branch" ]; then
+            echo "::error::Could not read 'productionBranch' from $config_path on '$DEFAULT_BRANCH'. Refusing to publish scripts to production without knowing which branch production runs."
+            exit 1
+          fi
+
+          echo "Production branch: $production_branch (read from $config_path on '$DEFAULT_BRANCH')."
+
+          if [ "$REF_NAME" != "$production_branch" ]; then
+            echo "::error::This workflow was dispatched from '$REF_NAME', but production runs '$production_branch'. Dispatch it from the production branch."
+            {
+              echo "> **Refused.** Dispatched from \`$REF_NAME\`; production runs \`$production_branch\`."
+              echo "> The scripts published here run as SYSTEM on the production web server."
+              echo "> Re-dispatch from \`$production_branch\`, or repoint \`productionBranch\` first if this is a cutover."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            echo "### Production command queue bootstrap"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Ref | \`$REF_NAME\` (the production branch) |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Restart requested | \`${{ inputs.restart_vm }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the deployment scripts parse
+        shell: pwsh
+        run: |
+          # Same check the staging bootstrap runs, for a stronger reason. A script
+          # that does not parse, published to the production prefix, is a production
+          # agent that dies silently every minute on a box nobody is watching.
+          $failed = $false
+          foreach ($file in Get-ChildItem Deployment/PrTestEnvironments/*.ps1, Deployment/Database/*.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              foreach ($e in $errors) {
+                Write-Host "::error file=$($file.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            }
+            else {
+              Write-Host "OK  $($file.Name)"
+            }
+          }
+          if ($failed) { exit 1 }
+
+  bootstrap:
+    name: Install the command queue on connect-srv-prod
+    needs: validate
+    runs-on: ubuntu-latest
+    # The same gate production-deploy.yml uses. Publishing here reaches the
+    # production web server within 60 seconds once the agent exists, and the
+    # restart below interrupts it outright: both are production changes and
+    # neither should happen without a second person saying so.
+    environment: production
+    env:
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      PRODUCTION_VM_NAME: ${{ vars.PRODUCTION_VM_NAME || 'connect-srv-prod' }}
+      # One bucket, two hosts, two prefixes. The queue name already stops the two
+      # agents taking each other's commands. This stops them running each other's
+      # code: with a shared prefix any .ps1 the staging bootstrap uploads would be
+      # executing on production inside a minute, from whatever branch staging was
+      # dispatched at, with no review anywhere in that path.
+      PRODUCTION_BOOTSTRAP_PREFIX: pr-environments/bootstrap/prod/
+      PRODUCTION_QUEUE_NAME: commands-prod
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            Deployment/PrTestEnvironments
+            Deployment/Database
+            .github/actions
+
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Resolve the production VM
+        id: vm
+        shell: pwsh
+        run: |
+          $vmName = $env:PRODUCTION_VM_NAME
+          # By name, not by external IP. The staging bootstrap resolves its VM from
+          # GCP_VM_EXTERNAL_IP, and that secret points at the test box -- reusing it
+          # here is how this workflow would quietly bootstrap staging instead.
+          $row = gcloud compute instances list --filter="name=$vmName" --format="csv[no-heading](name,zone,status)" | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($row)) {
+            throw "No instance named '$vmName' in this project. Set the PRODUCTION_VM_NAME repository variable if it has been renamed."
+          }
+          $parts = $row.Split(',')
+          $vmZone = ($parts[1] -split '/')[-1]
+          Write-Host "Production VM: $($parts[0]) in $vmZone (currently $($parts[2]))."
+          "name=$($parts[0])" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "zone=$vmZone" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish deployment scripts to the production prefix
+        shell: pwsh
+        run: |
+          $bucketName = $env:PR_TEST_GCS_BUCKET
+          $prefix = $env:PRODUCTION_BOOTSTRAP_PREFIX
+          # -h Content-Type for the same reason the staging publisher sets it: gsutil
+          # types a .ps1 as application/octet-stream, Invoke-WebRequest hands back a
+          # byte[] for anything outside the text/JSON/XML families, and the agent's
+          # parse check then rejects every file and keeps the copy on disk.
+          gsutil -h "Content-Type:text/plain; charset=utf-8" -m cp Deployment/PrTestEnvironments/*.ps1 Deployment/Database/*.ps1 gs://$bucketName/$prefix
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish deployment scripts to gs://$bucketName/$prefix" }
+
+      - name: Stage the startup script on the production VM
+        shell: pwsh
+        run: |
+          $bucketName = $env:PR_TEST_GCS_BUCKET
+          $prefix = $env:PRODUCTION_BOOTSTRAP_PREFIX
+          $queueName = $env:PRODUCTION_QUEUE_NAME
+          $vmName = "${{ steps.vm.outputs.name }}"
+          $vmZone = "${{ steps.vm.outputs.zone }}"
+
+          $startupScript = @"
+          `$ErrorActionPreference = 'Stop'
+          function Get-GcsAccessToken {
+            `$headers = @{ 'Metadata-Flavor' = 'Google' }
+            `$tokenResponse = Invoke-RestMethod -Headers `$headers -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
+            return `$tokenResponse.access_token
+          }
+          function Copy-GcsObjectToFile {
+            param([string]`$ObjectName, [string]`$DestinationPath)
+            `$encodedObjectName = [System.Uri]::EscapeDataString(`$ObjectName)
+            `$headers = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
+            `$uri = "https://storage.googleapis.com/storage/v1/b/$bucketName/o/`$encodedObjectName``?alt=media"
+            Invoke-WebRequest -UseBasicParsing -Headers `$headers -Uri `$uri -OutFile `$DestinationPath
+          }
+          # A startup script runs at EVERY boot, not only the one this workflow
+          # triggers. If the box comes up for any other reason -- Windows Update, a
+          # console reset, an operator -- while the scopes are still read_only, then
+          # installing the agent is worse than not installing it: the agent reads a
+          # queued command, runs it against production, and then fails to write the
+          # result. That failed write aborts the finally block before it deletes the
+          # command object, so the same production command is picked up and re-run
+          # every 60 seconds, forever. Refuse to install unless the write scope is
+          # really there. The workflow's own restart widens the scope before boot,
+          # so the intended path passes this check and a stray boot does not.
+          `$scopeUri = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/scopes'
+          `$grantedScopes = @((Invoke-RestMethod -Headers @{ 'Metadata-Flavor' = 'Google' } -Uri `$scopeUri) -split '\s+' | Where-Object { `$_ })
+          `$writeScopes = @(
+            'https://www.googleapis.com/auth/devstorage.read_write',
+            'https://www.googleapis.com/auth/devstorage.full_control',
+            'https://www.googleapis.com/auth/cloud-platform'
+          )
+          if (-not (`$grantedScopes | Where-Object { `$writeScopes -contains `$_ })) {
+            Write-Host "ROCK-BOOTSTRAP: refusing to install the agent -- this instance has no GCS write scope (`$(`$grantedScopes -join ' ')). Re-run the bootstrap workflow with restart_vm checked."
+            exit 0
+          }
+          New-Item -ItemType Directory -Path 'C:\RockDeploy' -Force | Out-Null
+          # The floor: what the box cannot come up without, kept literal so a GCS
+          # listing that fails at boot still leaves a VM that can take commands.
+          `$scripts = @('Deploy-RockEnvironment.ps1','Install-PrEnvironmentCommandQueueTask.ps1','Invoke-PrEnvironmentCommandQueue.ps1','Set-PrEnvironmentRuntimeConfiguration.ps1')
+          try {
+            `$listUri = 'https://storage.googleapis.com/storage/v1/b/$bucketName/o?prefix=$prefix'
+            `$listHeaders = @{ Authorization = "Bearer `$(Get-GcsAccessToken)" }
+            # Top-level only. Split-Path -Leaf flattens a nested object onto a live
+            # script's name, so anything under a subdirectory of the prefix would
+            # overwrite the real file with whatever happens to share its leaf name.
+            `$published = @((Invoke-RestMethod -Headers `$listHeaders -Uri `$listUri).items |
+              ForEach-Object { `$_.name } |
+              Where-Object { `$_ -like '*.ps1' -and -not `$_.Substring('$prefix'.Length).Contains('/') } |
+              ForEach-Object { Split-Path `$_ -Leaf })
+            if (`$published.Count -gt 0) {
+              `$scripts = @(`$scripts + `$published | Select-Object -Unique)
+            }
+          }
+          catch {
+            Write-Host "Could not list the bootstrap prefix (`$(`$_.Exception.Message)). Falling back to the built-in list."
+          }
+          foreach (`$script in `$scripts) {
+            Copy-GcsObjectToFile -ObjectName "$prefix`$script" -DestinationPath "C:\RockDeploy\`$script"
+          }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy' -QueueName '$queueName' -BootstrapPrefix '$prefix'
+          # Not running the agent inline, for the reason written out in the staging
+          # bootstrap: nothing claims a command, so a second agent re-runs whatever
+          # the scheduled task is already running and then reports the working
+          # deploy as a lock timeout. The task fires within 60 seconds anyway.
+          Write-Host "ROCK-BOOTSTRAP: installed the command queue agent for queue $queueName."
+          "@
+
+          $scriptFile = Join-Path $env:RUNNER_TEMP 'production-bootstrap-startup.ps1'
+          $startupScript | Out-File -FilePath $scriptFile -Encoding utf8
+
+          # Staging the metadata is not itself a production change: a startup script
+          # takes effect at the next boot and nothing here causes one.
+          gcloud compute instances add-metadata $vmName `
+            --zone=$vmZone `
+            --metadata-from-file=windows-startup-script-ps1=$scriptFile
+          if ($LASTEXITCODE -ne 0) { throw "Failed to stage the startup script on $vmName." }
+
+      - name: Restart the production VM to apply it
+        id: restart
+        if: ${{ inputs.restart_vm }}
+        shell: pwsh
+        run: |
+          $vmName = "${{ steps.vm.outputs.name }}"
+          $vmZone = "${{ steps.vm.outputs.zone }}"
+
+          # Why a restart is unavoidable, rather than something to engineer around:
+          # the agent writes its results and logs to GCS, and connect-srv-prod's
+          # service account is scoped devstorage.read_only. A scope is a hard cap
+          # above IAM, so no role grant fixes it, and scopes can only be changed
+          # while the instance is stopped. The startup script also only runs at boot.
+          # Both halves need the same stop, so they happen in the same window.
+          $current = gcloud compute instances describe $vmName --zone=$vmZone --format="value(serviceAccounts[0].scopes)"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read the current scopes of $vmName. Refusing to continue: production has not been touched." }
+          Write-Host "Current scopes: $current"
+
+          # Union, not replacement. set-service-account overwrites the whole scope
+          # list, and the existing list carries logging.write and monitoring.write --
+          # dropping those would silently stop production's Ops Agent from reporting,
+          # which is precisely the wrong thing to lose on upgrade day.
+          $scopes = @($current -split '[;\s]+' | Where-Object { $_ })
+
+          # Everything below this line runs while production is stopped, so an empty
+          # or implausible read has to fail HERE, before the stop. `describe` can exit
+          # 0 and still print nothing if the format path stops matching, and the union
+          # above would then quietly collapse to devstorage.read_write alone -- which
+          # is exactly the Ops Agent silencing the comment above forbids.
+          if ($scopes.Count -lt 2) {
+            throw "Read $($scopes.Count) scope(s) from $vmName, which cannot be right for this instance. Refusing to continue: production has not been touched."
+          }
+
+          $scopes = @($scopes | Where-Object { $_ -ne 'https://www.googleapis.com/auth/devstorage.read_only' })
+          $scopes += 'https://www.googleapis.com/auth/devstorage.read_write'
+          $scopes = @($scopes | Select-Object -Unique)
+          Write-Host "Requested scopes: $($scopes -join ',')"
+
+          gcloud compute instances stop $vmName --zone=$vmZone
+          if ($LASTEXITCODE -ne 0) { throw "Failed to stop $vmName." }
+
+          gcloud compute instances set-service-account $vmName `
+            --zone=$vmZone `
+            --scopes=$($scopes -join ',')
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Could not set the service account scopes. Starting the VM again before failing."
+            gcloud compute instances start $vmName --zone=$vmZone
+            throw "Failed to set service account scopes on $vmName."
+          }
+
+          Start-Sleep -Seconds 10
+          $started = $false
+          for ($attempt = 1; $attempt -le 6; $attempt++) {
+            gcloud compute instances start $vmName --zone=$vmZone
+            if ($LASTEXITCODE -eq 0) {
+              $started = $true
+              break
+            }
+            Write-Warning "VM start attempt $attempt failed; retrying in 30 seconds."
+            Start-Sleep -Seconds 30
+          }
+          if (!$started) {
+            throw "Failed to start VM $vmName in $vmZone after retries. Production is DOWN -- start it by hand."
+          }
+
+      - name: Wait for the agent to report in
+        id: verify
+        if: ${{ inputs.restart_vm }}
+        shell: pwsh
+        run: |
+          $vmName = "${{ steps.vm.outputs.name }}"
+          $vmZone = "${{ steps.vm.outputs.zone }}"
+
+          # Without this the job goes green whether or not the agent installed:
+          # `instances start` returns as soon as the instance is running, and the
+          # startup script runs afterwards, on the box, reporting to nobody. The
+          # script prints one marker line and Windows sends startup script output to
+          # the serial console, which reads without any extra scope or credential.
+          $deadline = (Get-Date).AddMinutes(10)
+          $marker = $null
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 30
+            $console = gcloud compute instances get-serial-port-output $vmName --zone=$vmZone --port=1 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Serial console not readable yet; still booting."
+              continue
+            }
+            $marker = @($console -split "`n" | Where-Object { $_ -match 'ROCK-BOOTSTRAP:' }) | Select-Object -Last 1
+            if ($marker) { break }
+            Write-Host "No marker yet; the startup script has not finished."
+          }
+
+          if (!$marker) {
+            throw "$vmName came back up but never logged a ROCK-BOOTSTRAP marker. The agent may not be installed -- check the scheduled task by hand before dispatching a deploy."
+          }
+
+          Write-Host $marker
+          if ($marker -match 'refusing to install') {
+            throw "The startup script refused to install the agent: $marker"
+          }
+
+      - name: Say what happened
+        if: always()
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          QUEUE_NAME: ${{ env.PRODUCTION_QUEUE_NAME }}
+          RESTART_REQUESTED: ${{ inputs.restart_vm }}
+          RESTART_OUTCOME: ${{ steps.restart.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        run: |
+          # Branch on what the restart step actually did, not on what was asked for.
+          # `restart_vm` says a restart was requested; it says nothing about whether
+          # the box came back. Announcing a healthy agent over a failed restart is
+          # the one summary that could get somebody to dispatch a deploy into a
+          # production instance that is still stopped.
+          if [ "$RESTART_OUTCOME" = "success" ] && [ "$VERIFY_OUTCOME" = "success" ]; then
+            {
+              echo ""
+              echo "Restarted \`$VM_NAME\` and confirmed the agent installed. It polls"
+              echo "\`$QUEUE_NAME\` every minute from now on."
+              echo ""
+              echo "Rock runs its pending EF migrations at \`Application_Start\`, so the first request"
+              echo "after this reboot is slow. Confirm the site answers before dispatching a deploy."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$RESTART_OUTCOME" = "success" ]; then
+            {
+              echo ""
+              echo "> **\`$VM_NAME\` restarted, but the agent was never confirmed.**"
+              echo ""
+              echo "The instance came back up. The startup script did not report installing the"
+              echo "agent within ten minutes, so treat the queue as unproven: check the scheduled"
+              echo "task on the box before dispatching anything to \`$QUEUE_NAME\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$RESTART_REQUESTED" = "true" ]; then
+            {
+              echo ""
+              echo "> **The restart did not complete. Check production is running.**"
+              echo ""
+              echo "A restart was requested and the step did not succeed, so the instance may be"
+              echo "stopped. Open the step log above: if it stopped before \`instances stop\`,"
+              echo "production was never touched. If it failed after, start it by hand now."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo ""
+              echo "> **Staged only. There is no agent on production yet.**"
+              echo ""
+              echo "The scripts are published and the startup script is on the instance, but a"
+              echo "startup script only runs at boot and the storage scope can only be widened"
+              echo "while the instance is stopped. Re-dispatch with \`restart_vm\` checked, inside"
+              echo "a maintenance window, to finish."
+              echo ""
+              echo "Staging is inert on purpose. If the instance boots for some other reason"
+              echo "before then, the startup script checks its own storage scope and declines to"
+              echo "install rather than leaving an agent that cannot write its results."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
