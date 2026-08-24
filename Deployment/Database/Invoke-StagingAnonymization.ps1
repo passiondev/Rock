@@ -32,6 +32,29 @@
     in Rock into one bucket. An unassignable area code is equally undiallable and
     leaves the whole subscriber number free to keep rows distinct.
 
+    WHO IS LEFT ALONE
+
+    A catalog where every address is undeliverable cannot be used to test the
+    thing staging most needs testing: that mail goes out and arrives. It also
+    locks out the people doing the testing, because Rock authenticates against
+    UserLogin.UserName and most of those are addresses.
+
+    -KeepEmailDomains names the domains that stay real. Rows whose address is on
+    one of them are skipped -- the person keeps their email, their phone number,
+    their alternate addresses and their login. Everybody else is anonymized,
+    logins included.
+
+    The allowlist makes the environment safer rather than less safe. After it
+    runs, the only addresses staging can reach belong to the people who agreed to
+    be reached, so the classic staging accident -- a test communication that goes
+    to the real recipient list -- delivers to the testers instead of to the
+    congregation.
+
+    It is a domain match, not a person match, and that is the whole of its
+    accuracy. A tester whose Rock login is a personal address is not on a staff
+    domain, so it will be anonymized and they will not be able to sign in. Check
+    the per-domain kept counts the dry run prints before approving the apply.
+
 .NOTES
     ROLLBACK IS THE .bak, NOT A PRE-IMAGE TABLE.
 
@@ -64,6 +87,17 @@
     Actually write. Without it the script reports what it would change and touches
     nothing.
 
+.PARAMETER KeepEmailDomains
+    Email domains whose rows are left holding their real values, so the people who
+    test on staging can still sign in, see themselves, and receive mail. Bare
+    domains, no leading @ needed -- 'staff.example' and '@staff.example' are the
+    same thing. Empty means anonymize everyone, which is the old behaviour and the
+    safer default of the two.
+
+    Validated against a domain pattern before use. These are concatenated into SQL
+    and there is no parameter to bind them to, because a LIKE pattern assembled
+    per target is not a value.
+
 .PARAMETER BatchSize
     Rows per UPDATE. The Person and PhoneNumber tables on a prod-derived catalog
     are large enough that one statement per table would hold a lock for minutes and
@@ -80,6 +114,11 @@
 
 .EXAMPLE
     ./Invoke-StagingAnonymization.ps1 -ExpectedCatalog RockStaging20260824 -Apply
+
+.EXAMPLE
+    # Leave the staff domain reachable so testers can sign in and receive mail.
+    ./Invoke-StagingAnonymization.ps1 -ExpectedCatalog RockStaging20260824 `
+        -KeepEmailDomains 'staff.example', 'staff.example.org' -Apply
 #>
 [CmdletBinding()]
 param(
@@ -94,6 +133,10 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]
     $Apply,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]
+    $KeepEmailDomains = @(),
 
     [Parameter(Mandatory = $false)]
     [int]
@@ -172,6 +215,82 @@ if ($ProductionDataSources -contains $dataSourceHost) {
     throw "Refusing to run: $dataSourceHost is the production instance. This script destroys contact data."
 }
 
+# The allowlist, normalized and checked before a single character of it reaches a
+# query. Every other value this script sends to SQL Server is a literal it wrote
+# itself; these came from a dispatch box, and they are spliced into LIKE patterns
+# rather than bound as parameters, because a pattern assembled per target is not a
+# value a parameter can carry.
+#
+# So the pattern below is the boundary. It admits letters, digits, hyphens and dots
+# in the shape of a hostname and nothing else -- no quote, no semicolon, no comment
+# marker, nothing that can close a literal and start a statement.
+$DomainPattern = '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+
+$normalizedKeepDomains = @()
+foreach ($keepDomain in $KeepEmailDomains) {
+    if ([string]::IsNullOrWhiteSpace($keepDomain)) {
+        continue
+    }
+
+    $candidate = $keepDomain.Trim().TrimStart('@').ToLowerInvariant()
+    if ($candidate -notmatch $DomainPattern) {
+        throw "Not a domain: '$keepDomain'. Pass bare domains such as 'staff.example'. Only letters, digits, hyphens and dots are accepted, because these are concatenated into SQL."
+    }
+    if ($normalizedKeepDomains -notcontains $candidate) {
+        $normalizedKeepDomains += $candidate
+    }
+}
+
+function Get-DomainExclusion {
+    <#
+        .SYNOPSIS
+            A predicate fragment that skips rows whose address column ends in one
+            of the allowlisted domains.
+
+        .DESCRIPTION
+            Returns an empty string when the allowlist is empty, so the predicates
+            it is spliced into are character-for-character what they were before
+            this parameter existed. An allowlist nobody uses changes no SQL.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string] $Column,
+        [Parameter(Mandatory = $false)][string[]] $Domains = @()
+    )
+
+    if ($null -eq $Domains -or $Domains.Count -eq 0) {
+        return ""
+    }
+
+    $clauses = @( $Domains | ForEach-Object { "$Column NOT LIKE '%@$_'" } )
+    return " AND (" + ($clauses -join " AND ") + ")"
+}
+
+function Get-PersonDomainExclusion {
+    <#
+        .SYNOPSIS
+            The same exclusion for a table that has no address of its own, resolved
+            through the person the row belongs to.
+
+        .DESCRIPTION
+            PhoneNumber holds no email, so whether a number is a tester's cannot be
+            read off the row. NOT EXISTS rather than NOT IN: PersonId is not
+            nullable today, but NOT IN against a subquery that ever yields a NULL
+            returns no rows at all, and that failure mode is silent -- it would read
+            as "nothing left to anonymize".
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string] $PersonIdColumn,
+        [Parameter(Mandatory = $false)][string[]] $Domains = @()
+    )
+
+    if ($null -eq $Domains -or $Domains.Count -eq 0) {
+        return ""
+    }
+
+    $clauses = @( $Domains | ForEach-Object { "keepPerson.Email LIKE '%@$_'" } )
+    return " AND NOT EXISTS (SELECT 1 FROM dbo.Person keepPerson WHERE keepPerson.Id = $PersonIdColumn AND (" + ($clauses -join " OR ") + "))"
+}
+
 function Invoke-Scalar {
     param(
         [Parameter(Mandatory = $true)][System.Data.SqlClient.SqlConnection] $Connection,
@@ -212,6 +331,52 @@ function Invoke-NonQuery {
     }
 }
 
+function Invoke-Rows {
+    <#
+        .SYNOPSIS
+            Runs a query and returns its rows as objects.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][System.Data.SqlClient.SqlConnection] $Connection,
+        [Parameter(Mandatory = $true)][string] $Query,
+        [Parameter(Mandatory = $false)][int] $TimeoutSeconds = 600
+    )
+
+    $command = $Connection.CreateCommand()
+    try {
+        $command.CommandText = $Query
+        $command.CommandTimeout = $TimeoutSeconds
+
+        $rows = @()
+        $reader = $command.ExecuteReader()
+        try {
+            while ($reader.Read()) {
+                $row = [ordered]@{}
+                for ($index = 0; $index -lt $reader.FieldCount; $index++) {
+                    $value = $reader.GetValue($index)
+                    if ($value -is [System.DBNull]) {
+                        $value = $null
+                    }
+                    $row[$reader.GetName($index)] = $value
+                }
+                $rows += [pscustomobject]$row
+            }
+        }
+        finally {
+            $reader.Dispose()
+        }
+
+        # Leading comma on purpose. PowerShell unrolls a returned collection, so a
+        # single-row result would come back as a bare object and a caller iterating
+        # it would walk its properties instead of its rows. Same trap
+        # Find-LegacyTextColumns.ps1 fell into.
+        return ,$rows
+    }
+    finally {
+        $command.Dispose()
+    }
+}
+
 # Each target is a table, the predicate that finds rows still holding real data,
 # and the SET clause that replaces it. Kept as data rather than as a run of
 # hand-written blocks so the dry run and the apply path cannot drift apart -- both
@@ -220,13 +385,27 @@ function Invoke-NonQuery {
 #
 # Every predicate excludes rows that already carry their substitute, so a rerun is
 # a no-op and an interrupted run resumes where it stopped.
+#
+# Each predicate also carries the allowlist, spliced in as a fragment computed
+# once here. It is the same fragment for the count and for the UPDATE because they
+# read the same string, which is the property that keeps the number the approver
+# saw and the number of rows destroyed the same number.
+$personEmailKeep = Get-DomainExclusion -Column 'Email' -Domains $normalizedKeepDomains
+$searchValueKeep = Get-DomainExclusion -Column 'SearchValue' -Domains $normalizedKeepDomains
+$userNameKeep    = Get-DomainExclusion -Column 'UserName' -Domains $normalizedKeepDomains
+$phoneNumberKeep = Get-PersonDomainExclusion -PersonIdColumn 'dbo.PhoneNumber.PersonId' -Domains $normalizedKeepDomains
+
+# Communication is deliberately absent from that list. Those columns are the record
+# of mail already sent, not a way to reach anybody, and a tester reading their own
+# history wants to see that a message exists rather than who its envelope named. It
+# is anonymized whole.
 $AnonymizationTargets = @(
     @{
         Name      = 'Person.Email'
         Table     = 'dbo.Person'
         # Rock indexes Email (IX_Email) and matches on it during duplicate
         # detection, so the substitute has to stay unique per person.
-        Predicate = "Email IS NOT NULL AND Email <> '' AND Email NOT LIKE '%@staging.invalid'"
+        Predicate = "Email IS NOT NULL AND Email <> '' AND Email NOT LIKE '%@staging.invalid'$personEmailKeep"
         SetClause = "Email = 'person' + CAST(Id AS varchar(12)) + '@staging.invalid'"
     },
     @{
@@ -236,7 +415,7 @@ $AnonymizationTargets = @(
         # "ends with" searches indexable, so leaving it holding the reverse of the
         # real number leaves the real number in the catalog, searchable, under a
         # column nobody thinks of as a phone number.
-        Predicate = "Number IS NOT NULL AND Number <> '' AND Number <> ('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7))"
+        Predicate = "Number IS NOT NULL AND Number <> '' AND Number <> ('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7))$phoneNumberKeep"
         SetClause = @"
 Number = '555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7),
             NumberFormatted = '(555) ' + SUBSTRING('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7), 4, 3) + '-' + RIGHT('555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7), 4),
@@ -250,8 +429,26 @@ Number = '555' + RIGHT('0000000' + CAST(Id AS varchar(10)), 7),
         # Alternate addresses recorded for search. The type is a DefinedValue and
         # the ids differ per install, so this matches on shape instead: anything
         # containing an @ is treated as an address.
-        Predicate = "SearchValue IS NOT NULL AND SearchValue LIKE '%@%' AND SearchValue NOT LIKE '%@staging.invalid'"
+        Predicate = "SearchValue IS NOT NULL AND SearchValue LIKE '%@%' AND SearchValue NOT LIKE '%@staging.invalid'$searchValueKeep"
         SetClause = "SearchValue = 'search' + CAST(Id AS varchar(12)) + '@staging.invalid'"
+    },
+    @{
+        Name      = 'UserLogin.UserName (email-shaped)'
+        Table     = 'dbo.UserLogin'
+        # This is what Rock authenticates against -- Person.Email is not a
+        # credential, UserName is -- so it is the column that decides who can sign
+        # in to staging. Anonymizing it locks out everybody it touches, which is the
+        # intent: a staging box that the whole congregation can still sign in to
+        # with their production password is a second production login page.
+        #
+        # Shape-matched rather than type-matched. Rock stores every provider's
+        # logins in this one table and only some of them are addresses; a UserName
+        # with no @ is not contact data and is left alone.
+        #
+        # UserName carries a unique index, so the substitute has to be unique per
+        # row and not merely unique per person. Id gives that for free.
+        Predicate = "UserName IS NOT NULL AND UserName LIKE '%@%' AND UserName NOT LIKE '%@staging.invalid'$userNameKeep"
+        SetClause = "UserName = 'user' + CAST(Id AS varchar(12)) + '@staging.invalid'"
     },
     @{
         Name      = 'Communication.FromEmail / ReplyToEmail'
@@ -286,9 +483,28 @@ $ResidualPiiProbes = @(
     @{ Name = 'Note.Text';                             Query = "SELECT COUNT(*) FROM dbo.Note WHERE Text LIKE '%@%'" },
     @{ Name = 'History (OldValue / NewValue)';         Query = "SELECT COUNT(*) FROM dbo.History WHERE OldValue LIKE '%@%' OR NewValue LIKE '%@%'" },
     @{ Name = 'AttributeValue.Value';                  Query = "SELECT COUNT(*) FROM dbo.AttributeValue WHERE Value LIKE '%@%'" },
-    @{ Name = 'Location (street addresses present)';   Query = "SELECT COUNT(*) FROM dbo.Location WHERE Street1 IS NOT NULL AND Street1 <> ''" },
-    @{ Name = 'UserLogin.UserName (email-shaped)';     Query = "SELECT COUNT(*) FROM dbo.UserLogin WHERE UserName LIKE '%@%'" }
+    @{ Name = 'Location (street addresses present)';   Query = "SELECT COUNT(*) FROM dbo.Location WHERE Street1 IS NOT NULL AND Street1 <> ''" }
 )
+
+# What the catalog actually holds, by domain. Printed so the allowlist can be
+# checked against reality instead of against memory.
+#
+# A misspelled domain is the failure this catches, and it is a quiet one: the
+# allowlist matches nothing, every row is anonymized, the run reports success, and
+# the testers find out when they cannot sign in -- by which point the rollback is a
+# 119 GiB restore. Read before the apply it is a spelling check; read after, it is
+# the proof that only the allowlisted domains survived.
+#
+# Counts of domains, not addresses. Aggregate, so it is safe in a job summary.
+$DomainCensusQuery = @"
+SELECT TOP 25
+    LOWER(RIGHT(Email, LEN(Email) - CHARINDEX('@', Email))) AS Domain,
+    COUNT(*) AS People
+FROM dbo.Person
+WHERE Email IS NOT NULL AND Email <> '' AND CHARINDEX('@', Email) > 0
+GROUP BY LOWER(RIGHT(Email, LEN(Email) - CHARINDEX('@', Email)))
+ORDER BY COUNT(*) DESC;
+"@
 
 $connection = New-Object System.Data.SqlClient.SqlConnection $resolvedConnectionString
 $summary = [ordered]@{
@@ -296,6 +512,9 @@ $summary = [ordered]@{
     dataSourceHost = $dataSourceHost
     mode           = if ($Apply) { "apply" } else { "dry-run" }
     startedAtUtc   = (Get-Date).ToUniversalTime().ToString("o")
+    keptDomains    = @($normalizedKeepDomains)
+    keptByDomain   = @()
+    emailDomains   = @()
     targets        = @()
     residualPii    = @()
 }
@@ -323,6 +542,29 @@ try {
     Write-Host "Catalog:  $actualCatalog"
     Write-Host "Instance: $dataSourceHost"
     Write-Host "Mode:     $($summary.mode)"
+
+    # Restated against the catalog rather than against the argument. "I passed the
+    # domain" and "the domain matches somebody" are different claims, and only the
+    # second one keeps a tester able to sign in.
+    if ($normalizedKeepDomains.Count -eq 0) {
+        Write-Host "Keep:     nothing -- every address, number and login in this catalog will be anonymized."
+    }
+    else {
+        Write-Host "Keep:     $($normalizedKeepDomains -join ', ')"
+        foreach ($keepDomain in $normalizedKeepDomains) {
+            $keptPeople = Invoke-Scalar -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
+                -Query "SELECT COUNT(*) FROM dbo.Person WHERE Email LIKE '%@$keepDomain'"
+            $keptLogins = Invoke-Scalar -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
+                -Query "SELECT COUNT(*) FROM dbo.UserLogin WHERE UserName LIKE '%@$keepDomain'"
+
+            Write-Host ("          {0,-40} {1,8:N0} person(s), {2,7:N0} login(s) kept" -f $keepDomain, $keptPeople, $keptLogins)
+            if ($keptPeople -eq 0 -and $keptLogins -eq 0) {
+                Write-Host ("          {0,-40} >>> MATCHES NOTHING. Check the spelling before approving." -f "")
+            }
+
+            $summary.keptByDomain += [ordered]@{ domain = $keepDomain; people = $keptPeople; logins = $keptLogins }
+        }
+    }
     Write-Host ""
 
     foreach ($target in $AnonymizationTargets) {
@@ -365,6 +607,18 @@ WHERE $($target.Predicate);
 
         $entry.updated = $totalUpdated
         $summary.targets += $entry
+    }
+
+    Write-Host ""
+    Write-Host "Email domains in dbo.Person, top 25 by count:"
+    $census = Invoke-Rows -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds -Query $DomainCensusQuery
+    foreach ($censusRow in $census) {
+        $marker = ""
+        if ($normalizedKeepDomains -contains $censusRow.Domain) {
+            $marker = "<- kept"
+        }
+        Write-Host ("  {0,-50} {1,12:N0}  {2}" -f $censusRow.Domain, $censusRow.People, $marker)
+        $summary.emailDomains += [ordered]@{ domain = $censusRow.Domain; people = $censusRow.People }
     }
 
     Write-Host ""

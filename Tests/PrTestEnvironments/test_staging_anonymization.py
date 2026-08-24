@@ -293,7 +293,7 @@ class ColumnCoverageTests(unittest.TestCase):
     def test_the_columns_the_boss_asked_for_are_covered(self):
         body = ANONYMIZER.read_text()
 
-        for column in ["Email", "Number", "SearchValue", "FromEmail", "ReplyToEmail"]:
+        for column in ["Email", "Number", "SearchValue", "FromEmail", "ReplyToEmail", "UserName"]:
             self.assertIn(column, body, f"{column} is not anonymized")
 
     def test_the_reversed_phone_number_is_covered(self):
@@ -335,6 +335,310 @@ class ColumnCoverageTests(unittest.TestCase):
             "a residual-PII probe writes, which is exactly the guess this section "
             "exists to avoid making",
         )
+
+
+def _anonymization_targets(text):
+    """Split the $AnonymizationTargets array into one chunk per target.
+
+    Keyed on the Name field because that is the only line every target has, and
+    the chunks are what let a test say "the allowlist reaches Person but not
+    Communication" instead of "the allowlist appears somewhere in the file"."""
+    block = text[text.index("$AnonymizationTargets = @(") : text.index("$ResidualPiiProbes")]
+    chunks = re.split(r"\n    @\{", block)[1:]
+    targets = {}
+    for chunk in chunks:
+        name = re.search(r"Name\s*=\s*'([^']+)'", chunk)
+        if name:
+            targets[name.group(1)] = chunk
+    return targets
+
+
+class KeepListTests(unittest.TestCase):
+    """Anonymizing every address makes the one thing staging most needs to prove
+    -- that mail goes out and arrives -- untestable, and locks out the people
+    doing the proving, because Rock authenticates against UserLogin.UserName and
+    most of those are addresses.
+
+    The allowlist is what reconciles that with the reason the script exists. It
+    also tightens the environment rather than loosening it: afterwards the only
+    addresses staging can reach belong to people who agreed to be reached, so the
+    classic staging accident delivers to the testers rather than to the
+    congregation."""
+
+    def test_the_keep_list_is_a_parameter(self):
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertIn("$KeepEmailDomains", body)
+
+    def test_keeping_nobody_is_the_default(self):
+        """The old behaviour, and the stricter of the two. A caller that predates
+        this parameter -- or an operator who leaves the box empty -- gets more
+        anonymization, not less."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertRegex(
+            body,
+            r"\$KeepEmailDomains\s*=\s*@\(\)",
+            "the keep list does not default to empty, so omitting it may preserve "
+            "contact data the caller never asked to preserve",
+        )
+
+    def test_the_domains_are_validated_before_they_reach_a_query(self):
+        """These arrive from a dispatch box and are concatenated into LIKE
+        patterns, which is the one place in this script where a caller's string
+        becomes SQL. There is no parameter to bind them to -- a pattern assembled
+        per target is not a value -- so the pattern below is the whole boundary."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertIn("$DomainPattern", body)
+        pattern = re.search(r"\$DomainPattern\s*=\s*'([^']+)'", body)
+        self.assertIsNotNone(pattern, "the domain pattern is not a literal")
+
+        compiled = re.compile(pattern.group(1), re.IGNORECASE)
+        for hostile in [
+            "evil.com' OR '1'='1",
+            "a.com'; DROP TABLE Person--",
+            "a.com%",
+            "sp ace.com",
+            "no-dot",
+        ]:
+            self.assertNotRegex(
+                hostile.lower(),
+                compiled,
+                f"the domain pattern admits {hostile!r}, which becomes SQL",
+            )
+
+        for legitimate in ["staff.example", "a-b.example.org", "x1.y2.example"]:
+            self.assertRegex(legitimate, compiled, f"{legitimate} should be allowed")
+
+    def test_an_unvalidated_domain_stops_the_run(self):
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        guard = body[body.index("$DomainPattern") : body.index("function Get-DomainExclusion")]
+        self.assertIn(
+            "throw",
+            guard,
+            "a domain that fails the pattern does not stop the run, so it reaches "
+            "a query anyway",
+        )
+
+    def test_the_keep_list_reaches_every_column_a_tester_is_identified_by(self):
+        """Email is what mail is sent to, UserName is what login checks, the phone
+        number is what the tester sees on their own record, and PersonSearchKey is
+        the alternate address duplicate detection matches on. Miss one and the
+        tester is half-anonymized, which reads as a Rock bug rather than as this
+        script's doing."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+
+        expected = {
+            "Person.Email": "$personEmailKeep",
+            "PhoneNumber (Number, NumberFormatted, NumberReversed, Extension)": "$phoneNumberKeep",
+            "PersonSearchKey.SearchValue (email-shaped)": "$searchValueKeep",
+            "UserLogin.UserName (email-shaped)": "$userNameKeep",
+        }
+        for name, fragment in expected.items():
+            self.assertIn(name, targets, f"{name} is not a target any more")
+            self.assertIn(
+                fragment,
+                targets[name],
+                f"{name} ignores the keep list, so an allowlisted tester is "
+                f"anonymized in that column anyway",
+            )
+
+    def test_sent_mail_is_anonymized_whole(self):
+        """Communication holds the record of mail already sent. It is not a way to
+        reach anybody and a tester reading their own history wants to see that a
+        message exists, not who its envelope named. Exempting it would preserve
+        real addresses for no testing benefit."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+
+        for name, chunk in targets.items():
+            if not name.startswith("Communication"):
+                continue
+            self.assertNotIn(
+                "Keep",
+                chunk,
+                f"{name} honours the keep list, which preserves real addresses in "
+                f"records that cannot be used for testing",
+            )
+
+    def test_the_phone_exclusion_resolves_through_the_person(self):
+        """PhoneNumber holds no address, so whether a number belongs to a tester
+        cannot be read off the row. NOT EXISTS rather than NOT IN: NOT IN against a
+        subquery that ever yields NULL returns no rows at all, and that failure is
+        silent -- it reads as "nothing left to anonymize"."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        exclusion = body[
+            body.index("function Get-PersonDomainExclusion") : body.index("function Invoke-Scalar")
+        ]
+        self.assertIn("NOT EXISTS", exclusion)
+        self.assertNotIn("NOT IN", exclusion)
+
+    def test_an_empty_keep_list_changes_no_sql(self):
+        """The fragment builders return an empty string, so the predicates are
+        character-for-character what they were before this parameter existed."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        for function in ["Get-DomainExclusion", "Get-PersonDomainExclusion"]:
+            start = body.index(f"function {function}")
+            chunk = body[start : start + 900]
+            self.assertRegex(
+                chunk,
+                r"Count\s*-eq\s*0\s*\)\s*\{\s*\n\s*return\s+\"\"",
+                f"{function} does not return an empty fragment for an empty list",
+            )
+
+    def test_the_dry_run_says_how_many_rows_each_domain_keeps(self):
+        """The failure this catches is a misspelled domain, and it is a quiet one:
+        the allowlist matches nothing, everyone is anonymized, the run reports
+        success, and the testers find out when they cannot sign in -- by which
+        point the rollback is a full restore."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertIn("keptByDomain", body, "per-domain kept counts are not reported")
+        self.assertIn(
+            "$DomainCensusQuery",
+            body,
+            "the run does not report which domains the catalog actually holds, so "
+            "the keep list cannot be checked against reality",
+        )
+        self.assertIn(
+            "MATCHES NOTHING",
+            ANONYMIZER.read_text(),
+            "a keep-list domain that matches no row passes without comment",
+        )
+
+    def test_no_real_domain_is_baked_in(self):
+        """Whose staging box this is should not be readable off the script, and a
+        default here would silently preserve contact data on an install nobody
+        checked the default against."""
+        body = _strip_comments(ANONYMIZER.read_text())
+
+        self.assertNotRegex(
+            body,
+            r"KeepEmailDomains\s*=\s*@\(\s*['\"]",
+            "a real domain is hard-coded as the default keep list",
+        )
+
+
+class LoginIsAnonymizedTests(unittest.TestCase):
+    """UserLogin.UserName is what Rock authenticates against -- Person.Email is
+    not a credential. Left alone, a staging box seeded from production is a second
+    production login page: every congregant's username still works, against a
+    catalog holding their real password hash."""
+
+    def test_the_username_is_rewritten_and_not_merely_counted(self):
+        body = ANONYMIZER.read_text()
+
+        targets = _anonymization_targets(body)
+        self.assertIn(
+            "UserLogin.UserName (email-shaped)",
+            targets,
+            "UserLogin.UserName is not an anonymization target, so every "
+            "congregant can still sign in to staging",
+        )
+
+        probes = body[body.index("$ResidualPiiProbes") : body.index("$DomainCensusQuery")]
+        self.assertNotIn(
+            "UserLogin",
+            probes,
+            "UserLogin is still listed as residual PII, which now reports a "
+            "column the script actually rewrites",
+        )
+
+    def test_the_username_substitute_is_unique_per_row(self):
+        """UserName carries a unique index, so the substitute has to be unique per
+        row rather than per person. Id gives that; anything person-derived collides
+        for anyone holding two logins."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+        chunk = targets["UserLogin.UserName (email-shaped)"]
+
+        self.assertIn("Id AS varchar", chunk)
+        self.assertIn("@staging.invalid", chunk)
+
+    def test_logins_that_are_not_addresses_are_left_alone(self):
+        """Rock keeps every provider's logins in this one table and only some are
+        addresses. A UserName with no @ is not contact data."""
+        targets = _anonymization_targets(ANONYMIZER.read_text())
+        chunk = targets["UserLogin.UserName (email-shaped)"]
+
+        self.assertIn("UserName LIKE '%@%'", chunk)
+
+
+class KeepListIsReachableTests(unittest.TestCase):
+    """The parameter is worth nothing if the only two callers that can reach the
+    script cannot pass it."""
+
+    def test_the_queue_agent_forwards_the_keep_list(self):
+        body = QUEUE_AGENT.read_text()
+
+        arm = body[body.index(f'"{ANONYMIZE_COMMAND}"') :]
+        arm = arm[: arm.index("default {")]
+        self.assertIn("keepEmailDomains", arm)
+        self.assertIn("KeepEmailDomains", arm, "the field is read but not passed on")
+
+    def test_a_command_without_the_field_still_runs(self):
+        """Commands are JSON documents that outlive the code that wrote them. One
+        queued before this field existed must still run, and must err toward
+        anonymizing more rather than fewer."""
+        body = QUEUE_AGENT.read_text()
+
+        arm = body[body.index(f'"{ANONYMIZE_COMMAND}"') :]
+        arm = arm[: arm.index("default {")]
+        self.assertIn(
+            "PSObject.Properties.Name -contains 'keepEmailDomains'",
+            arm,
+            "the keep list is read without checking the field is there, so an "
+            "older command throws under StrictMode instead of running",
+        )
+
+    def test_the_workflow_exposes_the_keep_list(self):
+        spec = yaml.safe_load(ANONYMIZE_WORKFLOW.read_text())
+        on_key = [key for key in spec if str(key).lower() == "on"][0]
+        inputs = spec[on_key]["workflow_dispatch"]["inputs"]
+
+        self.assertIn("keep_email_domains", inputs)
+        self.assertEqual(
+            inputs["keep_email_domains"].get("default"),
+            "",
+            "the workflow defaults to keeping somebody, which preserves contact "
+            "data nobody asked to preserve",
+        )
+
+    def test_both_jobs_send_the_keep_list(self):
+        """The dry run and the apply have to agree. A plan that counted rows with
+        the keep list and an apply that wrote without it would destroy exactly the
+        rows the approver was shown as safe."""
+        spec = yaml.safe_load(ANONYMIZE_WORKFLOW.read_text())
+
+        for job in ["plan", "apply"]:
+            payloads = [
+                step["with"]["payload"]
+                for step in spec["jobs"][job]["steps"]
+                if step.get("uses", "").endswith("queue-vm-command")
+            ]
+            self.assertTrue(payloads, f"{job} queues no command")
+            for payload in payloads:
+                self.assertIn(
+                    "keepEmailDomains",
+                    payload,
+                    f"the {job} job does not forward the keep list",
+                )
+
+    def test_the_workflow_checks_the_keep_list_before_queueing(self):
+        """It is concatenated into the queued JSON, so a quote produces a document
+        the agent cannot parse -- which surfaces as a ten-minute poll timeout
+        rather than as an error."""
+        spec = yaml.safe_load(ANONYMIZE_WORKFLOW.read_text())
+
+        for job in ["plan", "apply"]:
+            names = [step.get("name", "") for step in spec["jobs"][job]["steps"]]
+            self.assertIn(
+                "Validate the keep list",
+                names,
+                f"the {job} job queues the keep list without checking its shape",
+            )
 
 
 class ConnectionStringHandlingTests(unittest.TestCase):

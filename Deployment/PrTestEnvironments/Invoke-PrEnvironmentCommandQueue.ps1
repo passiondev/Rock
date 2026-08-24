@@ -327,6 +327,27 @@ $CommandRunner = {
             if (($Command.PSObject.Properties.Name -contains 'apply') -and $Command.apply) {
                 $arguments['Apply'] = $true
             }
+            # Domains whose rows keep their real values, so the people testing on
+            # staging can still sign in and still receive the mail they are testing.
+            # Carried as one comma-separated string rather than a JSON array so the
+            # queued document stays a flat map of scalars like every other command
+            # here, and so a hand-written command is still hand-writable.
+            #
+            # Absent or empty means anonymize everyone. That is the old behaviour and
+            # the stricter of the two, so a command written before this field existed
+            # keeps working and errs toward removing more contact data, not less. The
+            # script validates each domain before it reaches a query.
+            if (($Command.PSObject.Properties.Name -contains 'keepEmailDomains') -and
+                ![string]::IsNullOrWhiteSpace([string]$Command.keepEmailDomains)) {
+                $keepDomains = @(
+                    ([string]$Command.keepEmailDomains).Split(',') |
+                        ForEach-Object { $_.Trim() } |
+                        Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+                )
+                if ($keepDomains.Count -gt 0) {
+                    $arguments['KeepEmailDomains'] = $keepDomains
+                }
+            }
 
             & (Join-Path $DeployRoot "Invoke-StagingAnonymization.ps1") @arguments
         }
