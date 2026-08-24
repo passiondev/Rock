@@ -56,11 +56,39 @@ function Get-GcsObjectList {
 }
 
 function Read-GcsObjectText {
+    # Invoke-WebRequest picks the type of .Content from the response Content-Type:
+    # text/* and the JSON and XML families arrive as a string, everything else as a
+    # byte[]. gsutil uploads a .ps1 as application/octet-stream, so the deployment
+    # scripts land in the second group while the command JSON lands in the first.
+    #
+    # That is not cosmetic on PowerShell 6+. A byte[] passed to a [string] parameter
+    # renders as its elements joined by spaces -- "35 32 82 111 ..." -- which is not
+    # the file and does not parse, so Sync-DeploymentScripts would skip every file on
+    # every poll while the command queue kept working, its objects being
+    # application/json.
+    #
+    # Read that as defence, not as the diagnosis. Sync-DeploymentScripts really has
+    # never delivered a file to connect-srv-test, but retyping an object to text/plain
+    # on 2026-08-24 did not make it deliver one either, so this is not the fault. The
+    # agent runs under powershell.exe, where .Content may already be a string whatever
+    # the content type -- on that VM this is a no-op. Keep it anyway: it costs nothing
+    # and it is correct wherever the byte[] form does show up.
     param([Parameter(Mandatory = $true)][string]$ObjectName)
     $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
     $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName`?alt=media"
     $headers = @{ Authorization = "Bearer $(Get-GcsAccessToken)" }
-    return (Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri).Content
+    $content = (Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri).Content
+    if ($content -isnot [byte[]]) {
+        return $content
+    }
+
+    # A UTF-8 BOM survives GetString as a leading U+FEFF. Left in, it would make the
+    # content comparison in Sync-DeploymentScripts differ from the identical copy on
+    # disk, so every file would be rewritten on every poll forever.
+    if ($content.Length -ge 3 -and $content[0] -eq 0xEF -and $content[1] -eq 0xBB -and $content[2] -eq 0xBF) {
+        return [System.Text.Encoding]::UTF8.GetString($content, 3, $content.Length - 3)
+    }
+    return [System.Text.Encoding]::UTF8.GetString($content)
 }
 
 function Write-GcsObjectText {
@@ -149,7 +177,16 @@ function Sync-DeploymentScripts {
         [Parameter(Mandatory = $true)][string]$Destination
     )
 
-    $objects = Get-GcsObjectList -Prefix $Prefix | Where-Object { $_ -like '*.ps1' }
+    # Only objects sitting directly under the prefix. The bootstrap publishes this
+    # directory flat, but bootstrap/latest/ also still holds a PrTestEnvironments/
+    # subdirectory of April 2026 scaffolding, and Split-Path -Leaf would flatten
+    # those names onto the same destinations -- overwriting eight live scripts with
+    # four-month-old stubs, Stop-PrEnvironment.ps1 among them. Those objects have
+    # been harmless only because nothing this function fetched ever parsed, so this
+    # guard has to land in the same change as the decode above, not after it.
+    $objects = Get-GcsObjectList -Prefix $Prefix | Where-Object {
+        $_ -like '*.ps1' -and $_.StartsWith($Prefix) -and -not $_.Substring($Prefix.Length).Contains('/')
+    }
     foreach ($object in $objects) {
         $name = Split-Path $object -Leaf
 
