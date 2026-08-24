@@ -279,7 +279,13 @@ WHERE c.[object_id] = OBJECT_ID('$Table');
 
     $offenders = @()
     foreach ($computedColumn in $computedColumns) {
-        $columnName = [string]$computedColumn['ColumnName']
+        # Property access, not an indexer. Invoke-Rows hands back [pscustomobject]
+        # rows, and those have no indexer, so $row['ColumnName'] throws "Unable to
+        # index into an object of type System.Management.Automation.PSObject" the
+        # moment a table actually has a computed column. That is a live-connection
+        # failure the text assertions in the Python suite cannot see, which is why
+        # ComputedColumnGuard.Tests.ps1 exercises this function for real.
+        $columnName = [string]$computedColumn.ColumnName
         if ([string]::IsNullOrWhiteSpace($columnName)) {
             continue
         }
