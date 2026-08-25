@@ -137,7 +137,15 @@ param(
     # minutes for the whole job.
     [Parameter(Mandatory = $false)]
     [int]
-    $HealthCheckTimeoutSeconds = 900
+    $HealthCheckTimeoutSeconds = 900,
+
+    # Where to write the deploy timeline so that it survives the trip back to the
+    # bucket. Optional, and empty by default, so a by-hand run and an older queued
+    # command both still work -- they simply get the host output and nothing else,
+    # which is what every run got before this existed.
+    [Parameter(Mandatory = $false)]
+    [string]
+    $StepLogPath
 )
 
 Set-StrictMode -Version Latest
@@ -147,6 +155,25 @@ $ErrorActionPreference = "Stop"
 # placed against it. Script scope rather than a parameter: a deploy has exactly one
 # start, and passing it around would let a caller claim a different one.
 $script:DeployStartedUtc = (Get-Date).ToUniversalTime()
+
+# The timeline's durable destination, truncated here rather than appended to: a
+# redeploy on the same box must not leave the previous run's steps sitting above
+# this one's. A step log that cannot be created is downgraded to no step log at
+# all, never to a failed deploy.
+$script:DeployStepLogPath = $StepLogPath
+if (-not [string]::IsNullOrWhiteSpace($script:DeployStepLogPath)) {
+    try {
+        $stepLogDirectory = Split-Path -Path $script:DeployStepLogPath -Parent
+        if ($stepLogDirectory -and -not (Test-Path $stepLogDirectory)) {
+            New-Item -ItemType Directory -Path $stepLogDirectory -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllText($script:DeployStepLogPath, '')
+    }
+    catch {
+        Write-Warning "Could not create the step log at $($script:DeployStepLogPath): $($_.Exception.Message)"
+        $script:DeployStepLogPath = $null
+    }
+}
 
 function Write-DeployStep {
     <#
@@ -172,7 +199,27 @@ function Write-DeployStep {
 
     $now = (Get-Date).ToUniversalTime()
     $elapsed = $now - $script:DeployStartedUtc
-    Write-Host ("[{0}Z +{1:hh\:mm\:ss}] {2}" -f $now.ToString("s"), $elapsed, $Message)
+    $line = "[{0}Z +{1:hh\:mm\:ss}] {2}" -f $now.ToString("s"), $elapsed, $Message
+    Write-Host $line
+
+    # And to disk, because the host line is not durable. Measured on the staging
+    # rehearsal of 2026-08-25: a deploy that ran 15m24s and succeeded uploaded a
+    # 916-byte log that stops at "Stopping app pool", the moment the site goes
+    # offline. Every later step ran -- success requires reaching the end of the
+    # script -- and was lost between the background job and the bucket. A file on
+    # the box is ordinary I/O and does not depend on the job stream surviving.
+    #
+    # Wrapped because by the time most of these lines are written the app pool is
+    # already stopped. A log that cannot be written is not a reason to abandon a
+    # deploy half-way through a cutover.
+    if (-not [string]::IsNullOrWhiteSpace($script:DeployStepLogPath)) {
+        try {
+            Add-Content -Path $script:DeployStepLogPath -Value $line -Encoding UTF8 -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "Could not append to the step log at $($script:DeployStepLogPath): $($_.Exception.Message)"
+        }
+    }
 }
 
 Import-Module WebAdministration

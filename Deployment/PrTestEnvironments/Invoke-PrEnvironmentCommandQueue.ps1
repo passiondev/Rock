@@ -134,6 +134,66 @@ $LogsPrefix = "pr-environments/$QueueName/logs/"
 # deploy command carries a database password. Redact by exact value first, using
 # the secrets from the command itself, then sweep for any password= that survived
 # in case a script assembled a connection string differently.
+function Get-CommandLogText {
+    <#
+        .SYNOPSIS
+        The command's captured output, followed by the deploy timeline recovered
+        from the box.
+
+        .DESCRIPTION
+        The background job's output is not a reliable record. Measured on the
+        staging rehearsal of 2026-08-25: deploy-staging-32794680054-1 ran 15m24s,
+        reported success, and produced a 916-byte log that stops at "Stopping app
+        pool" -- the first line of the window in which the site is offline. The
+        remaining twelve minutes covered the site replace, the ACL grant, the
+        preserved-file restore, the app pool start and the health check, all of
+        which ran, because a success result requires reaching the end of the deploy
+        script.
+
+        It was not redaction, the character cap, a timeout, a preference change, a
+        stale script or a second agent instance; each was ruled out in turn. The
+        job stream itself drops records, and the mechanism is still unexplained.
+
+        So the deploy also writes its timeline to a file, and this function puts
+        that file back into the uploaded log. It is deliberately indifferent to why
+        the stream lost the records, because a production cutover should not be
+        waiting on that answer.
+
+        .PARAMETER CaptureText
+        What Receive-Job gave back, however complete that turned out to be.
+
+        .PARAMETER StepLogPath
+        The timeline file the deploy was told to write. Empty for commands that do
+        not write one, which is every command except deploy-environment.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $false)][string]$CaptureText,
+        [Parameter(Mandatory = $false)][string]$StepLogPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($StepLogPath)) { return $CaptureText }
+
+    try {
+        if (-not (Test-Path -Path $StepLogPath -PathType Leaf)) { return $CaptureText }
+        $timeline = [System.IO.File]::ReadAllText($StepLogPath)
+    }
+    catch {
+        # A timeline we cannot read must never cost us the capture we already have.
+        Write-Warning "Could not read the deploy timeline at ${StepLogPath}: $($_.Exception.Message)"
+        return $CaptureText
+    }
+
+    if ([string]::IsNullOrWhiteSpace($timeline)) { return $CaptureText }
+
+    # Appended rather than prepended. The capture opens with the deploy header,
+    # which is the orienting context, and when the capture is short it stops at the
+    # interesting moment -- so the recovered timeline reads on from exactly where
+    # the reader ran out of log.
+    return ($CaptureText.TrimEnd() + "`n`n=== deploy timeline recovered from the box ===`n" + $timeline.TrimEnd())
+}
+
 function Get-RedactedText {
     param(
         [Parameter(Mandatory = $false)][string]$Text,
@@ -428,7 +488,7 @@ $CommandTimeoutsSeconds = @{
 $FallbackCommandTimeoutSeconds = 600
 
 $CommandRunner = {
-    param($DeployRoot, $Command)
+    param($DeployRoot, $Command, $StepLogPath)
 
     Set-StrictMode -Version Latest
     $ErrorActionPreference = "Stop"
@@ -462,6 +522,13 @@ $CommandRunner = {
             # InPlace deploys are a dry run unless the command explicitly opts in.
             if (($Command.PSObject.Properties.Name -contains 'apply') -and $Command.apply) {
                 $arguments['Apply'] = $true
+            }
+
+            # Only this command writes a timeline. It is the one that takes the
+            # site offline, and the only one whose log going quiet costs an
+            # operator the window they need.
+            if (![string]::IsNullOrWhiteSpace($StepLogPath)) {
+                $arguments['StepLogPath'] = $StepLogPath
             }
 
             & (Join-Path $DeployRoot "Deploy-RockEnvironment.ps1") @arguments
@@ -577,6 +644,11 @@ foreach ($commandObject in $commands) {
     $CommandId = $fileName
     $result = $null
     $job = $null
+    # Per-command so two commands can never interleave into one file, and under
+    # $DeployRoot so it lands beside the scripts instead of in a temp directory
+    # that a reboot clears before anybody reads it. Derived from the object name
+    # rather than the command body, which has not been parsed yet.
+    $stepLogPath = Join-Path $DeployRoot (Join-Path 'logs' "$CommandId-steps.log")
     $commandOutput = ''
     $commandSecrets = @()
 
@@ -596,7 +668,7 @@ foreach ($commandObject in $commands) {
 
         $commandSecrets = Get-CommandSecrets -Command $command
 
-        $job = Start-Job -ScriptBlock $CommandRunner -ArgumentList $DeployRoot, $command
+        $job = Start-Job -ScriptBlock $CommandRunner -ArgumentList $DeployRoot, $command, $stepLogPath
         $finished = Wait-Job -Job $job -Timeout $timeoutSeconds
 
         # Surface the command's output into the scheduled-task log regardless of
@@ -645,7 +717,8 @@ foreach ($commandObject in $commands) {
         # race the log it is meant to point at.
         $logObject = "$LogsPrefix$CommandId.log"
         try {
-            $redactedOutput = Get-RedactedText -Text $commandOutput -Secrets $commandSecrets
+            $mergedOutput = Get-CommandLogText -CaptureText $commandOutput -StepLogPath $stepLogPath
+            $redactedOutput = Get-RedactedText -Text $mergedOutput -Secrets $commandSecrets
             if ([string]::IsNullOrWhiteSpace($redactedOutput)) {
                 $redactedOutput = "(the command produced no output)"
             }
