@@ -225,25 +225,27 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    **Read the timeline at the bottom of it, under the marker
    `=== deploy timeline recovered from the box ===`.**
    The steps appear twice and the second copy is the one to trust. Everything above it is what
-   the agent captured from the deploy's background job, and that capture is not reliable: both
-   staging rehearsals of 2026-08-25 stopped it at "Stopping app pool", the first line of the
-   window in which the site is offline, and lost every step after it. The deploy also writes
-   each step to a file on the VM, and the agent appends that file to the log. On the second
-   rehearsal the recovered section carried all eleven steps through to "Done." while the
-   capture above it carried five, so this is measured rather than hoped for. If the two
-   disagree about where the deploy got to, the recovered section is right. Item 31 in
-   `Documentation/Training/DevOps-Open-Items-Rock-CICD.md` has the causes ruled out so far and
-   what is still unknown.
+   the agent captured from the deploy's background job, and that capture is not reliable: all
+   three staging deploys of 2026-08-25 stopped it at "Stopping app pool", the first line of the
+   window in which the site is offline, and lost every step after it. Three for three, so treat
+   a capture that ends there as the normal case and not as news. The deploy also writes each
+   step to a file on the VM, and the agent appends that file to the log. The recovery existed
+   for the last two of those deploys and was complete both times -- eleven steps through to
+   "Done." against five in the capture above it -- so this is measured rather than hoped for.
+   If the two disagree about where the deploy got to, the recovered section is right. Item 31
+   in `Documentation/Training/DevOps-Open-Items-Rock-CICD.md` has the causes ruled out so far
+   and what is still unknown.
 
 8. **Load the site and watch the migrations finish.** This is the request that runs them. The
    deploy's health check waits several minutes for exactly this reason, so a slow first load is
    expected rather than a symptom. Migrations are irreversible; if something is wrong, this is
    the last moment it is cheap to find out.
 
-   **Failed health check attempts in the log are normal here.** Staging on 2026-08-25 logged
-   `Health check attempt 1: The operation has timed out`, the same again for attempt 2, then
-   passed on attempt 3 -- 2m26s after the app pool started, on a site with no migrations left
-   to run. Production is larger and will be running them, so expect more attempts and a longer
+   **Failed health check attempts in the log are normal here.** Both staging deploys of
+   2026-08-25 that got far enough to log one did the same thing: attempt 1 timed out, attempt 2
+   timed out, attempt 3 passed -- 2m26s and 2m34s after the app pool started, on a site with no
+   migrations left to run. Two timeouts before a pass is the pattern, not a warning sign.
+   Production is larger and will be running migrations, so expect more attempts and a longer
    wait. The probe has a 900 second window and recycles the app pool after 240 seconds of
    failures, because a faulted app domain caches its own startup exception and can never
    recover by retrying alone. Only the window expiring is a failure.
