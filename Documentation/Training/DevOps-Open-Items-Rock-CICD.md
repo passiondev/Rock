@@ -1982,6 +1982,58 @@ describing a catalog that is gone.
 
 ---
 
+### 31. The background job's output stream drops records, and nobody knows why
+
+**Found 2026-08-25, rehearsing a staging deploy through the command queue.** Command
+`deploy-staging-32794680054-1` ran 15m24s, reported success, and uploaded a 916-byte log. It
+covers the first 2m38s and stops on:
+
+```
+[2026-08-25T01:11:44Z +00:02:38] Stopping app pool rock-staging. The site is offline from here.
+```
+
+followed by five blank lines and nothing else. That line is the *first* of the window in which
+the site is offline. The site replace, the ACL grant, the preserved-file restore, the shared
+asset overlay, the app pool start, the health check and "Done." all ran -- a success result
+requires reaching the end of `Deploy-RockEnvironment.ps1` -- and none of them reached the bucket.
+
+**Six causes were ruled out, each by measurement rather than by reading:**
+
+| Suspect | Why it is not this |
+|---|---|
+| Redaction | `Get-RedactedText` is a literal `.Replace` guarded on a length of eight. It cannot blank a line or truncate. |
+| The 200000 character cap | Tail-preserving, and it keeps the *end*. The log was 916 bytes, so it never fired. |
+| A `Wait-Job` timeout | `deploy-environment` allows 1800s against a 924s run, and a timeout writes a **failed** result. This one succeeded. |
+| A preference variable | Neither script reassigns `$InformationPreference` or any sibling anywhere. |
+| A stale script on the box | The GCS and repository copies of `Deploy-RockEnvironment.ps1` matched on md5 (`zvIXqhExm1JNMOzDDU4rXQ==`, 50861 bytes). |
+| A second agent instance | Log and result were both `metageneration 1`, written 256ms apart. One instance wrote each exactly once. `schtasks` also defaults to `MultipleInstances: IgnoreNew`. |
+
+What is left is `Receive-Job ... *>&1` losing `Write-Host` records from a long-running job. The
+first thirteen lines survive and everything after roughly the 2m38s mark does not. The five
+trailing blank lines say the records were *there* and stringified to nothing, which no reading of
+`InformationRecord.ToString()` explains.
+
+**It could not be reproduced off the box.** `Start-Job` does not spawn on macOS in this
+environment (`Exec format error`), and per the notes in item 25's neighbourhood the test VM's
+sshd is not listening, so there is no way to attach to the box and watch it happen.
+
+**What was done instead.** `Write-DeployStep` now also appends each stamped line to a file on the
+VM, and the agent's new `Get-CommandLogText` reads that file back and appends it to whatever the
+capture returned. File I/O cannot be dropped by whatever the stream is doing, so the timeline no
+longer depends on the answer. Both sides fail soft -- by the time most of those lines are written
+the app pool is already stopped, and a logging problem must never end a cutover.
+
+**Why this still deserves an entry.** The workaround covers `deploy-environment` and nothing else.
+Every other command -- `anonymize-staging`, `find-legacy-text-columns`, `renew-certificate` -- still
+depends on the stream for its only record, and a long enough run of any of them will lose output
+the same way and give no sign that it did. The finder in particular is allowed 1800s precisely
+because the catalog is large.
+
+**Where to pick it up.** Getting sshd listening on `connect-srv-test` is the prerequisite; it is
+the same prerequisite item 25's notes identify for diagnosing the script refresh, so the two are
+worth doing together. Until then, treat any command log that ends mid-run as *unproven*, not as
+evidence of where the command stopped.
+
 ## Fixed since the last revision — recorded so nobody re-diagnoses these
 
 Five of these each independently reported **green** while being broken, which is why the
@@ -2103,6 +2155,10 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 18. Item 30 — one value, either repointed or removed. It is not on the production path, but it is
     the way step 2 of the cutover checklist fails today, and the failure names a login rather than
     the missing database
+19. Item 31 — needs sshd on `connect-srv-test` before it can be diagnosed at all, so pair it with
+    the script-refresh work that needs the same thing. The cutover itself no longer waits on it:
+    the deploy timeline is written to disk and read back, so a production log covers the offline
+    window whatever the stream does
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
