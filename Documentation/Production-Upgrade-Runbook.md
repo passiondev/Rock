@@ -212,6 +212,16 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    restores the backup, because by then it is thousands of characters up a log somebody is
    reading in a hurry.
 
+   **Read the timeline at the bottom, under `=== deploy timeline recovered from the box ===`.**
+   The steps appear twice and the second copy is the one to trust. Everything above it is what
+   the agent captured from the deploy's background job, and that capture is not reliable: on the
+   staging rehearsal of 2026-08-25 it stopped at "Stopping app pool" and lost the following
+   twelve minutes, which is the entire window in which the site is offline. The deploy also
+   writes each step to a file on the VM and the agent appends that file to the log, so the
+   recovered section is complete even when the capture is not. If the two disagree about where
+   the deploy got to, the recovered section is right. Item 31 has the six causes that were ruled
+   out and why the stream still loses records.
+
 8. **Load the site and watch the migrations finish.** This is the request that runs them. The
    deploy's health check waits several minutes for exactly this reason, so a slow first load is
    expected rather than a symptom. Migrations are irreversible; if something is wrong, this is
