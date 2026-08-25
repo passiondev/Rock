@@ -52,7 +52,7 @@ out waiting for a server that isn't listening.
   exclusions were always correct — so this is the belt for the day someone reaches for
   `DedicatedSite`, plus the diagnostic.)
 
-### 2. The `production` gate exists now, but it rests on one person
+### 2. The `production` gate is real, and it is deliberately one click
 
 **Created 2026-08-11.** Until then the environment did not exist, which meant the `approve` job
 in `production-deploy.yml` **passed straight through** — the gate was written and wired with
@@ -60,25 +60,35 @@ nothing on the other side of it. Referencing an environment that does not exist 
 GitHub creates it with no rules, so the run sails past. Worth remembering as a category: an
 approval gate is not self-evidencing, and this one read as present in every review of the YAML.
 
-Current settings:
+Current settings, read back from the API on 2026-08-24 rather than from memory:
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Required reviewers | `justinpbarnett` | Someone must click Approve; a dispatch alone deploys nothing |
+| Required reviewers | `justinpbarnett`, `WoodsonJ` | Someone must click Approve; a dispatch alone deploys nothing. Either name can approve, and one approval releases the run |
 | `can_admins_bypass` | `false` | Deliberately closed. On the default (`true`) a repo admin can skip the gate, which would have made the training's claim false for exactly the people most able to cause harm |
-| `prevent_self_review` | `false` | Has to stay false while there is one reviewer, or the only person named could never approve |
-| Branch policy | none | The version guard in `production-deploy.yml` already refuses a ref from another Rock minor, which is the risk a branch policy would be covering |
+| `prevent_self_review` | `false` | **Deliberate, and not an oversight.** Whoever dispatches the deploy may also approve it. Setting it `true` would mean the dispatcher always needs the other person awake, and a cutover window is exactly when that fails |
+| Branch policy | `passion-18.4.1` | Custom branch policies, one name, set 2026-08-24. **It moves with `productionBranch` at the cutover** — the runbook's step 2 carries that, because no test can see this setting |
 
-**What's left, and it is the point of this item:** add a second reviewer — the DevOps engineer
-— and then set `prevent_self_review` to `true`. Only at that point is production genuinely
-two-person. Today it is one deliberate click by one person, which stops an accident but not a
-mistake. The reviewer was not chosen on anyone's behalf: several people hold admin on this
-repo, and who guards production is a decision, not a default.
+**What is settled.** The gate is two named people and one deliberate click. That stops an
+accident. It does not stop a mistake, because the same person can both dispatch and approve —
+accepted knowingly, in exchange for not blocking a cutover on somebody else's availability.
+Reversing it is one field: set `prevent_self_review` to `true`. Both reviewers are already in
+place, so nothing else has to change first.
 
-Also still needed: repo variables `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`,
-`PRODUCTION_SITE_NAME`. The workflow falls back to `rock.passion.team`, `C:\inetpub\wwwroot`
-and `Default Web Site` if they are absent — **confirm those against the actual VM before the
-first real run** rather than trusting the defaults.
+**Still open: the three `PRODUCTION_*` repo variables do not exist.** Confirmed 2026-08-24 —
+the variables API returns nothing whose name starts with `PRODUCTION`, so every run today takes
+the fallback written into `production-deploy.yml`:
+
+| Variable | Fallback in use |
+| --- | --- |
+| `PRODUCTION_HOST_NAME` | `rock.passion.team` |
+| `PRODUCTION_SITE_PATH` | `C:\inetpub\wwwroot` |
+| `PRODUCTION_SITE_NAME` | `Default Web Site` |
+
+A wrong `PRODUCTION_SITE_PATH` is the one that hurts: the deploy copies a site over whatever
+that path names, so a stale default aims the copy at the wrong directory. **Confirm all three
+against the actual VM before the first real run** rather than trusting the fallbacks. Setting
+the variables explicitly beats relying on a default that happens to be right.
 
 ### 3. The trunk branch has no protection at all
 
@@ -2073,11 +2083,13 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 
 ## Suggested order
 
-1. Item 2 — the Environment now exists and the gate is real (verified against the API on
-   2026-08-11 and unchanged when re-read on 2026-08-19: one required reviewer
-   `justinpbarnett`, `can_admins_bypass: false`, `prevent_self_review: false`). What's left is adding the
-   DevOps engineer as a second reviewer and then flipping `prevent_self_review` to `true`
-   (~5 min, and only then is production two-person)
+1. Item 2 — the Environment exists, the gate is real, and the reviewer half is now done
+   (re-read against the API on 2026-08-24: two required reviewers `justinpbarnett` and
+   `WoodsonJ`, `can_admins_bypass: false`, `prevent_self_review: false`, branch policy
+   `passion-18.4.1`). Self-review stays allowed on purpose, so what is left here is not the
+   reviewer list. It is confirming the three `PRODUCTION_*` repo variables against the live
+   VM before the first real run — none of them exists today, so the deploy takes its
+   fallbacks, and a wrong `PRODUCTION_SITE_PATH` copies a site over the wrong directory
 2. Item 3 — protect the trunk (~10 min, makes the training true). Still unprotected: the
    branch protection API returned `404 Branch not protected` for `passion-19.3.4` on
    2026-08-19, so the cutover carried the gap across rather than closing it

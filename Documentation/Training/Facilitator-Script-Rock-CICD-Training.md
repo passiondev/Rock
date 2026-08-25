@@ -310,11 +310,12 @@ Then the two design decisions, in your own words:
 
 **If the Director asks "who approves?"** — and it is the obvious question — answer it exactly:
 
-> "Today, me. The gate is real: GitHub holds the run and deploys nothing until a named reviewer
-> clicks Approve, and I turned off the setting that lets a repo admin skip it. But one name on
-> that list is a control against an accident, not against a bad decision. Adding [DevOps] as a
-> second reviewer is a two-minute settings change and it's on the handoff list — that's the
-> version I'd want before we're deploying to production regularly."
+> "Two of us — me and [DevOps]. The gate is real: GitHub holds the run and deploys nothing
+> until one of those names clicks Approve, and I turned off the setting that lets a repo admin
+> skip it. What it does not do is force a second pair of eyes, because either of us can
+> approve our own deploy. That is deliberate — a cutover should not wait on whoever is away
+> from their desk — but it means the gate stops an accident, not a bad decision. Worth being
+> clear about which of those you are buying."
 
 That answer is worth more than a claim of two-person control would be, and the Director is the
 person in the room most likely to notice the difference.
@@ -370,13 +371,14 @@ is written down and shared with DevOps.
 Close on slide 20: two asks for the team, four for DevOps. End on the last line — *the
 pipeline's job is to make a change boring.*
 
-**Land the second-approver ask while the Director is still in the room.** Of the six, it is
-the only one that needs someone else's authority rather than someone else's calendar, and it
-is five minutes of clicking. Say the uncomfortable version out loud — *"the production gate is
-real, admins can't bypass it, and as of this morning I'm the only name on it, which means
-production is one person"* — and ask for the name in the room rather than in a follow-up. Asking for a
-control on yourself is the most credible thing you will say all hour. If you get a yes, you
-can have it configured before the room stands up.
+**The second-approver ask has already landed — do not make it again.** `WoodsonJ` is on the
+gate, so any version of this pitch that asks the room for a second name is out of date, and it
+will sound it. What is left is narrower and still worth the Director's attention: with
+`prevent_self_review` off, two names still let one person dispatch and approve. Say the
+uncomfortable version out loud — *"the production gate is real, admins can't bypass it, two of
+us are on it, and either of us can still approve our own deploy"* — then let them decide
+whether that is the trade they want. Asking for a control on yourself is the most credible
+thing you will say all hour, and it lands harder when the easy ask is already done.
 
 ---
 
@@ -708,20 +710,24 @@ Say "I don't know, I'll find out" rather than improvising. These are the plausib
   design — the newer commit cancels the older in-flight one. Nobody's change is lost, because
   the newer build already contains it.
 - **"Who can approve a production deploy?"** You can answer this one. The `production`
-  environment exists, has **one required reviewer** (`justinpbarnett`), and admins **cannot**
-  bypass it — first verified against the GitHub API on 2026-08-11, re-verified 2026-08-19. So
-  unless the check below says otherwise, the honest answer is *"me, and only me — which is
-  exactly one person too few."* The open item is no longer creating the gate; it is adding the
-  DevOps engineer as a second reviewer and then turning on `prevent_self_review`, which is the
-  point at which production genuinely takes two people. Say that plainly in front of the
-  Director — asking for the second reviewer in the room is the cheapest way to get it.
+  environment exists, names **two required reviewers** (`justinpbarnett` and `WoodsonJ`), and
+  admins **cannot** bypass it — first verified against the GitHub API on 2026-08-11,
+  re-verified 2026-08-24. One approval releases the run, so either name can let a deploy
+  through. `prevent_self_review` is `false` and stays that way by choice, so the person who
+  dispatches a deploy can also approve it. Give the room the honest version rather than the
+  flattering one: *"two of us can approve, and either of us can approve our own — so the gate
+  stops an accident, not a bad decision."* That was a deliberate trade. Requiring a genuine
+  second pair of eyes would mean a cutover waits on whoever is away from their desk, and a
+  cutover is exactly when that fails. It is one field to reverse if the room wants it
+  reversed.
 
   Re-check before you present, because this is the one fact in the deck that someone in the
   room may have changed since:
   `gh api repos/passiondev/Rock/environments/production --jq '.protection_rules[] | select(.type=="required_reviewers") | [(.reviewers[].reviewer.login), .prevent_self_review]'`
 
-  *(Earlier drafts of this script said the reviewer list "doesn't exist yet." That was true when
-  written and is not true now; don't say it.)*
+  *(Two claims in earlier drafts of this script are now false and must not be said: that the
+  reviewer list "doesn't exist yet," and that there is only one name on it. Both were true
+  when they were written.)*
 
 - **"I made a change, it deployed, and the page looks exactly the same. What did I do wrong?"**
   Probably nothing, and this is the single most useful thing the local team can take away from
