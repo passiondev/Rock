@@ -1120,7 +1120,7 @@
           <h3>DevOps</h3>
           <ol>
             <li>Install the command-queue agent on the production VM, together, so the last step of the production path is proven. It needs a stop/start window, so we schedule it rather than squeeze it in.</li>
-            <li><strong>Be the second approver on production.</strong> The gate is live and admins can't bypass it, but I'm the only name on it, so today production is one person pretending to be two. Adding you takes about five minutes, and it's the biggest gap left on this list.</li>
+            <li><strong>Decide whether I should be able to approve my own deploy.</strong> You're on the production gate now, so it's two names rather than one &mdash; but <code>prevent_self_review</code> is off, which means whoever dispatches a deploy can also approve it. I left it that way so a cutover never waits on someone who's away from their desk. It's one setting either way, and it's a control on me, so it should be your call rather than mine.</li>
             <li>Decide the <em>remaining</em> database question with me. Staging got its own catalog on 18 Aug, so staging can no longer break a PR site. The PR sites still share one catalog with each other, and that is a decision rather than a bug &mdash; it only bites when two of them run different Rock versions.</li>
             <li><strong>Decide how exposed the test sites should be.</strong> They sit behind the same world-open firewall rule as production and hold a full copy of real data. That was defensible when the sandbox was scratch; since the catalog split it isn't scratch. One tag and one rule if we want to close it &mdash; but it's your call, not mine.</li>
           </ol>

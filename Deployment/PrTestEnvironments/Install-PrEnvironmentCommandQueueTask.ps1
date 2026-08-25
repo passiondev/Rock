@@ -6,7 +6,13 @@ param(
 
     # Must be unique per VM -- see the note in Invoke-PrEnvironmentCommandQueue.ps1.
     # The test VM keeps "commands"; production installs with "commands-prod".
-    [Parameter(Mandatory = $false)][string]$QueueName = "commands"
+    [Parameter(Mandatory = $false)][string]$QueueName = "commands",
+
+    # Passed straight through to the agent. The scheduled task's command line is
+    # written once, here, so a prefix this script does not forward is a prefix the
+    # installed task can never be given -- production would sync staging's scripts
+    # for as long as that task exists. See the note in the agent's param block.
+    [Parameter(Mandatory = $false)][string]$BootstrapPrefix = "pr-environments/bootstrap/latest/"
 )
 
 Set-StrictMode -Version Latest
@@ -14,7 +20,7 @@ $ErrorActionPreference = "Stop"
 
 New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
 $scriptPath = Join-Path $DeployRoot "Invoke-PrEnvironmentCommandQueue.ps1"
-$taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -BucketName `"$BucketName`" -DeployRoot `"$DeployRoot`" -QueueName `"$QueueName`""
+$taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -BucketName `"$BucketName`" -DeployRoot `"$DeployRoot`" -QueueName `"$QueueName`" -BootstrapPrefix `"$BootstrapPrefix`""
 
 # schtasks supports minute-level repetition more consistently across Windows Server images
 # than Register-ScheduledTask with an unbounded repetition duration.
@@ -23,4 +29,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to install scheduled task $TaskName. schtasks.exe exited with $LASTEXITCODE."
 }
 
-Write-Host "Installed $TaskName to run $scriptPath every minute against queue '$QueueName'."
+Write-Host "Installed $TaskName to run $scriptPath every minute against queue '$QueueName', refreshing scripts from '$BootstrapPrefix'."

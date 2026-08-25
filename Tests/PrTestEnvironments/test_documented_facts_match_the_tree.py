@@ -221,3 +221,115 @@ class ReferencedPathsExistTests(harness.HarnessAssertions, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PRODUCTION_UPGRADE_RUNBOOK = REPO_ROOT / "Documentation" / "Production-Upgrade-Runbook.md"
+COMMAND_QUEUE_AGENT = (
+    REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
+)
+
+
+class RecoveredTimelineMarkerIsQuotedAsTheAgentWritesItTests(
+    harness.HarnessAssertions, unittest.TestCase
+):
+    """The runbook tells an operator to search a live deploy log for a literal.
+
+    Step 7 of the production upgrade says to scroll to the marker and read the
+    timeline underneath it, because the copy above the marker is the one the
+    staging rehearsal proved can arrive truncated. That instruction is only worth
+    anything while the two strings are the same. Change the marker in the agent,
+    leave the runbook alone, and the operator searches a log for a string that is
+    not in it -- during a cutover, while the site is down, looking for the record
+    of how long it has been down.
+
+    Derived from the agent, never written out here: a copy in this file would be
+    the third place the string lives and the second one that can go stale.
+    """
+
+    def test_the_runbook_quotes_the_marker_the_agent_emits(self):
+        agent = COMMAND_QUEUE_AGENT.read_text(encoding="utf-8")
+
+        # The marker is the only `=== ... ===` literal the agent writes into a log.
+        markers = set(re.findall(r"===[^=`\"\n]+===", agent))
+        self.assertNotVacuous(
+            markers,
+            "the agent no longer writes any === marker, so the runbook's instruction "
+            "to scroll to one cannot be checked -- and is probably wrong",
+        )
+        self.assertEqual(
+            1,
+            len(markers),
+            "the agent writes more than one === marker, so this test can no longer tell "
+            f"which one the runbook should quote: {sorted(markers)}",
+        )
+
+        marker = markers.pop()
+        runbook = PRODUCTION_UPGRADE_RUNBOOK.read_text(encoding="utf-8")
+        self.assertTrue(
+            marker in runbook,
+            f"the agent writes {marker!r} into the deploy log, and the production "
+            "upgrade runbook does not quote it. An operator following step 7 would "
+            "search the log for a marker that is not there.",
+        )
+
+
+DEPLOY_SCRIPT = (
+    REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Deploy-RockEnvironment.ps1"
+)
+
+
+class RunbookHealthCheckNumbersMatchTheDeployScriptTests(
+    harness.HarnessAssertions, unittest.TestCase
+):
+    """Step 8 tells the operator how long to let a failing health check run.
+
+    The staging rehearsal of 2026-08-25 logged two timed-out attempts before
+    passing on the third, so an operator watching production will see the same
+    lines at the worst possible moment. Step 8 answers the question those lines
+    raise -- how long before this is actually broken -- with the two numbers that
+    govern it: the probe window and the interval after which it recycles the app
+    pool. Both are defaults in the deploy script.
+
+    Change a default and leave the prose, and the runbook talks someone through a
+    cutover using a deadline that is not the one the code will enforce. They wait
+    out a window that already closed, or abandon one that had minutes left.
+    """
+
+    def _default_seconds(self, parameter_name):
+        source = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        matches = re.findall(
+            r"\$" + re.escape(parameter_name) + r"\s*=\s*(\d+)", source
+        )
+        self.assertNotVacuous(
+            matches,
+            f"${parameter_name} no longer has a literal default in "
+            f"{DEPLOY_SCRIPT.name}, so the runbook's stated timing cannot be checked",
+        )
+        self.assertEqual(
+            1,
+            len(set(matches)),
+            f"${parameter_name} has more than one distinct default "
+            f"({sorted(set(matches))}), so this test cannot tell which one step 8 "
+            "should be quoting",
+        )
+        return matches[0]
+
+    def test_step_8_states_the_probe_window_the_script_enforces(self):
+        window = self._default_seconds("HealthCheckTimeoutSeconds")
+        runbook = PRODUCTION_UPGRADE_RUNBOOK.read_text(encoding="utf-8")
+        self.assertTrue(
+            f"{window} second window" in runbook,
+            f"the deploy script gives the health check {window} seconds, and the "
+            "production upgrade runbook does not say so. Step 8 is where an operator "
+            "decides whether a quiet site is still starting or already failed.",
+        )
+
+    def test_step_8_states_the_recycle_interval_the_script_enforces(self):
+        interval = self._default_seconds("RecycleAfterSeconds")
+        runbook = PRODUCTION_UPGRADE_RUNBOOK.read_text(encoding="utf-8")
+        self.assertTrue(
+            f"{interval} seconds of" in runbook,
+            f"the health check recycles the app pool after {interval} seconds of "
+            "failures, and the runbook does not say so. Without it the recycle in "
+            "the log reads as the deploy restarting itself.",
+        )

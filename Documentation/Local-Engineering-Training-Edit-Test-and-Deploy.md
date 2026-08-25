@@ -912,11 +912,13 @@ re-diagnosing them. All verified 2026-08-10.
      deploy does not fail on the missing values — it quietly targets those defaults. Confirm
      they match the live site before the first real run, because a wrong site path here
      deploys Rock over the wrong directory without complaining.
-   - **The gate is self-approvable,** and cannot stop being so yet. There is one required
-     reviewer and `prevent_self_review` is `false`, so whoever pushes the deploy can approve
-     it. The flag has to stay `false` while there is only one reviewer, or the single person
-     named could never approve anything. The fix is a second reviewer first, then flip the
-     flag — open item 3 in `Training/DevOps-Open-Items-Rock-CICD.md` tracks it.
+   - **The gate is self-approvable, on purpose.** Two people are named as required reviewers
+     (`justinpbarnett` and `WoodsonJ`) and one approval releases the run, so either of them can
+     let a deploy through. `prevent_self_review` is `false`, which means whoever dispatches the
+     deploy may also approve it. That is a decision rather than a limitation: turning it on
+     would mean the person running a cutover always has to wake the other one, and a cutover is
+     exactly when that goes wrong. Reversing it is one field, and both reviewers are already in
+     place — open item 2 in `Training/DevOps-Open-Items-Rock-CICD.md` carries the reasoning.
 
    Re-check both with:
 

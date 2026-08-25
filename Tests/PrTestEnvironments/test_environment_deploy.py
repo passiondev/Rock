@@ -1061,6 +1061,171 @@ class ProductionVersionGuardTests(unittest.TestCase):
             )
 
 
+class DeployAuditTrailTests(unittest.TestCase):
+    """A production deploy has to leave evidence of what it did.
+
+    The log the agent uploads for a deploy is the only durable record: the VM is
+    unattended, the scheduled task redirects nothing, and the GitHub run prints
+    whatever that object contains and nothing else. Every deploy-staging-* object
+    in the bucket is 435 bytes -- the eight-line header and nothing after it. That
+    is not a truncation bug. The script simply does not say anything between
+    printing its header and printing that it finished.
+
+    On staging that is an annoyance. On production it means a deploy that copied
+    nothing, a deploy that copied everything, and a deploy that copied half a
+    webroot before the app pool came back all produce the same log, and the only
+    way to tell them apart afterwards is to go and look at the box.
+
+    These tests do not ask for verbose logging. They ask for the four facts an
+    operator needs at 2am: when each step happened, whether the copy moved any
+    files, where the backup went, and what the site said at the end.
+    """
+
+    def setUp(self):
+        self.text = DEPLOY_SCRIPT.read_text()
+        self.lines = self.text.splitlines()
+
+    def test_the_script_has_a_timestamped_step_reporter(self):
+        """Plain Write-Host lines cannot be placed in time. Two deploys, one of
+        which spent nine minutes in robocopy, are indistinguishable without a
+        clock on each line."""
+        self.assertIn(
+            "function Write-DeployStep",
+            self.text,
+            "the deploy has no timestamped step reporter, so its log cannot be "
+            "read as a timeline",
+        )
+
+    def test_the_step_reporter_stamps_utc_iso_8601(self):
+        """The runner, the VM and whoever is reading are rarely in one timezone,
+        and a log correlated against a Cloud SQL restore point has to be UTC."""
+        start = self.text.index("function Write-DeployStep")
+        body = self.text[start : self.text.index("\n}", start)]
+
+        self.assertIn(
+            "ToUniversalTime()",
+            body,
+            "the step reporter stamps local time, which cannot be lined up against "
+            "GCS object timestamps or a Cloud SQL restore point",
+        )
+        self.assertIn(
+            '"s"',
+            body,
+            'the step reporter does not format as ISO 8601 (ToString("s"))',
+        )
+
+    def test_the_step_reporter_is_defined_before_the_deploy_body(self):
+        """test_function_definition_order.py holds the general rule. This one is
+        specific: a reporter defined after its first call takes down every deploy,
+        which is a worse failure than the missing log it was added to fix."""
+        definition = self.text.index("function Write-DeployStep")
+        calls = [
+            self.text.index(line)
+            for line in self.lines
+            if "Write-DeployStep" in line and "function" not in line
+        ]
+        self.assertTrue(calls, "Write-DeployStep is defined but never called")
+        self.assertLess(
+            definition,
+            min(calls),
+            "Write-DeployStep is called before it is defined",
+        )
+
+    def test_the_in_place_copy_reports_what_it_moved(self):
+        """/NJS suppresses robocopy's job summary -- the count of files copied, the
+        bytes, and the error tally. With it set, a copy that moved 12,000 files and
+        a copy that moved none produce identical output, and the deploy reports
+        success either way because the exit code is 0 in both cases.
+
+        /NFL and /NDL stay. Nobody needs a filename per file; they need the total.
+
+        Scoped to the in-place copies -- the backup and the deploy -- because those
+        are the two production runs. Sync-SharedSiteAssets is reached only from the
+        DedicatedSite branch, and it shares its wording with Deploy-PrEnvironment.ps1,
+        so it is left alone rather than edited for a path it does not serve."""
+        robocopy_lines = [
+            line
+            for line in self.lines
+            if line.lstrip().startswith("& robocopy") and "$SitePath" in line
+        ]
+        self.assertEqual(
+            len(robocopy_lines),
+            2,
+            "expected the backup copy and the deploy copy; the in-place path moved",
+        )
+        for line in robocopy_lines:
+            with self.subTest(line=line.strip()[:60]):
+                self.assertNotIn(
+                    "/NJS",
+                    line,
+                    "robocopy is told to suppress its job summary, so the log cannot "
+                    "show whether the copy moved anything",
+                )
+
+    def test_a_successful_deploy_ends_with_the_rollback_path(self):
+        """The backup path is printed once, before the copy, and then buried under
+        everything the deploy prints afterwards. Rolling back is the one thing
+        somebody does in a hurry, and the path has to be at the end of the log
+        where they are already looking."""
+        deployed = next(
+            index
+            for index, line in enumerate(self.lines)
+            if "Deployed $EnvironmentName" in line
+        )
+
+        # Reported, not thrown. The unhealthy path already names $backupPath in its
+        # throw, and matching that would let this pass on exactly the deploy that
+        # succeeded and told nobody where the backup went.
+        reported = [
+            line
+            for line in self.lines[deployed:]
+            if "$backupPath" in line and "throw" not in line and not line.lstrip().startswith("#")
+        ]
+        self.assertTrue(
+            reported,
+            "a successful deploy never repeats where the backup went, so a rollback "
+            "starts by scrolling",
+        )
+
+    def test_the_health_check_reports_through_the_step_reporter(self):
+        """Every line Test-EnvironmentHealth emits has to carry a timestamp, and
+        that includes the line for a pass. A production health check that says
+        nothing on success leaves no record of what the site returned, which is
+        the one detail worth having when the next deploy is argued about."""
+        # Inside the function, not merely somewhere after it. Every call in the
+        # deploy body sits after this definition, so a search from here to the end
+        # of the file finds them whether or not the health check reports anything.
+        start = self.text.index("function Test-EnvironmentHealth")
+        # To the closing brace at column 0. This is the last function in the file,
+        # so slicing to the next `function` keyword runs off the end.
+        body = self.text[start : self.text.index("\n}\n", start)]
+
+        self.assertIn(
+            "Write-DeployStep",
+            body,
+            "the health check does not report through the step reporter, so its "
+            "timings are missing from the timeline",
+        )
+        # The pass branch specifically, not just the function as a whole. Every
+        # failed attempt reports from the bottom of the loop; a first-attempt pass
+        # returns before reaching any of that, so success is the path that would
+        # silently stop reporting without anything else in this test noticing.
+        pass_branch = body[body.index("if ($probe.Ok)") : body.index("return $true")]
+        self.assertIn(
+            "Write-DeployStep",
+            pass_branch,
+            "the health check returns success without reporting it, so a deploy "
+            "that passed first time records nothing about what the site returned",
+        )
+
+        self.assertNotIn(
+            "Write-Host",
+            body,
+            "the health check still logs through Write-Host, so its lines have no "
+            "timestamp while the rest of the deploy does",
+        )
+
+
 class ReusableWorkflowPermissionTests(unittest.TestCase):
     """A called workflow can only narrow the caller's GITHUB_TOKEN, never widen it.
 

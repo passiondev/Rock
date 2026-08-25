@@ -52,7 +52,7 @@ out waiting for a server that isn't listening.
   exclusions were always correct — so this is the belt for the day someone reaches for
   `DedicatedSite`, plus the diagnostic.)
 
-### 2. The `production` gate exists now, but it rests on one person
+### 2. The `production` gate is real, and it is deliberately one click
 
 **Created 2026-08-11.** Until then the environment did not exist, which meant the `approve` job
 in `production-deploy.yml` **passed straight through** — the gate was written and wired with
@@ -60,25 +60,35 @@ nothing on the other side of it. Referencing an environment that does not exist 
 GitHub creates it with no rules, so the run sails past. Worth remembering as a category: an
 approval gate is not self-evidencing, and this one read as present in every review of the YAML.
 
-Current settings:
+Current settings, read back from the API on 2026-08-24 rather than from memory:
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Required reviewers | `justinpbarnett` | Someone must click Approve; a dispatch alone deploys nothing |
+| Required reviewers | `justinpbarnett`, `WoodsonJ` | Someone must click Approve; a dispatch alone deploys nothing. Either name can approve, and one approval releases the run |
 | `can_admins_bypass` | `false` | Deliberately closed. On the default (`true`) a repo admin can skip the gate, which would have made the training's claim false for exactly the people most able to cause harm |
-| `prevent_self_review` | `false` | Has to stay false while there is one reviewer, or the only person named could never approve |
-| Branch policy | none | The version guard in `production-deploy.yml` already refuses a ref from another Rock minor, which is the risk a branch policy would be covering |
+| `prevent_self_review` | `false` | **Deliberate, and not an oversight.** Whoever dispatches the deploy may also approve it. Setting it `true` would mean the dispatcher always needs the other person awake, and a cutover window is exactly when that fails |
+| Branch policy | `passion-18.4.1` | Custom branch policies, one name, set 2026-08-24. **It moves with `productionBranch` at the cutover** — the runbook's step 2 carries that, because no test can see this setting |
 
-**What's left, and it is the point of this item:** add a second reviewer — the DevOps engineer
-— and then set `prevent_self_review` to `true`. Only at that point is production genuinely
-two-person. Today it is one deliberate click by one person, which stops an accident but not a
-mistake. The reviewer was not chosen on anyone's behalf: several people hold admin on this
-repo, and who guards production is a decision, not a default.
+**What is settled.** The gate is two named people and one deliberate click. That stops an
+accident. It does not stop a mistake, because the same person can both dispatch and approve —
+accepted knowingly, in exchange for not blocking a cutover on somebody else's availability.
+Reversing it is one field: set `prevent_self_review` to `true`. Both reviewers are already in
+place, so nothing else has to change first.
 
-Also still needed: repo variables `PRODUCTION_HOST_NAME`, `PRODUCTION_SITE_PATH`,
-`PRODUCTION_SITE_NAME`. The workflow falls back to `rock.passion.team`, `C:\inetpub\wwwroot`
-and `Default Web Site` if they are absent — **confirm those against the actual VM before the
-first real run** rather than trusting the defaults.
+**Still open: the three `PRODUCTION_*` repo variables do not exist.** Confirmed 2026-08-24 —
+the variables API returns nothing whose name starts with `PRODUCTION`, so every run today takes
+the fallback written into `production-deploy.yml`:
+
+| Variable | Fallback in use |
+| --- | --- |
+| `PRODUCTION_HOST_NAME` | `rock.passion.team` |
+| `PRODUCTION_SITE_PATH` | `C:\inetpub\wwwroot` |
+| `PRODUCTION_SITE_NAME` | `Default Web Site` |
+
+A wrong `PRODUCTION_SITE_PATH` is the one that hurts: the deploy copies a site over whatever
+that path names, so a stale default aims the copy at the wrong directory. **Confirm all three
+against the actual VM before the first real run** rather than trusting the fallbacks. Setting
+the variables explicitly beats relying on a default that happens to be right.
 
 ### 3. The trunk branch has no protection at all
 
@@ -1934,7 +1944,135 @@ someone senior with no patience for a white screen.
 environment. Until it is fixed, the workaround is in the facilitator script and the handout:
 open the page a few minutes before you show it to anyone.
 
+### 30. `secrets.DB_NAME` names a catalog that no longer exists, and the error does not say so
+
+**Found 2026-08-24, rehearsing the command queue on staging.** Dispatching **DB - Find legacy
+text columns** with `db_name` left empty -- the documented way to scan the shared sandbox catalog
+-- came back:
+
+```
+Cannot open database "RockConnectProd" requested by the login. The login failed.
+Login failed for user 'sqlserver'.
+```
+
+That reads as a credential problem and is not one. SQL Server returns error 4060 with that exact
+wording when the login authenticates and the *requested database* cannot be opened, and the reason
+here is that it is not there:
+
+```
+$ gcloud sql databases list --instance=connect-restore-test --project=passioncitychurch-com
+master  tempdb  model  msdb  RockStaging20260824  RockStaging
+```
+
+`RockConnectProd` was the sandbox catalog every `pr-*` site shared. The fleet was pruned, the
+catalog went with it, and `secrets.DB_NAME` still points at the name.
+
+**Production cannot reach this.** `production-deploy.yml` passes `write_connection_string: false`,
+so CI never writes production's connection string, and it queues to `commands-prod`. Staging cannot
+reach it either: `staging-deploy.yml` passes `vars.STAGING_DB_NAME`, which is set to
+`RockStaging20260824`. What reaches it is anything that takes the fallback:
+
+| Path | How it gets there |
+|---|---|
+| `db-find-legacy-text-columns.yml` | `inputs.db_name \|\| secrets.DB_NAME`, and the runbook's own step 2 describes the empty case as scanning "the shared sandbox one" |
+| `pr-test-deploy.yml` | `vars.PR_TEST_DB_NAME \|\| secrets.DB_NAME`, and `PR_TEST_DB_NAME` is unset |
+| `env-deploy-command.yml` | any caller that passes no `db_name` |
+
+The fleet is pruned, so nothing is currently broken by it. What it costs is the next person who
+follows the runbook: step 2 of the cutover sequence is a legacy-column scan, and the way that step
+fails names a login rather than a missing database.
+
+Two fixes, and the second is the better one. Repoint `secrets.DB_NAME` at a catalog that exists, or
+delete the fallback so an empty `db_name` fails naming the input. A silent fallback onto a shared
+catalog is what stranded every environment mid-migration on 2026-08-18; keeping the shape while
+fixing the value leaves the shape.
+
+Either way the parenthetical in step 2 of `PR-Test-Environments-Operator-Runbook.md` needs to stop
+describing a catalog that is gone.
+
 ---
+
+### 31. The background job's output stream drops records, and nobody knows why
+
+**Found 2026-08-25, rehearsing a staging deploy through the command queue.** Command
+`deploy-staging-32794680054-1` ran 15m24s, reported success, and uploaded a 916-byte log. It
+covers the first 2m38s and stops on:
+
+```
+[2026-08-25T01:11:44Z +00:02:38] Stopping app pool rock-staging. The site is offline from here.
+```
+
+followed by five blank lines and nothing else. That line is the *first* of the window in which
+the site is offline. The site replace, the ACL grant, the preserved-file restore, the shared
+asset overlay, the app pool start, the health check and "Done." all ran -- a success result
+requires reaching the end of `Deploy-RockEnvironment.ps1` -- and none of them reached the bucket.
+
+**Six causes were ruled out, each by measurement rather than by reading:**
+
+| Suspect | Why it is not this |
+|---|---|
+| Redaction | `Get-RedactedText` is a literal `.Replace` guarded on a length of eight. It cannot blank a line or truncate. |
+| The 200000 character cap | Tail-preserving, and it keeps the *end*. The log was 916 bytes, so it never fired. |
+| A `Wait-Job` timeout | `deploy-environment` allows 1800s against a 924s run, and a timeout writes a **failed** result. This one succeeded. |
+| A preference variable | Neither script reassigns `$InformationPreference` or any sibling anywhere. |
+| A stale script on the box | The GCS and repository copies of `Deploy-RockEnvironment.ps1` matched on md5 (`zvIXqhExm1JNMOzDDU4rXQ==`, 50861 bytes). |
+| A second agent instance | Log and result were both `metageneration 1`, written 256ms apart. One instance wrote each exactly once. `schtasks` also defaults to `MultipleInstances: IgnoreNew`. |
+
+What is left is `Receive-Job ... *>&1` losing `Write-Host` records from a long-running job. The
+first thirteen lines survive and everything after roughly the 2m38s mark does not. The five
+trailing blank lines say the records were *there* and stringified to nothing, which no reading of
+`InformationRecord.ToString()` explains.
+
+**Reproduced 2026-08-25 on a second rehearsal, and the workaround held.** Command
+`deploy-staging-32798604639-1` truncated in exactly the same place:
+
+```
+[2026-08-25T02:14:23Z +00:02:16] Stopping app pool rock-staging. The site is offline from here.
+```
+
+Below the `=== deploy timeline recovered from the box ===` marker the same log carries all eleven
+lines, through the app pool start, three health check attempts and `[+00:05:10] Done.` Six lines
+that the capture lost arrived by file. That is the whole point of the workaround, and it is now
+measured rather than assumed.
+
+**The second run narrows the cause, in one direction only.** The two rehearsals stop at the same
+*statement*. The last line to survive is written at `Deploy-RockEnvironment.ps1:940`, and the next
+statement is `Stop-EnvironmentAppPool` at 941. Their total runtimes differ by a factor of three
+(15m24s against 5m10s), and nothing proportional to total duration can produce the same stopping
+point in both, so "the job ran too long" is out as a mechanism.
+
+It does **not** establish that the statement is the trigger. Both runs reached that statement at a
+similar elapsed time (2m38s and 2m16s), because the work in front of it is downloading and
+extracting an artifact of about the same size each time. Position and elapsed time are confounded in
+this pair, and separating them needs a rehearsal whose early steps take a markedly different length
+of time. Worth knowing before the next attempt, so it is designed to answer the question rather than
+to re-confirm the symptom.
+
+One suspect is gone regardless: `Import-Module WebAdministration` runs at line 225, minutes before
+the truncation, so a first-time module load inside the job is not what breaks the stream.
+
+**It could not be reproduced off the box.** `Start-Job` does not spawn on macOS in this
+environment (`Exec format error`), and per the notes in item 25's neighbourhood the test VM's
+sshd is not listening, so there is no way to attach to the box and watch it happen.
+
+**What was done instead.** `Write-DeployStep` now also appends each stamped line to a file on the
+VM, and the agent's new `Get-CommandLogText` reads that file back and appends it to whatever the
+capture returned. File I/O cannot be dropped by whatever the stream is doing, so the timeline no
+longer depends on the answer. Both sides fail soft -- by the time most of those lines are written
+the app pool is already stopped, and a logging problem must never end a cutover.
+
+**Why this still deserves an entry.** The workaround covers `deploy-environment` and nothing else.
+Every other command -- `anonymize-staging`, `find-legacy-text-columns`, `renew-certificate` -- still
+depends on the stream for its only record, and can lose output the same way while giving no sign
+that it did. Do not read that as a duration threshold they stay under: the reproduction above rules
+out total runtime as the mechanism, so a short command is not thereby safe. Until the trigger is
+known, the honest statement about any of those three is that their logs are unverified, not that
+they are short enough to be fine.
+
+**Where to pick it up.** Getting sshd listening on `connect-srv-test` is the prerequisite; it is
+the same prerequisite item 25's notes identify for diagnosing the script refresh, so the two are
+worth doing together. Until then, treat any command log that ends mid-run as *unproven*, not as
+evidence of where the command stopped.
 
 ## Fixed since the last revision — recorded so nobody re-diagnoses these
 
@@ -1975,11 +2113,13 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 
 ## Suggested order
 
-1. Item 2 — the Environment now exists and the gate is real (verified against the API on
-   2026-08-11 and unchanged when re-read on 2026-08-19: one required reviewer
-   `justinpbarnett`, `can_admins_bypass: false`, `prevent_self_review: false`). What's left is adding the
-   DevOps engineer as a second reviewer and then flipping `prevent_self_review` to `true`
-   (~5 min, and only then is production two-person)
+1. Item 2 — the Environment exists, the gate is real, and the reviewer half is now done
+   (re-read against the API on 2026-08-24: two required reviewers `justinpbarnett` and
+   `WoodsonJ`, `can_admins_bypass: false`, `prevent_self_review: false`, branch policy
+   `passion-18.4.1`). Self-review stays allowed on purpose, so what is left here is not the
+   reviewer list. It is confirming the three `PRODUCTION_*` repo variables against the live
+   VM before the first real run — none of them exists today, so the deploy takes its
+   fallbacks, and a wrong `PRODUCTION_SITE_PATH` copies a site over the wrong directory
 2. Item 3 — protect the trunk (~10 min, makes the training true). Still unprotected: the
    branch protection API returned `404 Branch not protected` for `passion-19.3.4` on
    2026-08-19, so the cutover carried the gap across rather than closing it
@@ -2053,6 +2193,14 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     every one of which was originally found in production by symptom. Two steps stay human —
     reviewing each config-writing migration, and checking `Documentation/Fork-Local-Changes.md`
     survived the merge
+
+18. Item 30 — one value, either repointed or removed. It is not on the production path, but it is
+    the way step 2 of the cutover checklist fails today, and the failure names a login rather than
+    the missing database
+19. Item 31 — needs sshd on `connect-srv-test` before it can be diagnosed at all, so pair it with
+    the script-refresh work that needs the same thing. The cutover itself no longer waits on it:
+    the deploy timeline is written to disk and read back, so a production log covers the offline
+    window whatever the stream does
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that

@@ -353,6 +353,54 @@ function Get-PersonDomainExclusion {
     return " AND NOT EXISTS (SELECT 1 FROM dbo.Person keepPerson WHERE keepPerson.Id = $PersonIdColumn AND (" + ($clauses -join " OR ") + "))"
 }
 
+function Get-PhoneShapedPredicate {
+    <#
+        .SYNOPSIS
+            A predicate that matches a North-American phone number written into
+            free text, across the three separators people actually type.
+
+        .DESCRIPTION
+            LIKE with [0-9] classes rather than a regex, because T-SQL has no
+            regex operator and enabling the CLR one on a restored production
+            catalog is a bigger change than a count is worth. The shapes are
+            nnn-nnn-nnnn, (nnn) nnn-nnnn and nnn.nnn.nnnn.
+
+            Deliberately tight, and it under-reports on purpose. Ten digits in
+            any arrangement would also match order numbers, giving amounts in
+            cents, and most of the timestamps in a serialized attribute value;
+            a probe that fires on every row says nothing about whether phone PII
+            survived. An unseparated 4045551234 is therefore missed. The count
+            is a floor on the residue, not a census of it, and the report reads
+            it as one.
+
+            Every shape for every column is OR'd into one predicate so the
+            caller scans each table once. These run against Note, History and
+            AttributeValue, where a second full scan is not free.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string[]] $Column
+    )
+
+    # Parentheses and the literal dot need no escaping in LIKE. Only [ would,
+    # and every [ below opens a character class on purpose. The dot matches a
+    # literal dot here, not "any character" -- LIKE is not a regex, which is the
+    # one way this pattern is easier to read than its regex equivalent.
+    $shapes = @(
+        "[0-9][0-9][0-9]-[0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]",
+        "([0-9][0-9][0-9]) [0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]",
+        "[0-9][0-9][0-9].[0-9][0-9][0-9].[0-9][0-9][0-9][0-9]"
+    )
+
+    $clauses = @(
+        foreach ($columnName in $Column) {
+            foreach ($shape in $shapes) {
+                "$columnName LIKE '%$shape%'"
+            }
+        }
+    )
+    return "(" + ($clauses -join " OR ") + ")"
+}
+
 function Invoke-Scalar {
     param(
         [Parameter(Mandatory = $true)][System.Data.SqlClient.SqlConnection] $Connection,
@@ -564,13 +612,24 @@ FromEmail = CASE WHEN FromEmail IS NOT NULL AND FromEmail <> '' THEN 'noreply@st
 # partial scrub reads as a completed one. Naming them here, with counts, is more
 # honest than a pass that half-works -- and the counts tell you whether the
 # residue is a handful of rows or a real exposure.
+#
+# Both halves of the request get a probe. Until now every probe here was
+# email-shaped except the address one, so the phone columns the run rewrites had
+# no residual reporting at all: the report could show a clean sweep of
+# PhoneNumber while a number sat in the note attached to it. The '(email-shaped)'
+# and '(phone-shaped)' suffixes say which question a row answers, because
+# 'Note.Text' appearing twice with different counts is otherwise unreadable.
 $ResidualPiiProbes = @(
-    @{ Name = 'Communication.Message (body text)';     Query = "SELECT COUNT(*) FROM dbo.Communication WHERE Message LIKE '%@%'" },
-    @{ Name = 'CommunicationTemplate.Message';         Query = "SELECT COUNT(*) FROM dbo.CommunicationTemplate WHERE Message LIKE '%@%'" },
-    @{ Name = 'Note.Text';                             Query = "SELECT COUNT(*) FROM dbo.Note WHERE Text LIKE '%@%'" },
-    @{ Name = 'History (OldValue / NewValue)';         Query = "SELECT COUNT(*) FROM dbo.History WHERE OldValue LIKE '%@%' OR NewValue LIKE '%@%'" },
-    @{ Name = 'AttributeValue.Value';                  Query = "SELECT COUNT(*) FROM dbo.AttributeValue WHERE Value LIKE '%@%'" },
-    @{ Name = 'Location (street addresses present)';   Query = "SELECT COUNT(*) FROM dbo.Location WHERE Street1 IS NOT NULL AND Street1 <> ''" }
+    @{ Name = 'Communication.Message (email-shaped)';      Query = "SELECT COUNT(*) FROM dbo.Communication WHERE Message LIKE '%@%'" },
+    @{ Name = 'CommunicationTemplate.Message (email-shaped)'; Query = "SELECT COUNT(*) FROM dbo.CommunicationTemplate WHERE Message LIKE '%@%'" },
+    @{ Name = 'Note.Text (email-shaped)';                  Query = "SELECT COUNT(*) FROM dbo.Note WHERE Text LIKE '%@%'" },
+    @{ Name = 'History OldValue / NewValue (email-shaped)'; Query = "SELECT COUNT(*) FROM dbo.History WHERE OldValue LIKE '%@%' OR NewValue LIKE '%@%'" },
+    @{ Name = 'AttributeValue.Value (email-shaped)';       Query = "SELECT COUNT(*) FROM dbo.AttributeValue WHERE Value LIKE '%@%'" },
+    @{ Name = 'PhoneNumber.Description (phone-shaped)';    Query = "SELECT COUNT(*) FROM dbo.PhoneNumber WHERE $(Get-PhoneShapedPredicate -Column 'Description')" },
+    @{ Name = 'Note.Text (phone-shaped)';                  Query = "SELECT COUNT(*) FROM dbo.Note WHERE $(Get-PhoneShapedPredicate -Column 'Text')" },
+    @{ Name = 'History OldValue / NewValue (phone-shaped)'; Query = "SELECT COUNT(*) FROM dbo.History WHERE $(Get-PhoneShapedPredicate -Column 'OldValue', 'NewValue')" },
+    @{ Name = 'AttributeValue.Value (phone-shaped)';       Query = "SELECT COUNT(*) FROM dbo.AttributeValue WHERE $(Get-PhoneShapedPredicate -Column 'Value')" },
+    @{ Name = 'Location (street addresses present)';       Query = "SELECT COUNT(*) FROM dbo.Location WHERE Street1 IS NOT NULL AND Street1 <> ''" }
 )
 
 # What the catalog actually holds, by domain. Printed so the allowlist can be

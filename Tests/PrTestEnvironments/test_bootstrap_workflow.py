@@ -16,7 +16,12 @@ class BootstrapCommandQueueWorkflowTests(unittest.TestCase):
         # Authenticating is the claim; the pair moved behind a composite action,
         # and test_gcp_session_consistency.py is what holds that one place honest.
         self.assertIn("./.github/actions/gcp-session", text)
-        self.assertIn("gsutil -m cp Deployment/PrTestEnvironments/*.ps1", text)
+        # Not the whole command: the upload also sets -h Content-Type, without which
+        # the agent fetches every script as a byte[] and refreshes none of them
+        # (test_command_queue_self_update.ContentTypeOfPublishedScriptsTests). Pinning
+        # the flag order here would break that fix rather than notice it.
+        self.assertIn("Deployment/PrTestEnvironments/*.ps1", text)
+        self.assertIn("gsutil", text)
         self.assertIn("gcloud compute instances list", text)
         self.assertIn("GCP_VM_EXTERNAL_IP", text)
         self.assertIn("gcloud compute instances add-metadata", text)

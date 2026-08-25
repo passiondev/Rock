@@ -31,7 +31,14 @@ jobs:
       - name: Upload latest deployment scripts
         shell: pwsh
         run: |
-          gsutil -m cp Deployment/PrTestEnvironments/*.ps1 gs://$env:PR_TEST_GCS_BUCKET/pr-environments/bootstrap/latest/
+          # -h Content-Type so the agent's reader is never handed a byte[]. gsutil
+          # types a .ps1 as application/octet-stream, and Invoke-WebRequest returns
+          # .Content as a byte[] for anything outside the text/JSON/XML families;
+          # Sync-DeploymentScripts parse-checks that, fails, and keeps the copy on
+          # disk. Publishing here has only ever reached the VM through the reboot
+          # below, never through the once-a-minute refresh -- the cause of that is
+          # still open, so treat this as removing one candidate, not as the fix.
+          gsutil -h "Content-Type:text/plain; charset=utf-8" -m cp Deployment/PrTestEnvironments/*.ps1 gs://$env:PR_TEST_GCS_BUCKET/pr-environments/bootstrap/latest/
 
       - name: Resolve VM and temporarily allow ACME HTTP-01
         shell: pwsh
