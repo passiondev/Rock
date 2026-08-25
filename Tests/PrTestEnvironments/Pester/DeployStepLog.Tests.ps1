@@ -36,7 +36,7 @@ BeforeAll {
     . (Import-ScriptFunction -Path $script:DeployScript -Name 'Write-DeployStep')
 
     $script:AgentScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Invoke-PrEnvironmentCommandQueue.ps1'
-    . (Import-ScriptFunction -Path $script:AgentScript -Name 'Get-CommandLogText')
+    . (Import-ScriptFunction -Path $script:AgentScript -Name 'Get-CommandLogText', 'Get-StepLogPath')
 
     # Write-DeployStep stamps against this. The tests below read the file, not the
     # clock, so any fixed start will do.
@@ -147,5 +147,44 @@ Describe 'Get-CommandLogText' {
         # as a deploy problem.
         Get-CommandLogText -CaptureText 'captured' -StepLogPath (Join-Path $script:TempRoot 'nope/steps.log') |
             Should -Be 'captured'
+    }
+}
+
+Describe 'Get-StepLogPath' {
+    BeforeEach {
+        # A real directory rather than C:\RockDeploy. Join-Path resolves the drive,
+        # and on a non-Windows runner drive C: does not exist, so a literal Windows
+        # root silently returns nothing and every assertion below compares $null to
+        # $null. The agent itself only ever runs on Windows, where the idiom is fine.
+        $script:DeployRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'RockDeploy'
+    }
+
+    It 'drops the pending object''s .json extension rather than burying it mid-name' {
+        # $CommandId is still the pending object's file name at the point this is
+        # called, so naming from it directly produced the extension mid-name:
+        # deploy-staging-1234-1.json-steps.log.
+        $path = Get-StepLogPath -DeployRoot $script:DeployRoot -CommandObjectName 'deploy-staging-1234-1.json'
+
+        (Split-Path $path -Leaf) | Should -Be 'deploy-staging-1234-1-steps.log'
+    }
+
+    It 'takes the leaf of a fully prefixed object name' {
+        $path = Get-StepLogPath -DeployRoot $script:DeployRoot -CommandObjectName 'pr-environments/commands-prod/pending/deploy-prod-99-1.json'
+
+        (Split-Path $path -Leaf) | Should -Be 'deploy-prod-99-1-steps.log'
+    }
+
+    It 'keeps the timeline under the deploy root so a reboot cannot clear it' {
+        $path = Get-StepLogPath -DeployRoot $script:DeployRoot -CommandObjectName 'anything.json'
+
+        $path | Should -Match 'RockDeploy'
+        $path | Should -Match 'logs'
+    }
+
+    It 'gives two commands two different files' {
+        $first = Get-StepLogPath -DeployRoot $script:DeployRoot -CommandObjectName 'deploy-staging-1.json'
+        $second = Get-StepLogPath -DeployRoot $script:DeployRoot -CommandObjectName 'deploy-staging-2.json'
+
+        $first | Should -Not -Be $second
     }
 }

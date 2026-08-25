@@ -134,6 +134,40 @@ $LogsPrefix = "pr-environments/$QueueName/logs/"
 # deploy command carries a database password. Redact by exact value first, using
 # the secrets from the command itself, then sweep for any password= that survived
 # in case a script assembled a connection string differently.
+function Get-StepLogPath {
+    <#
+        .SYNOPSIS
+        Where a command's deploy timeline is written on the box.
+
+        .DESCRIPTION
+        Per-command, so two commands can never interleave into one file, and under
+        $DeployRoot so it lands beside the scripts rather than in a temp directory
+        that a reboot clears before anybody reads it.
+
+        Named from the pending object's stem rather than from $CommandId. At the
+        point in the loop where this is needed, $CommandId is still the pending
+        object's file name and carries its .json extension -- it is only replaced by
+        the command body's own id once the body parses. Taking the stem here is what
+        keeps the timeline beside deploy-staging-1234-1.log instead of landing as
+        deploy-staging-1234-1.json-steps.log.
+
+        .PARAMETER DeployRoot
+        Where the agent keeps the deployment scripts.
+
+        .PARAMETER CommandObjectName
+        The pending object, either the full prefixed name or a bare file name.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][string]$DeployRoot,
+        [Parameter(Mandatory = $true)][string]$CommandObjectName
+    )
+
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path $CommandObjectName -Leaf))
+    return (Join-Path $DeployRoot (Join-Path 'logs' "$stem-steps.log"))
+}
+
 function Get-CommandLogText {
     <#
         .SYNOPSIS
@@ -644,11 +678,7 @@ foreach ($commandObject in $commands) {
     $CommandId = $fileName
     $result = $null
     $job = $null
-    # Per-command so two commands can never interleave into one file, and under
-    # $DeployRoot so it lands beside the scripts instead of in a temp directory
-    # that a reboot clears before anybody reads it. Derived from the object name
-    # rather than the command body, which has not been parsed yet.
-    $stepLogPath = Join-Path $DeployRoot (Join-Path 'logs' "$CommandId-steps.log")
+    $stepLogPath = Get-StepLogPath -DeployRoot $DeployRoot -CommandObjectName $commandObject
     $commandOutput = ''
     $commandSecrets = @()
 
