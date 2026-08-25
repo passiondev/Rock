@@ -265,10 +265,71 @@ class RecoveredTimelineMarkerIsQuotedAsTheAgentWritesItTests(
 
         marker = markers.pop()
         runbook = PRODUCTION_UPGRADE_RUNBOOK.read_text(encoding="utf-8")
-        self.assertIn(
-            marker,
-            runbook,
+        self.assertTrue(
+            marker in runbook,
             f"the agent writes {marker!r} into the deploy log, and the production "
             "upgrade runbook does not quote it. An operator following step 7 would "
             "search the log for a marker that is not there.",
+        )
+
+
+DEPLOY_SCRIPT = (
+    REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Deploy-RockEnvironment.ps1"
+)
+
+
+class RunbookHealthCheckNumbersMatchTheDeployScriptTests(
+    harness.HarnessAssertions, unittest.TestCase
+):
+    """Step 8 tells the operator how long to let a failing health check run.
+
+    The staging rehearsal of 2026-08-25 logged two timed-out attempts before
+    passing on the third, so an operator watching production will see the same
+    lines at the worst possible moment. Step 8 answers the question those lines
+    raise -- how long before this is actually broken -- with the two numbers that
+    govern it: the probe window and the interval after which it recycles the app
+    pool. Both are defaults in the deploy script.
+
+    Change a default and leave the prose, and the runbook talks someone through a
+    cutover using a deadline that is not the one the code will enforce. They wait
+    out a window that already closed, or abandon one that had minutes left.
+    """
+
+    def _default_seconds(self, parameter_name):
+        source = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        matches = re.findall(
+            r"\$" + re.escape(parameter_name) + r"\s*=\s*(\d+)", source
+        )
+        self.assertNotVacuous(
+            matches,
+            f"${parameter_name} no longer has a literal default in "
+            f"{DEPLOY_SCRIPT.name}, so the runbook's stated timing cannot be checked",
+        )
+        self.assertEqual(
+            1,
+            len(set(matches)),
+            f"${parameter_name} has more than one distinct default "
+            f"({sorted(set(matches))}), so this test cannot tell which one step 8 "
+            "should be quoting",
+        )
+        return matches[0]
+
+    def test_step_8_states_the_probe_window_the_script_enforces(self):
+        window = self._default_seconds("HealthCheckTimeoutSeconds")
+        runbook = PRODUCTION_UPGRADE_RUNBOOK.read_text(encoding="utf-8")
+        self.assertTrue(
+            f"{window} second window" in runbook,
+            f"the deploy script gives the health check {window} seconds, and the "
+            "production upgrade runbook does not say so. Step 8 is where an operator "
+            "decides whether a quiet site is still starting or already failed.",
+        )
+
+    def test_step_8_states_the_recycle_interval_the_script_enforces(self):
+        interval = self._default_seconds("RecycleAfterSeconds")
+        runbook = PRODUCTION_UPGRADE_RUNBOOK.read_text(encoding="utf-8")
+        self.assertTrue(
+            f"{interval} seconds of" in runbook,
+            f"the health check recycles the app pool after {interval} seconds of "
+            "failures, and the runbook does not say so. Without it the recycle in "
+            "the log reads as the deploy restarting itself.",
         )

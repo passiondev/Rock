@@ -2023,6 +2023,34 @@ first thirteen lines survive and everything after roughly the 2m38s mark does no
 trailing blank lines say the records were *there* and stringified to nothing, which no reading of
 `InformationRecord.ToString()` explains.
 
+**Reproduced 2026-08-25 on a second rehearsal, and the workaround held.** Command
+`deploy-staging-32798604639-1` truncated in exactly the same place:
+
+```
+[2026-08-25T02:14:23Z +00:02:16] Stopping app pool rock-staging. The site is offline from here.
+```
+
+Below the `=== deploy timeline recovered from the box ===` marker the same log carries all eleven
+lines, through the app pool start, three health check attempts and `[+00:05:10] Done.` Six lines
+that the capture lost arrived by file. That is the whole point of the workaround, and it is now
+measured rather than assumed.
+
+**The second run narrows the cause, in one direction only.** The two rehearsals stop at the same
+*statement*. The last line to survive is written at `Deploy-RockEnvironment.ps1:940`, and the next
+statement is `Stop-EnvironmentAppPool` at 941. Their total runtimes differ by a factor of three
+(15m24s against 5m10s), and nothing proportional to total duration can produce the same stopping
+point in both, so "the job ran too long" is out as a mechanism.
+
+It does **not** establish that the statement is the trigger. Both runs reached that statement at a
+similar elapsed time (2m38s and 2m16s), because the work in front of it is downloading and
+extracting an artifact of about the same size each time. Position and elapsed time are confounded in
+this pair, and separating them needs a rehearsal whose early steps take a markedly different length
+of time. Worth knowing before the next attempt, so it is designed to answer the question rather than
+to re-confirm the symptom.
+
+One suspect is gone regardless: `Import-Module WebAdministration` runs at line 225, minutes before
+the truncation, so a first-time module load inside the job is not what breaks the stream.
+
 **It could not be reproduced off the box.** `Start-Job` does not spawn on macOS in this
 environment (`Exec format error`), and per the notes in item 25's neighbourhood the test VM's
 sshd is not listening, so there is no way to attach to the box and watch it happen.
@@ -2035,9 +2063,11 @@ the app pool is already stopped, and a logging problem must never end a cutover.
 
 **Why this still deserves an entry.** The workaround covers `deploy-environment` and nothing else.
 Every other command -- `anonymize-staging`, `find-legacy-text-columns`, `renew-certificate` -- still
-depends on the stream for its only record, and a long enough run of any of them will lose output
-the same way and give no sign that it did. The finder in particular is allowed 1800s precisely
-because the catalog is large.
+depends on the stream for its only record, and can lose output the same way while giving no sign
+that it did. Do not read that as a duration threshold they stay under: the reproduction above rules
+out total runtime as the mechanism, so a short command is not thereby safe. Until the trigger is
+known, the honest statement about any of those three is that their logs are unverified, not that
+they are short enough to be fine.
 
 **Where to pick it up.** Getting sshd listening on `connect-srv-test` is the prerequisite; it is
 the same prerequisite item 25's notes identify for diagnosing the script refresh, so the two are
