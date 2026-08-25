@@ -99,6 +99,28 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    (`production-deploy.yml`'s `ref` default). Run that one test file until it is green; the
    failure names every pin still on the old branch.
 
+   **Then move the environment's branch policy, which no test can check for you.** The
+   `production` environment is restricted to one branch by name, set on 2026-08-24 to
+   `passion-18.4.1`. It lives in GitHub, not in this repository, so the pin guard above
+   cannot see it and will go green while it is still wrong. Left stale, every job that
+   declares `environment: production` is refused at the gate -- including the deploy this
+   whole runbook is for -- and the error names the environment, not the branch, so it does
+   not read as a stale setting.
+
+   ```bash
+   # What is allowed today.
+   gh api repos/:owner/:repo/environments/production/deployment-branch-policies \
+     --jq '.branch_policies[].name'
+
+   # Add the new branch, confirm it, then remove the old one. In that order: deleting
+   # first leaves the environment with no allowed branch at all.
+   gh api --method POST repos/:owner/:repo/environments/production/deployment-branch-policies \
+     -f name=NEW_PRODUCTION_BRANCH -f type=branch
+   ```
+
+   Keep the old branch allowed until the deploy has succeeded. It costs nothing and it is
+   what lets you re-run the previous release from its own branch if step 8 goes badly.
+
 3. **Stage the bootstrap.** Dispatch **Production Bootstrap Command Queue** against the
    production branch with **restart_vm unticked**. It publishes the deployment scripts to
    `pr-environments/bootstrap/prod/` and writes the startup script into the instance's

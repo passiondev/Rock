@@ -336,6 +336,29 @@ class ProductionUpgradeRunbookTests(RunbookAssertions, unittest.TestCase):
             "list has stopped guarding anything: " + ", ".join(missing_from_runbook),
         )
 
+    def test_it_carries_the_repoint_step_no_test_can_check(self):
+        """The `production` environment is restricted to one branch by name, and
+        that name lives in GitHub rather than in this repository. `PRODUCTION_PIN_SITES`
+        reads files, so it cannot see this one and reports green while it is stale.
+        Left stale through a cutover, every job declaring `environment: production` is
+        refused at the gate and the error names the environment, not the branch."""
+        text = PROD_RUNBOOK.read_text()
+
+        self.assertIn(
+            "deployment-branch-policies",
+            text,
+            "the runbook never tells anyone to move the environment's branch policy, "
+            "which is the one pin the repository's own guard cannot check",
+        )
+
+        # Order matters and the runbook has to say so: removing the old branch before
+        # adding the new one leaves the environment with no allowed branch at all.
+        self.assertIn(
+            "--method POST",
+            text,
+            "the runbook names the branch policy without saying how to add one",
+        )
+
     def test_the_literals_it_tells_you_to_verify_match_the_workflow(self):
         """Step 4 tells the operator to read the installed task's command line and
         check two values against this document. Both are copied out of the workflow,

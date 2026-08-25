@@ -174,10 +174,155 @@ function Get-CommandSecrets {
 }
 
 function Remove-GcsObject {
+    <#
+    .SYNOPSIS
+        Delete one object, and report it if the delete did not happen.
+
+    .DESCRIPTION
+        This used to swallow its own failure into a warning. It has exactly one
+        caller and that caller is retiring a queued command, where a delete that
+        did not happen is the difference between a command running once and a
+        command running every sixty seconds until somebody notices. Swallowing it
+        made that outcome indistinguishable from success, so the caller could not
+        retry it and could not report it.
+    #>
     param([Parameter(Mandatory = $true)][string]$ObjectName)
+
     $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
     $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName"
-    try { Invoke-GcsRequest -Uri $uri -Method DELETE | Out-Null } catch { Write-Warning $_.Exception.Message }
+
+    try {
+        Invoke-GcsRequest -Uri $uri -Method DELETE | Out-Null
+    }
+    catch {
+        # 404 is the outcome this function exists to produce, reached by another
+        # route. Reporting it as a failure would cost three retries and then warn
+        # that a command is about to run again, when there is no longer an object
+        # left to run it from -- a false alarm at the exact moment somebody is
+        # already reading warnings carefully.
+        #
+        # Read through PSObject: Set-StrictMode -Version Latest makes a missing
+        # property a terminating error, and the exception shape differs between
+        # Windows PowerShell 5.1, which the scheduled task runs under, and the
+        # PowerShell 7 this is tested on.
+        $statusCode = $null
+        $responseProperty = $_.Exception.PSObject.Properties['Response']
+        if ($responseProperty -and $responseProperty.Value) {
+            $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
+            if ($statusProperty -and $null -ne $statusProperty.Value) {
+                $statusCode = [int]$statusProperty.Value
+            }
+        }
+
+        if ($statusCode -ne 404) {
+            throw
+        }
+    }
+}
+
+function Invoke-WithRetry {
+    <#
+    .SYNOPSIS
+        Run an action until it succeeds. Return $null on success, or the last
+        error message if every attempt failed.
+
+    .DESCRIPTION
+        Deliberately returns a message rather than throwing. Both callers below are
+        finishing a command that has already run, and neither can be allowed to
+        abandon the rest of its work because a report failed -- which is precisely
+        the bug this whole path exists to close.
+
+    .PARAMETER Action
+        The thing to attempt. Runs in the caller's scope.
+
+    .PARAMETER Attempts
+        How many times to try in total, not how many times to retry.
+
+    .PARAMETER RetryDelaySeconds
+        Multiplied by the attempt number, so the waits lengthen. Zero in tests.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $false)][int]$Attempts = 3,
+        [Parameter(Mandatory = $false)][int]$RetryDelaySeconds = 5
+    )
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            & $Action
+            return $null
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            if ($attempt -lt $Attempts -and $RetryDelaySeconds -gt 0) {
+                Start-Sleep -Seconds ($RetryDelaySeconds * $attempt)
+            }
+        }
+    }
+
+    return $lastError
+}
+
+function Complete-QueuedCommand {
+    <#
+    .SYNOPSIS
+        Report a command's result and make sure that command cannot run again.
+
+    .DESCRIPTION
+        The object in pending/ is the only record of a command being outstanding.
+        The agent lists that prefix every sixty seconds and takes whatever it finds,
+        so a command is retired by being deleted and by nothing else.
+
+        This used to be two bare statements, the write first, under an
+        $ErrorActionPreference of 'Stop'. Any failure of the write skipped the
+        delete, so a transient 503 -- nothing misconfigured, nothing anyone did --
+        left the command pending and ran it again a minute later, and again, for as
+        long as the host stayed up. On a deploy that means re-extracting the site
+        and re-entering migrations underneath a run already in progress.
+
+        So the two halves are independent now, and the delete happens whether or not
+        the report did. Reporting failure costs the dispatching workflow a timeout
+        with no result: a false red on work that ran exactly once, recoverable by
+        reading a log. The behaviour it replaces is recoverable by nothing.
+
+        The proper fix is a claim marker -- move the object to processing/ before
+        running it, which is what the unused $ProcessingPrefix was reserved for.
+        That changes the contract shared with the enqueue and wait actions, so it is
+        deliberately not being done days before a production cutover.
+
+    .PARAMETER Attempts
+        Applied to each half separately. A failing report does not spend the
+        delete's attempts.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandObjectName,
+        [Parameter(Mandatory = $true)][string]$ResultObjectName,
+        [Parameter(Mandatory = $true)][string]$ResultJson,
+        [Parameter(Mandatory = $false)][int]$Attempts = 3,
+        [Parameter(Mandatory = $false)][int]$RetryDelaySeconds = 5
+    )
+
+    $writeError = Invoke-WithRetry -Attempts $Attempts -RetryDelaySeconds $RetryDelaySeconds -Action {
+        Write-GcsObjectText -ObjectName $ResultObjectName -Text $ResultJson
+    }
+
+    $removeError = Invoke-WithRetry -Attempts $Attempts -RetryDelaySeconds $RetryDelaySeconds -Action {
+        Remove-GcsObject -ObjectName $CommandObjectName
+    }
+
+    if ($writeError) {
+        Write-Warning ("Could not write the result object $ResultObjectName after $Attempts attempts: $writeError. " +
+            "The command has been retired regardless, so it ran exactly once; the workflow that dispatched it will " +
+            "time out waiting for a result that is never going to appear.")
+    }
+
+    if ($removeError) {
+        # The one outcome this function cannot fix, and the only one that is still
+        # getting worse while nobody is looking.
+        Write-Warning ("Could not delete $CommandObjectName after $Attempts attempts: $removeError. " +
+            "THIS COMMAND WILL RUN AGAIN on the next poll, once a minute, until the object is removed by hand.")
+    }
 }
 
 function Sync-DeploymentScripts {
@@ -523,7 +668,8 @@ foreach ($commandObject in $commands) {
         }
 
         $resultJson = $result | ConvertTo-Json -Depth 10
-        Write-GcsObjectText -ObjectName $resultObject -Text $resultJson
-        Remove-GcsObject -ObjectName $commandObject
+        Complete-QueuedCommand -CommandObjectName $commandObject `
+            -ResultObjectName $resultObject `
+            -ResultJson $resultJson
     }
 }
