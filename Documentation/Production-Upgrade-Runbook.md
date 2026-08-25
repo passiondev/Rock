@@ -218,7 +218,12 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    restores the backup, because by then it is thousands of characters up a log somebody is
    reading in a hurry.
 
-   **Read the timeline at the bottom, under `=== deploy timeline recovered from the box ===`.**
+   **The log is in the `Wait for the VM to report the result` step of the deploy job.** On a
+   successful deploy it prints there and nowhere else; on a failure it is also copied into the
+   job summary, so a green run needs the step opened by hand.
+
+   **Read the timeline at the bottom of it, under the marker
+   `=== deploy timeline recovered from the box ===`.**
    The steps appear twice and the second copy is the one to trust. Everything above it is what
    the agent captured from the deploy's background job, and that capture is not reliable: on the
    staging rehearsal of 2026-08-25 it stopped at "Stopping app pool" and lost the following
