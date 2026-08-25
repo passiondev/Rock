@@ -219,7 +219,8 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    twelve minutes, which is the entire window in which the site is offline. The deploy also
    writes each step to a file on the VM and the agent appends that file to the log, so the
    recovered section is complete even when the capture is not. If the two disagree about where
-   the deploy got to, the recovered section is right. Item 31 has the six causes that were ruled
+   the deploy got to, the recovered section is right. Item 31 in
+   `Documentation/Training/DevOps-Open-Items-Rock-CICD.md` has the six causes that were ruled
    out and why the stream still loses records.
 
 8. **Load the site and watch the migrations finish.** This is the request that runs them. The
