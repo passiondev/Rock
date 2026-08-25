@@ -197,10 +197,16 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    resolved, then the two guards:
    `Refuse a ref that is not on the production branch`
    and `Refuse a ref from a different Rock version`.
-   A dry run reports its plan and changes nothing.
+   A dry run reports its plan and changes nothing. Read the plan rather than just checking it
+   appeared: it prints the backup root, the site path, the preserved directories and files,
+   and the health check target. The site path is the one to check hardest. None of the three
+   `PRODUCTION_*` repo variables exists, so the deploy uses the fallback
+   `C:\inetpub\wwwroot`, and if production does not live there this is the step that says so
+   -- before a copy lands on the wrong directory.
 
-7. **Deploy.** Same dispatch with `apply` ticked. A second person approves the `production`
-   environment -- `Record approval` in the run is that gate. The VM-side script backs the site
+7. **Deploy.** Same dispatch with `apply` ticked. One of the two named reviewers approves
+   the `production` environment -- `Record approval` in the run is that gate. Self-review is
+   allowed, so it can be the same person who dispatched it. The VM-side script backs the site
    up to `C:\RockBackups\production\<utc>-<sha>` before it copies anything, stops the app pool,
    copies over the site preserving `Content`, `App_Data`, `Logs`, `Uploads` and
    `web.ConnectionStrings.config`, then starts the pool and polls until the site answers.
@@ -257,16 +263,20 @@ back out loud before running it.
 
 ## Left as a decision, not done
 
-- **`deployment_branch_policy` on the `production` environment.** The environment currently
-  accepts a deploy from any branch, and the branch guard inside the workflow is what refuses
-  the wrong ones. Restricting the environment to `productionBranch` would make GitHub refuse
-  it earlier, before an approver is paged. It also means the cutover has to update the policy
-  as well as the pin, which is one more thing to miss. Worth doing, and worth deciding rather
-  than inheriting.
-- **`prevent_self_review`.** Not enabled. One approval is required and any of the two named
-  reviewers can give it, including whoever started the run. Read the current list with
+- **`prevent_self_review`.** Not enabled, and that is the decision rather than an oversight.
+  One approval is required and either of the two named reviewers can give it, including
+  whoever started the run. The trade was made knowingly: requiring a genuine second pair of
+  eyes would mean a cutover waits on whoever is away from their desk, and a cutover is exactly
+  when that fails. So the gate stops an accident, not a bad decision -- worth being clear
+  about which of those you are relying on. Read the current list with
   `gh api repos/passiondev/Rock/environments/production --jq '.protection_rules'` rather than
   trusting a name written down here.
 
-Neither has been changed here. Both are live repository settings, and changing a live setting
-quietly is how a control ends up in place that nobody remembers agreeing to.
+It is a live repository setting, and changing a live setting quietly is how a control ends up
+in place that nobody remembers agreeing to.
+
+**Settled since this was written: `deployment_branch_policy`.** The environment used to accept
+a deploy from any branch, with the guard inside the workflow doing all the refusing. On
+2026-08-24 it was restricted to a single named branch, `passion-18.4.1`, so GitHub now refuses
+a wrong ref before an approver is paged. The cost is the one predicted here: the cutover has to
+move the policy as well as the pin. Step 2 carries that, because no test can see this setting.
