@@ -1934,6 +1934,52 @@ someone senior with no patience for a white screen.
 environment. Until it is fixed, the workaround is in the facilitator script and the handout:
 open the page a few minutes before you show it to anyone.
 
+### 30. `secrets.DB_NAME` names a catalog that no longer exists, and the error does not say so
+
+**Found 2026-08-24, rehearsing the command queue on staging.** Dispatching **DB - Find legacy
+text columns** with `db_name` left empty -- the documented way to scan the shared sandbox catalog
+-- came back:
+
+```
+Cannot open database "RockConnectProd" requested by the login. The login failed.
+Login failed for user 'sqlserver'.
+```
+
+That reads as a credential problem and is not one. SQL Server returns error 4060 with that exact
+wording when the login authenticates and the *requested database* cannot be opened, and the reason
+here is that it is not there:
+
+```
+$ gcloud sql databases list --instance=connect-restore-test --project=passioncitychurch-com
+master  tempdb  model  msdb  RockStaging20260824  RockStaging
+```
+
+`RockConnectProd` was the sandbox catalog every `pr-*` site shared. The fleet was pruned, the
+catalog went with it, and `secrets.DB_NAME` still points at the name.
+
+**Production cannot reach this.** `production-deploy.yml` passes `write_connection_string: false`,
+so CI never writes production's connection string, and it queues to `commands-prod`. Staging cannot
+reach it either: `staging-deploy.yml` passes `vars.STAGING_DB_NAME`, which is set to
+`RockStaging20260824`. What reaches it is anything that takes the fallback:
+
+| Path | How it gets there |
+|---|---|
+| `db-find-legacy-text-columns.yml` | `inputs.db_name \|\| secrets.DB_NAME`, and the runbook's own step 2 describes the empty case as scanning "the shared sandbox one" |
+| `pr-test-deploy.yml` | `vars.PR_TEST_DB_NAME \|\| secrets.DB_NAME`, and `PR_TEST_DB_NAME` is unset |
+| `env-deploy-command.yml` | any caller that passes no `db_name` |
+
+The fleet is pruned, so nothing is currently broken by it. What it costs is the next person who
+follows the runbook: step 2 of the cutover sequence is a legacy-column scan, and the way that step
+fails names a login rather than a missing database.
+
+Two fixes, and the second is the better one. Repoint `secrets.DB_NAME` at a catalog that exists, or
+delete the fallback so an empty `db_name` fails naming the input. A silent fallback onto a shared
+catalog is what stranded every environment mid-migration on 2026-08-18; keeping the shape while
+fixing the value leaves the shape.
+
+Either way the parenthetical in step 2 of `PR-Test-Environments-Operator-Runbook.md` needs to stop
+describing a catalog that is gone.
+
 ---
 
 ## Fixed since the last revision — recorded so nobody re-diagnoses these
@@ -2053,6 +2099,10 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     every one of which was originally found in production by symptom. Two steps stay human —
     reviewing each config-writing migration, and checking `Documentation/Fork-Local-Changes.md`
     survived the merge
+
+18. Item 30 — one value, either repointed or removed. It is not on the production path, but it is
+    the way step 2 of the cutover checklist fails today, and the failure names a login rather than
+    the missing database
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that
