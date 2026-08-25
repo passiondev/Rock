@@ -188,3 +188,39 @@ Describe 'Get-StepLogPath' {
         $first | Should -Not -Be $second
     }
 }
+
+Describe 'The dry run plan' {
+    BeforeAll {
+        $source = Get-Content -Path $script:DeployScript -Raw
+
+        # The dry-run block is the InPlace/-not $Apply guard up to its own `return`.
+        # Matched from the source rather than executed: it lives in the script's main
+        # body, not in a function, so there is nothing to import and call.
+        $script:DryRunBlock = [regex]::Match(
+            $source, '(?s)-not \$Apply\) \{(.*?)return').Groups[1].Value
+    }
+
+    It 'is where this test thinks it is' {
+        $script:DryRunBlock | Should -Not -BeNullOrEmpty
+        $script:DryRunBlock | Should -Match 'DRY RUN'
+    }
+
+    It 'writes every line of the plan through Write-DeployStep' {
+        # A dry run is step 6 of the production runbook -- the one that proves the
+        # agent is alive before anybody deploys. The operator reads its plan to
+        # confirm the backup root and the site path before ticking apply. Write-Host
+        # is exactly what the staging rehearsal proved can vanish between the job and
+        # the bucket, so the plan must not depend on it.
+        # Comments are excluded deliberately. -match is case-insensitive in
+        # PowerShell, so prose about "a dry run" in a comment reads as a plan line
+        # and the test fails on its own explanation.
+        $planLines = $script:DryRunBlock -split "`n" |
+            Where-Object { $_.TrimStart() -notlike '#*' } |
+            Where-Object { $_ -cmatch 'DRY RUN|Would ' }
+
+        $planLines.Count | Should -BeGreaterThan 4
+        foreach ($line in $planLines) {
+            $line | Should -Match 'Write-DeployStep'
+        }
+    }
+}

@@ -901,13 +901,20 @@ try {
     Write-DeployStep "Deploy started."
 
     if ($Mode -eq 'InPlace' -and -not $Apply) {
+        # Through Write-DeployStep rather than Write-Host, because this plan is the
+        # whole point of a dry run. It is step 6 of the production runbook -- the
+        # step that proves the agent is alive -- and the operator reads these lines
+        # to check the backup root and the site path before ticking apply. Write-Host
+        # is what the staging rehearsal proved can vanish on the way back to the
+        # bucket, and a dry run whose plan went missing has proved only half of what
+        # it was run for.
         Write-Host ""
-        Write-Host "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
-        Write-Host "Would back up $SitePath to $(Join-Path (Join-Path $BackupRoot $EnvironmentName) '<timestamp>')."
-        Write-Host "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
-        Write-Host "Would preserve directories: $($PreservedDirectories -join ', ')"
-        Write-Host "Would preserve files: $($PreservedFiles -join ', ')"
-        Write-Host "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
+        Write-DeployStep "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
+        Write-DeployStep "Would back up $SitePath to $(Join-Path (Join-Path $BackupRoot $EnvironmentName) '<timestamp>')."
+        Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
+        Write-DeployStep "Would preserve directories: $($PreservedDirectories -join ', ')"
+        Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
+        Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
         return
     }
 
