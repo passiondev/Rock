@@ -2035,18 +2035,23 @@ lines, through the app pool start, three health check attempts and `[+00:05:10] 
 that the capture lost arrived by file. That is the whole point of the workaround, and it is now
 measured rather than assumed.
 
-**The second run narrows the cause, in one direction only.** The two rehearsals stop at the same
-*statement*. The last line to survive is written at `Deploy-RockEnvironment.ps1:940`, and the next
-statement is `Stop-EnvironmentAppPool` at 941. Their total runtimes differ by a factor of three
-(15m24s against 5m10s), and nothing proportional to total duration can produce the same stopping
+**Reproduced a third time on 2026-08-25**, by the staging deploy of merge commit `3579032636`:
+capture truncated at `[+00:02:07] Stopping app pool`, recovered section complete through
+`[+00:04:57] Done.` Three deploys, three truncations, same statement every time, and the recovery
+held on both of the two that had it. The defect is deterministic and the workaround is not luck.
+
+**The second and third runs narrow the cause, in one direction only.** The rehearsals stop at
+the same *statement*. The last line to survive is written at `Deploy-RockEnvironment.ps1:940`,
+and the next statement is `Stop-EnvironmentAppPool` at 941. Their runtimes span a factor of three
+(15m24s, 5m10s, 4m57s), and nothing proportional to total duration can produce the same stopping
 point in both, so "the job ran too long" is out as a mechanism.
 
-It does **not** establish that the statement is the trigger. Both runs reached that statement at a
-similar elapsed time (2m38s and 2m16s), because the work in front of it is downloading and
-extracting an artifact of about the same size each time. Position and elapsed time are confounded in
-this pair, and separating them needs a rehearsal whose early steps take a markedly different length
-of time. Worth knowing before the next attempt, so it is designed to answer the question rather than
-to re-confirm the symptom.
+It does **not** establish that the statement is the trigger. All three runs reached it at a
+similar elapsed time (2m38s, 2m16s, 2m07s), because the work in front of it is downloading and
+extracting an artifact of about the same size each time. Position and elapsed time stay confounded
+across all three, and separating them needs a rehearsal whose early steps take a markedly different
+length of time. Worth knowing before the next attempt, so it is designed to answer the question
+rather than to re-confirm the symptom.
 
 One suspect is gone regardless: `Import-Module WebAdministration` runs at line 225, minutes before
 the truncation, so a first-time module load inside the job is not what breaks the stream.
