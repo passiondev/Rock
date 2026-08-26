@@ -356,6 +356,15 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    20. The deploy log carries the other side of it -- one
    `Keeping this site's own copies of N theme override file(s)` line, where N is 8.
 
+   **What is in them is worth knowing, because "theme override" undersells it.**
+   `Themes/Rock/Styles/_css-overrides.less` holds `@enable-legacy-badges: true`, the
+   profile-image crop rule `.fluid-crop .img-profile { object-fit: contain; }`, a
+   `.checkbox-inline` display rule that every form in the site lays out against, and an
+   `overflow-y` fix for the side navigation. `Themes/Stark/Styles/_variable-overrides.less`
+   is what sets `@fa-edition: 'pro'` for the external site, so it decides whether the login
+   page gets Pro icons at all. A zero from any of these is functional breakage on
+   production, not a colour that looks slightly off.
+
 10. **Check the performance settings landed.** This deploy is the first one that configures
    the app pool and turns ASP.NET debug mode off on production. Both were measured as
    missing on 2026-08-26 and neither has ever been set on that box, so neither can be
