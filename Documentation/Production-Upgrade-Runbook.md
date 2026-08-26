@@ -250,7 +250,8 @@ Each step says what proves it worked. A step with no evidence behind it has not 
 
 8. **Load the site and watch the migrations finish.** This is the request that runs them. The
    deploy's health check waits several minutes for exactly this reason, so a slow first load is
-   expected rather than a symptom. Migrations are irreversible; if something is wrong, this is
+   expected rather than a symptom. From this deploy on, IIS preload may get there first and run
+   the migrations before anyone browses to the site; that changes who waits, not how long. Migrations are irreversible; if something is wrong, this is
    the last moment it is cheap to find out.
 
    **Failed health check attempts in the log are normal here.** Both staging deploys of
@@ -261,6 +262,40 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    wait. The probe has a 900 second window and recycles the app pool after 240 seconds of
    failures, because a faulted app domain caches its own startup exception and can never
    recover by retrying alone. Only the window expiring is a failure.
+
+9. **Check the performance settings landed.** This deploy is the first one that configures
+   the app pool and turns ASP.NET debug mode off on production. Both were measured as
+   missing on 2026-08-26 and neither has ever been set on that box, so neither can be
+   assumed.
+
+   **In the deploy timeline,** two lines that did not exist before:
+
+   ```
+   Wrote web.config with compilation debug=false and executionTimeout=600.
+   Holding <pool> resident: no idle timeout, AlwaysRunning, 5 minute startup limit, recycle at 04:00. Preloading site <site>.
+   ```
+
+   A `Could not enable preload` warning beside the second line is not a failed deploy. It
+   means the Application Initialization role feature is missing, and the site starts cold
+   after a recycle instead of warm. Everything else still applied.
+
+   **Off the box, read-only,** the debug setting has a fingerprint that needs no login.
+   ASP.NET serves the debug build of MicrosoftAjax when `debug="true"`:
+
+   ```bash
+   resource=$(curl -s -L https://connect.passion.team/ \
+     | grep -o 'ScriptResource\.axd[^"]*' | head -1 | sed 's/&amp;/\&/g')
+   curl -s "https://connect.passion.team/${resource}" | wc -c
+   ```
+
+   Measured at **319,867 bytes** on 2026-08-26, over 7,181 lines, averaging 43.5 characters
+   per line with 758 comment markers in it. After the deploy it should be roughly 100,000
+   bytes on a handful of lines. A number still near 320,000 means the setting did not take.
+
+   **Then leave the site alone for half an hour and load it again.** The whole point of the
+   pool settings is that the second visit of the morning costs what the first one did.
+   Staging measured 16.07s cold against 0.25s warm before this change. A slow load after
+   thirty idle minutes means `idleTimeout` did not apply.
 
 ## User-visible changes that arrive with v19
 

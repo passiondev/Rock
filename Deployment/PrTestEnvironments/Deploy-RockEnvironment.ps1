@@ -554,21 +554,16 @@ function Ensure-AppPool {
         Create the app pool if it is missing, and hold it at Rock's production settings.
 
     .DESCRIPTION
-        Until 2026-08-26 this set the runtime version and the identity and left
-        everything else at the IIS defaults. Those defaults are tuned for a shared
-        host running many small sites. Rock is the opposite shape: one application
-        that spends a minute and a half rebuilding its caches before it can answer
-        the first request, and then answers in a quarter of a second.
+        Creation and identity only. The settings that keep the site warm live in
+        Set-WarmSiteSettings, because production reaches those and does not reach
+        this: an InPlace deploy updates a site somebody else built and must not
+        restate its identity.
 
-        Staging measured 16.07s for a first request and 0.25s for the next one on
-        2026-08-26. Nothing about the machine changed between those two numbers.
-        IIS had shut the worker process down twenty minutes earlier and the first
-        visitor paid for the restart.
-
-        This function is the staging and production pool only. Deploy-PrEnvironment.ps1
-        carries its own Ensure-AppPool for the PR fleet and is deliberately left
-        alone -- idleTimeout of zero across a dozen PR pools would hold every one of
-        them resident on a 32GB box that hosts them all at once.
+        Deploy-PrEnvironment.ps1 carries its own Ensure-AppPool for the PR fleet
+        and is deliberately left alone. It gets no warm settings either --
+        idleTimeout of zero across a dozen PR pools would hold every one of them
+        resident on the 32GB box that hosts them all at once, which is not the
+        trade one staging pool is.
 
     .PARAMETER Name
         The application pool to create or reconfigure.
@@ -580,28 +575,72 @@ function Ensure-AppPool {
     }
     Set-ItemProperty "IIS:\AppPools\$Name" -Name managedRuntimeVersion -Value "v4.0"
     Set-ItemProperty "IIS:\AppPools\$Name" -Name processModel.identityType -Value "ApplicationPoolIdentity"
+}
+
+function Set-WarmSiteSettings {
+    <#
+    .SYNOPSIS
+        Stop IIS from putting the site to sleep, and have it start Rock unprompted.
+
+    .DESCRIPTION
+        Until 2026-08-26 the deploy set an app pool's runtime version and identity
+        and left every other IIS default standing. Those defaults suit a shared host
+        running many small sites. Rock is the opposite shape: one application that
+        spends a minute and a half rebuilding its caches before it can answer, and
+        then answers in a quarter of a second.
+
+        Staging measured 16.07s for a first request and 0.25s for the next one that
+        day. Nothing about the machine changed between those two numbers. IIS had
+        ended the worker process after twenty idle minutes and the first visitor
+        paid for a whole Rock start.
+
+        Separate from Ensure-AppPool because production reaches this and does not
+        reach that. An InPlace deploy updates a site somebody else built, so it has
+        no business restating that site's identity or rebinding it -- but the pool
+        can still be told not to sleep. Splitting the two is what lets the warm
+        settings apply in both modes.
+
+        Every property here is written every deploy rather than checked first. The
+        settings are the deploy's to own, and a pool somebody adjusted by hand in
+        the IIS console should come back to this on the next run.
+
+    .PARAMETER AppPoolName
+        The pool to hold resident. Must already exist.
+
+    .PARAMETER SiteName
+        The site to preload. Optional: pass nothing to configure the pool alone.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$AppPoolName,
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$SiteName = ''
+    )
+
+    if (!(Test-Path "IIS:\AppPools\$AppPoolName")) {
+        Write-Warning "No app pool named '$AppPoolName', so it was left unconfigured. The site will start cold after every idle period."
+        return
+    }
 
     # idleTimeout defaults to 20 minutes: no requests for twenty minutes and IIS
     # ends the worker process, so the next person through the door pays a full Rock
     # start. On a staff intranet that is every morning and most lunchtimes.
-    Set-ItemProperty "IIS:\AppPools\$Name" -Name processModel.idleTimeout -Value ([TimeSpan]::Zero)
+    Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name processModel.idleTimeout -Value ([TimeSpan]::Zero)
 
     # With no idle shutdown, something still has to start the pool after a reboot
     # or a recycle. AlwaysRunning has WAS start it immediately instead of leaving
     # the cost for whoever browses to the site first.
-    Set-ItemProperty "IIS:\AppPools\$Name" -Name startMode -Value "AlwaysRunning"
+    Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name startMode -Value "AlwaysRunning"
 
     # startupTimeLimit defaults to 90 seconds and a cold Rock start was measured at
     # 95-107s. Left at the default, IIS can end the very startup AlwaysRunning just
     # asked for, and it reports that as a process that failed to start rather than
     # as a timeout.
-    Set-ItemProperty "IIS:\AppPools\$Name" -Name processModel.startupTimeLimit -Value ([TimeSpan]::FromMinutes(5))
+    Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name processModel.startupTimeLimit -Value ([TimeSpan]::FromMinutes(5))
 
     # The stock recycle is a rolling 29-hour timer counted from the last start, so
     # the daily restart walks around the clock and eventually lands in the middle of
     # a Sunday service. Zero turns the rolling timer off; the schedule below puts a
     # fixed time in its place.
-    Set-ItemProperty "IIS:\AppPools\$Name" -Name recycling.periodicRestart.time -Value ([TimeSpan]::Zero)
+    Set-ItemProperty "IIS:\AppPools\$AppPoolName" -Name recycling.periodicRestart.time -Value ([TimeSpan]::Zero)
 
     # 04:00 and not 03:00, because Rock warns that a restart inside the hour
     # daylight saving repeats can run a scheduled job twice.
@@ -609,8 +648,27 @@ function Ensure-AppPool {
     # Cleared first because this is a collection and not a value. New-ItemProperty
     # appends, so without the clear every deploy would add another 04:00 entry --
     # harmless to IIS, and baffling to whoever opens Advanced Settings next.
-    Clear-ItemProperty "IIS:\AppPools\$Name" -Name recycling.periodicRestart.schedule
-    New-ItemProperty "IIS:\AppPools\$Name" -Name recycling.periodicRestart.schedule -Value @{ value = "04:00:00" } | Out-Null
+    Clear-ItemProperty "IIS:\AppPools\$AppPoolName" -Name recycling.periodicRestart.schedule
+    New-ItemProperty "IIS:\AppPools\$AppPoolName" -Name recycling.periodicRestart.schedule -Value @{ value = "04:00:00" } | Out-Null
+
+    if ([string]::IsNullOrWhiteSpace($SiteName)) {
+        return
+    }
+
+    # AlwaysRunning starts the worker process. It does not start Rock. The process
+    # comes up idle and the application stays cold until a request arrives, so
+    # preload is the half that matters: IIS sends the site a request of its own and
+    # Rock runs Application_Start with nobody waiting on it.
+    #
+    # Wrapped because preloadEnabled needs the Application Initialization role
+    # feature, which is installed on both Rock boxes today. A rebuilt VM that came
+    # up without it should serve a slow first request, not fail the deploy.
+    try {
+        Set-ItemProperty "IIS:\Sites\$SiteName" -Name applicationDefaults.preloadEnabled -Value $true
+    }
+    catch {
+        Write-Warning "Could not enable preload on $SiteName, so the site will start cold on the first request after a recycle: $($_.Exception.Message)"
+    }
 }
 
 function Get-EnvironmentCertificateThumbprint {
@@ -670,21 +728,6 @@ function Ensure-Website {
     else {
         Set-ItemProperty "IIS:\Sites\$Name" -Name physicalPath -Value $PhysicalPath
         Set-ItemProperty "IIS:\Sites\$Name" -Name applicationPool -Value $PoolName
-    }
-
-    # AlwaysRunning on the pool starts the worker process. It does not start Rock.
-    # The process comes up idle and the application is still cold until a request
-    # arrives, so preload is the half that matters: IIS sends the site a request of
-    # its own and Rock runs Application_Start with nobody waiting on it.
-    #
-    # Wrapped because preloadEnabled needs the Application Initialization role
-    # feature, which is installed on both Rock boxes today. A rebuilt VM that came
-    # up without it should serve a slow first request, not fail the deploy.
-    try {
-        Set-ItemProperty "IIS:\Sites\$Name" -Name applicationDefaults.preloadEnabled -Value $true
-    }
-    catch {
-        Write-Warning "Could not enable preload on $Name, so the site will start cold on the first request after a recycle: $($_.Exception.Message)"
     }
 
     $httpBinding = Get-WebBinding -Name $Name -Protocol http -ErrorAction SilentlyContinue |
@@ -859,6 +902,7 @@ function Write-RuntimeConfiguration {
         $webConfig = $webConfig -replace '(<attributeValue\s+attributeKey="PublicApplicationRoot"[^>]*value=")"', "`${1}$PublicRoot`""
         $webConfig = Set-ProductionCompilationSettings -WebConfig $webConfig
         $webConfig | Out-File -FilePath $webConfigPath -Encoding UTF8 -Force
+        Write-DeployStep "Wrote web.config with compilation debug=false and executionTimeout=600."
     }
 }
 
@@ -1057,6 +1101,8 @@ try {
         Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
         Write-DeployStep "Would preserve directories: $($PreservedDirectories -join ', ')"
         Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
+        Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
+        Write-DeployStep "Would set compilation debug=false and executionTimeout=600 in the deployed web.config."
         Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
         return
     }
@@ -1234,6 +1280,16 @@ try {
         deployedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     }
     $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $ManifestPath -Encoding UTF8 -Force
+
+    # Both modes, and after the copy rather than before it: an InPlace deploy
+    # robocopies over a site it did not create, so this is the only point in a
+    # production run where the pool is the deploy's to configure.
+    #
+    # Logged because the production runbook's rule is that a step with no evidence
+    # behind it has not been done, and these settings leave no other trace an
+    # operator can read from off the box.
+    Write-DeployStep "Holding $AppPoolName resident: no idle timeout, AlwaysRunning, 5 minute startup limit, recycle at 04:00. Preloading site $SiteName."
+    Set-WarmSiteSettings -AppPoolName $AppPoolName -SiteName $SiteName
 
     Write-DeployStep "Starting app pool $AppPoolName and site $SiteName."
     if (Test-Path "IIS:\AppPools\$AppPoolName") { Start-WebAppPool -Name $AppPoolName -ErrorAction Continue }
