@@ -121,10 +121,18 @@ jobs:
       # that flips those pins moves this too. Failure is tolerated on purpose -- a fork,
       # or the window after an old trunk is finally deleted, should skip those tests
       # rather than fail the whole suite.
+      #
+      # previousProductionBranch is on this list because the two pins above stop
+      # disagreeing the moment production cuts over, and the diff tests still need the
+      # trunk on the *old* side of the cutover they examine. When v19 shipped, both pins
+      # became passion-19.3.4, this loop stopped fetching passion-18.4.1, and both
+      # real-cutover classes failed in setUpClass -- the branch still existed on origin,
+      # nothing was fetching it. Retiring an old trunk therefore means clearing this key,
+      # not just repointing the other two.
       - name: Fetch both trunks for the upgrade-diff tests
         continue-on-error: true
         run: |
-          branches=$(python3 -c "import json; c = json.load(open('.github/pr-test-environments.json')); print('\n'.join(c[k] for k in ('baseBranch', 'productionBranch') if c.get(k)))")
+          branches=$(python3 -c "import json; c = json.load(open('.github/pr-test-environments.json')); print('\n'.join(c[k] for k in ('baseBranch', 'productionBranch', 'previousProductionBranch') if c.get(k)))")
           for branch in $branches; do
             git fetch --depth=1 origin "$branch:refs/remotes/origin/$branch" || true
           done

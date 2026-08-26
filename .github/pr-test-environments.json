@@ -1,5 +1,6 @@
 {
   "baseBranch": "passion-19.3.4",
   "productionBranch": "passion-19.3.4",
+  "previousProductionBranch": "passion-18.4.1",
   "environmentDomain": "staging.connect.passion.team"
 }

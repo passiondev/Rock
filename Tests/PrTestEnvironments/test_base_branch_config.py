@@ -44,6 +44,19 @@ EXPECTED_ENVIRONMENT_DOMAIN = "staging.connect.passion.team"
 # drift unnoticed. At production cutover, set this to EXPECTED_BASE_BRANCH's value.
 EXPECTED_PRODUCTION_BRANCH = "passion-19.3.4"
 
+# The trunk on the *old* side of the cutover that test_upgrade_diff.py examines. It is
+# not a deploy pin -- nothing deploys from it any more -- but CI still has to fetch it,
+# because those tests diff the real 18.4.1 -> 19.3.4 pair and assert on the incident
+# that diff found.
+#
+# It earns a pin of its own because the two constants above stop disagreeing at
+# cutover. Before v19 shipped, productionBranch was passion-18.4.1 and the fetch loop in
+# deployment-pipeline-tests.yml picked the old trunk up for free. Repointing production
+# to v19 took the last reference to 18.4.1 out of the config, the loop stopped fetching
+# it, and both real-cutover classes died in setUpClass against a branch that was still
+# sitting on origin. Retiring an old trunk means clearing this key on purpose.
+EXPECTED_PREVIOUS_PRODUCTION_BRANCH = "passion-18.4.1"
+
 
 class BaseBranchConfigTests(unittest.TestCase):
     def test_pr_test_environment_base_branch_is_configured_for_current_rock_pin(self):
@@ -282,6 +295,41 @@ class BaseBranchCutoverPinTests(unittest.TestCase):
             [],
             f"these pins disagree with EXPECTED_PRODUCTION_BRANCH ({EXPECTED_PRODUCTION_BRANCH}): "
             + "; ".join(drifted),
+        )
+
+    def test_ci_fetches_the_old_trunk_the_upgrade_diff_tests_diff_against(self):
+        """test_upgrade_diff.py names origin/passion-18.4.1 directly, and a name in a
+        test file cannot make CI fetch anything. The fetch step reads the config, so the
+        config has to carry the old trunk or those tests fail in setUpClass on a branch
+        that exists perfectly well on origin.
+
+        Both ends are asserted here because either one alone is satisfiable while the
+        suite stays broken: a config key nothing reads, or a fetch loop naming a key that
+        is absent.
+        """
+        config = json.loads(CONFIG_PATH.read_text())
+        self.assertEqual(
+            config.get("previousProductionBranch"),
+            EXPECTED_PREVIOUS_PRODUCTION_BRANCH,
+            "the config must name the old trunk so the upgrade-diff fetch step can "
+            "fetch it",
+        )
+
+        workflow = PIPELINE_TESTS_WORKFLOW.read_text()
+        self.assertIn(
+            "previousProductionBranch",
+            workflow,
+            "deployment-pipeline-tests.yml must fetch previousProductionBranch, or the "
+            "config key is decoration",
+        )
+
+        upgrade_diff_tests = pathlib.Path(__file__).with_name("test_upgrade_diff.py").read_text()
+        self.assertIn(
+            f"origin/{EXPECTED_PREVIOUS_PRODUCTION_BRANCH}",
+            upgrade_diff_tests,
+            "test_upgrade_diff.py no longer diffs against "
+            f"{EXPECTED_PREVIOUS_PRODUCTION_BRANCH} -- if the cutover pair moved, move "
+            "EXPECTED_PREVIOUS_PRODUCTION_BRANCH and the config with it",
         )
 
     def test_no_workflow_pins_a_trunk_branch_the_cutover_list_does_not_cover(self):
