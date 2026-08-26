@@ -5,17 +5,16 @@
 
 .DESCRIPTION
     Written for PublicApplicationRoot, which the deploy cannot set. Both
-    Deploy-RockEnvironment.ps1 and Set-PrEnvironmentRuntimeConfiguration.ps1 try to
-    rewrite it in web.config:
+    Deploy-RockEnvironment.ps1 and Set-PrEnvironmentRuntimeConfiguration.ps1 used to
+    rewrite it in web.config, matching an element that does not exist there -- 0
+    occurrences -- so both were no-ops for the life of the pipeline. Those lines are
+    gone now; see the comments left in their place.
 
-        $webConfig -replace '(<attributeValue\s+attributeKey="PublicApplicationRoot"[^>]*value=")"', ...
-
-    That element does not exist in RockWeb/web.config -- measured 0 occurrences --
-    so both replacements are no-ops and always have been. Rock reads the value from
-    the database, so the database is where it has to change. The host rename to
-    staging.connect.passion.team is the first time that has mattered: the value is
-    what Rock puts in generated links and emails, so a stale one sends people to
-    the old name from inside a correctly-renamed site.
+    Rock reads the value through GlobalAttributesCache, from the database, so
+    web.config was never where it lived. The host rename to
+    staging.connect.passion.team is the first time that mattered: the value is what
+    Rock puts in generated links and emails, so a stale one sends people to the old
+    name from inside a correctly-renamed site.
 
     Follows Convert-LegacyTextColumns.ps1: it has no discovery mode, it is told
     which attribute to change, and it addresses the write by the explicit row Id it

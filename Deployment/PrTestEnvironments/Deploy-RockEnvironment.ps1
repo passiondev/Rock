@@ -864,7 +864,6 @@ function Set-ProductionCompilationSettings {
 function Write-RuntimeConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$PublicRoot,
         [Parameter(Mandatory = $false)][AllowEmptyString()][string]$Connection
     )
 
@@ -899,7 +898,15 @@ function Write-RuntimeConfiguration {
     $webConfigPath = Join-Path $Path "web.config"
     if (Test-Path $webConfigPath) {
         $webConfig = Get-Content $webConfigPath -Raw
-        $webConfig = $webConfig -replace '(<attributeValue\s+attributeKey="PublicApplicationRoot"[^>]*value=")"', "`${1}$PublicRoot`""
+        # PublicApplicationRoot is deliberately not set here. A replace against an
+        # <attributeValue attributeKey="PublicApplicationRoot"> element used to sit on
+        # this line; that element does not exist in RockWeb/web.config -- 0 occurrences
+        # -- so it matched nothing on every deploy this pipeline has ever run.
+        #
+        # It is a Rock global attribute, read through GlobalAttributesCache and stored
+        # in the database, so web.config was never where it lived. Set it with
+        # Deployment/Database/Set-RockGlobalAttributeValue.ps1, or in Admin Tools >
+        # General Settings > Global Attributes.
         $webConfig = Set-ProductionCompilationSettings -WebConfig $webConfig
         $webConfig | Out-File -FilePath $webConfigPath -Encoding UTF8 -Force
         Write-DeployStep "Wrote web.config with compilation debug=false and executionTimeout=600."
@@ -1218,7 +1225,7 @@ try {
         # that site's own bin/obj along with it.
         Remove-PluginBuildArtifacts -Path $SitePath
 
-        Write-RuntimeConfiguration -Path $SitePath -PublicRoot "https://$HostName" -Connection $ConnectionString
+        Write-RuntimeConfiguration -Path $SitePath -Connection $ConnectionString
         Ensure-AppPool -Name $AppPoolName
         Ensure-Website -Name $SiteName -PhysicalPath $SitePath -HostHeader $HostName -PoolName $AppPoolName -Thumbprint $CertificateThumbprint
     }
@@ -1262,7 +1269,7 @@ try {
         }
 
         Write-DeployStep "Copy complete."
-        Write-RuntimeConfiguration -Path $SitePath -PublicRoot "https://$HostName" -Connection $ConnectionString
+        Write-RuntimeConfiguration -Path $SitePath -Connection $ConnectionString
         Ensure-Directory -Path (Split-Path -Parent $ManifestPath)
     }
 

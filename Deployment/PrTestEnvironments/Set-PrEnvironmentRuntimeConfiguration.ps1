@@ -50,13 +50,17 @@ $connectionStringConfig = @"
 "@
 $connectionStringConfig | Out-File -FilePath (Join-Path $SitePath "web.ConnectionStrings.config") -Encoding UTF8 -Force
 
-$webConfigPath = Join-Path $SitePath "web.config"
-if (Test-Path $webConfigPath) {
-    $publicRoot = "https://pr-$PrNumber.staging.connect.passion.team"
-    $webConfig = Get-Content $webConfigPath -Raw
-    $webConfig = $webConfig -replace '(<attributeValue\s+attributeKey="PublicApplicationRoot"[^>]*value=")"', "`${1}$publicRoot`""
-    $webConfig | Out-File -FilePath $webConfigPath -Encoding UTF8 -Force
-}
+# No web.config rewrite for PublicApplicationRoot. This block used to read
+# web.config, replace an <attributeValue attributeKey="PublicApplicationRoot">
+# element, and write the file back. That element does not exist in
+# RockWeb/web.config, so the replace matched nothing and the block's only real
+# effect was rewriting the file it had just read.
+#
+# The value is a Rock global attribute held in the database. Note that a PR
+# environment cannot have its own: the pr-* sites share one catalog by design,
+# and a global attribute is one row per catalog, so a single value cannot be
+# right for pr-1 and pr-2 at once. Per-environment public roots were what this
+# block was reaching for, and they are not reachable this way.
 
 # Production integration credentials are intentionally not deployed to PR environments.
 # The transform below overrides common outbound integration/app settings with inert values.
