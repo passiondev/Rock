@@ -1,0 +1,313 @@
+name: DB - Set theme customization
+
+# Runs Deployment/Database/Set-RockThemeCustomization.ps1 against a catalog, writing
+# a theme's brand colours and custom CSS into Theme.AdditionalSettingsJson.
+#
+# WHY THIS EXISTS
+#
+# The internal site's branding has two halves stored in two places. The .less half --
+# Themes/Rock/Styles/_variable-overrides.less and its RockManager twin -- is committed
+# and ships in every artifact. The other half lives in one database column, per
+# catalog, and no deploy reproduces it. It was typed into Admin Tools > CMS
+# Configuration > Themes by hand, so it exists wherever somebody typed it and nowhere
+# else. This workflow is the reproducible form of that hand edit.
+#
+# It matters for the v19 cutover specifically. The v19 migration
+# 202508051740308_Rollup_20250805 repoints SystemGuid.Site.SITE_ROCK_INTERNAL at the
+# RockNextGen theme unconditionally, so on the day production upgrades it starts
+# rendering from a theme row whose customization column is empty. Staging showed
+# exactly what that looks like: right fonts, right icons, stock Rock blue. Run this
+# against production's catalog after the migration and the blue comes back.
+#
+# Note the ordering that implies: the theme this addresses may not exist until the
+# deploy that runs just before it. A run against a catalog still on 18.x fails with
+# "No theme named RockNextGen", which is the correct answer rather than a fault.
+#
+# Why it goes through the deploy VM rather than connecting from this runner is the
+# reason db-find-legacy-text-columns.yml gives at length: the Cloud SQL instance is
+# Private Service Connect only (`ipv4Enabled: false`), so a GitHub-hosted runner has
+# no route to it, and Cloud SQL scopes a database to its owner, so a purpose-made
+# login gets error 916 rather than a way in. The VM is inside the VPC and is handed a
+# working connection string on every deploy.
+#
+# WHERE THIS SITS BETWEEN THE OTHER TWO DATABASE WORKFLOWS
+#
+# The finder reads and asks for nothing. The anonymizer writes over data that cannot
+# be recovered from inside the catalog, so it demands a catalog name twice and hides
+# the write behind an approval. This one writes one column on one row and generates a
+# rollback that restores the previous value byte for byte, so it takes the middle
+# position on purpose:
+#
+#   * db_name is required, with no fallback -- the same rule the anonymizer follows,
+#     for the same reason. The fallback elsewhere in this repository is the catalog
+#     the whole pr-* fleet shares, and reaching it because somebody tabbed past a
+#     field is not a thing this should be able to do.
+#   * expected_catalog is NOT required, unlike the anonymizer. That input exists
+#     there because the write is irreversible and the sandbox hosts a catalog named
+#     character for character like production's. Here the dry run names the theme and
+#     prints the before and after of every value, and the rollback is written before
+#     anything else happens, so a run aimed at the wrong catalog is visible and
+#     undoable rather than silent and permanent.
+#   * apply is still a separate job behind an environment approval, running after the
+#     dry run in the same run, so the approver reads the actual diff.
+#
+# THE CSS OVERRIDE BLOCK HAS NO BOX HERE, ON PURPOSE
+#
+# Set-RockThemeCustomization.ps1 takes -CustomOverrides and the queue command carries
+# a customOverrides field, so the whole path exists. What is missing is the dispatch
+# input, because every value on this form is concatenated into a JSON document by
+# string, and CSS is the one input that routinely contains a quote, a backslash and a
+# newline. A box that mangles three characters out of five is worse than no box. Set
+# that block from the VM, or from Admin Tools, and use this for the colours.
+#
+# NOTE ON THE APPROVAL GATE: it is only as strong as the `database-write`
+# environment's protection rules. An environment with no required reviewers is
+# created on first use and approves itself. Add a reviewer in repository settings,
+# or this gate is decorative.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      db_name:
+        description: >-
+          Catalog to write to. Required -- there is deliberately no fallback,
+          because the fallback elsewhere in this repository is the catalog shared
+          by every pr-* site.
+        required: true
+        type: string
+      theme_name:
+        description: >-
+          The Theme row's Name. RockNextGen is the internal site's theme from v19
+          onward. Matched exactly; a name matching no theme stops the run.
+        required: true
+        default: RockNextGen
+        type: string
+      variable_values:
+        description: >-
+          Theme variables as comma-separated name=value pairs, for example
+          base-primary=#00B8E4,link=#599AC2. Names are theme.json field keys, not
+          LESS variables. Only the names given are touched; every other variable
+          keeps its current value.
+        required: false
+        default: 'base-primary=#00B8E4'
+        type: string
+      apply:
+        description: >-
+          Write. Leave unchecked for a dry run that prints the before and after of
+          every value and touches nothing. Checking this adds a second job behind an
+          environment approval, which runs after the dry run below.
+        required: false
+        default: false
+        type: boolean
+      queue_name:
+        description: >-
+          Command queue to post to. The default is the queue the test VM's agent
+          polls; production installs its own agent against a different one, so this
+          exists to reach that VM rather than to be changed casually.
+        required: false
+        default: commands
+        type: string
+      poll_attempts:
+        description: >-
+          Ten-second polls to wait for a result. The default outlasts the agent's own
+          300s timeout on this command, so a stuck run comes back as the agent's
+          verdict rather than as a workflow timeout.
+        required: false
+        default: 60
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialised with itself. Two concurrent runs against one theme would race on the
+  # same column, and the loser's rollback would restore a value the winner had
+  # already replaced.
+  group: db-set-theme-customization
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Dry run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      COMMAND_ID: theme-plan-${{ github.run_id }}-${{ github.run_attempt }}
+      QUEUE_NAME: ${{ inputs.queue_name }}
+      THEME_NAME: ${{ inputs.theme_name }}
+      VARIABLE_VALUES: ${{ inputs.variable_values }}
+      DB_NAME: ${{ inputs.db_name }}
+      GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      # Built exactly as env-deploy-command.yml builds it, from the same secrets, so
+      # a catalog the deploy can write is a catalog this can write. No `||` fallback
+      # on the catalog, unlike the finder -- see the header.
+      CONNECTION_STRING: ${{ format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name, secrets.DB_USER, secrets.DB_PASSWORD) }}
+      # Through env: rather than interpolated into the step, for the reason
+      # db-find-legacy-text-columns.yml gives -- a value typed into a dispatch box
+      # should not be able to change the shape of the script that reads it, and the
+      # script here is the one holding a live connection string.
+      POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
+    steps:
+      - name: Check out the queue actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      # Beside the workflow rather than inline, so the Pester suite can run it. Both
+      # jobs call it: they are separate runners with no state between them, and the
+      # apply job is the one that writes.
+      - name: Validate the variable assignments
+        run: >-
+          ./.github/scripts/Test-ThemeCustomizationInput.ps1
+          -ThemeName "$env:THEME_NAME"
+          -VariableValues "$env:VARIABLE_VALUES"
+          -DbName "$env:DB_NAME"
+
+      # The connection string is redacted in the log, so this is the only place the
+      # run says which catalog it is aimed at. A diff attributed to the wrong catalog
+      # would read as production being branded on the strength of a write to staging.
+      - name: Report what will be written
+        run: |
+          "### Theme customization -- dry run" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Catalog | ``$env:DB_NAME`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Theme | ``$env:THEME_NAME`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Variables | ``$env:VARIABLE_VALUES`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Mode | dry run |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Queue the dry run
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: set-theme-customization
+          payload: |
+            {"themeName": "${{ inputs.theme_name }}", "variableValues": "${{ inputs.variable_values }}", "apply": false}
+          secret-value: ${{ env.CONNECTION_STRING }}
+
+      - name: Wait for the VM to report the plan
+        id: await
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: The dry run
+          attempts: ${{ env.POLL_ATTEMPTS }}
+          interval-seconds: '10'
+
+      # Whole, not a tail. The before-and-after lines ARE the output, and they are
+      # what the approver on the next job is being asked to approve.
+      - name: Put the plan in the job summary
+        if: always() && steps.await.outputs.log-path != ''
+        run: |
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+  apply:
+    name: Apply
+    needs: plan
+    if: inputs.apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The gate. It waits here with the dry run's diff already in the summary above,
+    # so the approver is deciding against the actual before-and-after values rather
+    # than against a description of them.
+    #
+    # Worth knowing: an environment with no required reviewers approves itself. This
+    # job declaring one is necessary and not sufficient.
+    environment:
+      name: database-write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      COMMAND_ID: theme-apply-${{ github.run_id }}-${{ github.run_attempt }}
+      QUEUE_NAME: ${{ inputs.queue_name }}
+      THEME_NAME: ${{ inputs.theme_name }}
+      VARIABLE_VALUES: ${{ inputs.variable_values }}
+      DB_NAME: ${{ inputs.db_name }}
+      GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      CONNECTION_STRING: ${{ format('Data Source={0};Initial Catalog={1};User Id={2};password={3};MultipleActiveResultSets=true;Encrypt=true;TrustServerCertificate=true;Connection Timeout=30;', secrets.PR_TEST_DB_DATA_SOURCE || secrets.CLOUD_SQL_CONNECTION_NAME, inputs.db_name, secrets.DB_USER, secrets.DB_PASSWORD) }}
+      POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
+    steps:
+      - name: Check out the queue actions
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      # Beside the workflow rather than inline, so the Pester suite can run it. Both
+      # jobs call it: they are separate runners with no state between them, and the
+      # apply job is the one that writes.
+      - name: Validate the variable assignments
+        run: >-
+          ./.github/scripts/Test-ThemeCustomizationInput.ps1
+          -ThemeName "$env:THEME_NAME"
+          -VariableValues "$env:VARIABLE_VALUES"
+          -DbName "$env:DB_NAME"
+
+      - name: Record what is being written
+        run: |
+          "### Theme customization -- apply" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Catalog | ``$env:DB_NAME`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Theme | ``$env:THEME_NAME`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Variables | ``$env:VARIABLE_VALUES`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Approved by | ${{ github.actor }} |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "| Rollback | the .sql the script writes on the VM, before the write |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Queue the apply
+        uses: ./.github/actions/queue-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          command: set-theme-customization
+          payload: |
+            {"themeName": "${{ inputs.theme_name }}", "variableValues": "${{ inputs.variable_values }}", "apply": true}
+          secret-value: ${{ env.CONNECTION_STRING }}
+
+      - name: Wait for the VM to report the write
+        id: await
+        uses: ./.github/actions/await-vm-command
+        with:
+          bucket: ${{ env.GCS_BUCKET }}
+          queue-name: ${{ env.QUEUE_NAME }}
+          command-id: ${{ env.COMMAND_ID }}
+          label: The write
+          attempts: ${{ env.POLL_ATTEMPTS }}
+          interval-seconds: '10'
+
+      - name: Put the result in the job summary
+        if: always() && steps.await.outputs.log-path != ''
+        run: |
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

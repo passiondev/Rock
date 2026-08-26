@@ -61,12 +61,14 @@ BUCKET_FALLBACK = re.compile(
     re.DOTALL,
 )
 
-# The ten workflows that open a Google Cloud session. Listed rather than counted
-# so that an eleventh workflow authenticating some other way is a failure here, not
-# a silently lower number.
+# Every workflow that opens a Google Cloud session. Listed rather than counted, so
+# that one more workflow authenticating some other way is a failure here rather than
+# a silently lower number. The prose deliberately does not say how many: it said
+# "ten" while the list held eleven, which is the failure mode a count invites.
 AUTHENTICATING_WORKFLOWS = [
     "db-anonymize-staging.yml",
     "db-find-legacy-text-columns.yml",
+    "db-set-theme-customization.yml",
     "env-deploy-command.yml",
     "pr-test-artifact.yml",
     "pr-test-bootstrap-command-queue.yml",

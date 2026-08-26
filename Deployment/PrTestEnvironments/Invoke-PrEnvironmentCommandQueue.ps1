@@ -522,6 +522,10 @@ $CommandTimeoutsSeconds = @{
     # failure invites someone to conclude the run did nothing and leave real
     # addresses in place.
     'anonymize-staging' = 3600
+    # One SELECT and one UPDATE against a table with a handful of rows. Short on
+    # purpose: nothing about this command can legitimately take minutes, so a run
+    # that hangs is a lock or a dead connection, and failing fast says so.
+    'set-theme-customization' = 300
 }
 $FallbackCommandTimeoutSeconds = 600
 
@@ -657,6 +661,60 @@ $CommandRunner = {
             }
 
             & (Join-Path $DeployRoot "Invoke-StagingAnonymization.ps1") @arguments
+        }
+        "set-theme-customization" {
+            # Writes a theme's brand colours and custom CSS into
+            # Theme.AdditionalSettingsJson. Here for the same reason the other two
+            # database commands are: the catalog is reachable from this VM and from
+            # nowhere else.
+            #
+            # This is the database half of the internal site's branding. The .less
+            # half ships in the artifact; this half is per-catalog, and the v19
+            # migration that repoints the internal site at RockNextGen creates the
+            # row with it empty. So the theme it addresses may not have existed
+            # until the deploy that ran just before this command.
+            #
+            # -Apply-gated like anonymize-staging, and for the same reason: the
+            # queued document is easier to hand-write than the script is to edit, so
+            # the arm forwards the gate rather than assuming the caller set it.
+            if (-not ($Command.PSObject.Properties.Name -contains 'connectionString')) {
+                throw "set-theme-customization requires a connectionString."
+            }
+            if (-not ($Command.PSObject.Properties.Name -contains 'themeName') -or
+                [string]::IsNullOrWhiteSpace([string]$Command.themeName)) {
+                throw "set-theme-customization requires a themeName."
+            }
+            $arguments = @{
+                ThemeName        = [string]$Command.themeName
+                ConnectionString = [string]$Command.connectionString
+            }
+            if (($Command.PSObject.Properties.Name -contains 'apply') -and $Command.apply) {
+                $arguments['Apply'] = $true
+            }
+            # Variable assignments arrive as one comma-separated string of name=value
+            # pairs, keeping the queued document a flat map of scalars like every
+            # other command here. A colour cannot contain a comma; the script rejects
+            # anything that is not name=value before it reaches a query.
+            if (($Command.PSObject.Properties.Name -contains 'variableValues') -and
+                ![string]::IsNullOrWhiteSpace([string]$Command.variableValues)) {
+                $variableAssignments = @(
+                    ([string]$Command.variableValues).Split(',') |
+                        ForEach-Object { $_.Trim() } |
+                        Where-Object { ![string]::IsNullOrWhiteSpace($_) }
+                )
+                if ($variableAssignments.Count -gt 0) {
+                    $arguments['VariableValues'] = $variableAssignments
+                }
+            }
+            # Presence, not emptiness, decides whether the override block is written:
+            # an empty string is how an operator clears it, and treating that as
+            # "absent" would make clearing impossible. Every other optional field
+            # here degrades on whitespace; this one must not.
+            if ($Command.PSObject.Properties.Name -contains 'customOverrides') {
+                $arguments['CustomOverrides'] = [string]$Command.customOverrides
+            }
+
+            & (Join-Path $DeployRoot "Set-RockThemeCustomization.ps1") @arguments
         }
         default { throw "Unknown command: $($Command.command)" }
     }

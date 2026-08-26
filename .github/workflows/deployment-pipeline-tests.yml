@@ -71,6 +71,22 @@ name: Deployment Pipeline Tests
       # version guard nobody tested.
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
+      # Three core files that Set-RockThemeCustomization.ps1 holds copies of, and
+      # test_theme_customization_command.py compares against. The script writes one
+      # JSON document into Theme.AdditionalSettingsJson, and two of the values in it
+      # are C# facts rather than choices: the key Rock reads the document under is
+      # the settings class's own name, and the two theme purposes that consume
+      # customization are the pair GetThemeCssContent gates on.
+      #
+      # Both drift silently. A renamed class means the script writes valid JSON to a
+      # property Rock never looks at; a changed purpose list means it stops warning
+      # that a write will render nothing. The run reports success either way, and the
+      # symptom is a production site that upgrades to stock Rock blue. Listed
+      # individually rather than as a tree, for the reason the comment above gives
+      # about RockWeb -- the suite reads three known files, not the core codebase.
+      - 'Rock/Cms/ThemeCustomizationSettings.cs'
+      - 'Rock/SystemGuid/DefinedValue.cs'
+      - 'Rock/Model/CMS/Theme/ThemeService.cs'
       # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
       - 'CONTEXT.md'
   # The path list is repeated rather than shared through a YAML anchor: PyYAML
@@ -96,6 +112,22 @@ name: Deployment Pipeline Tests
       - 'Rock.JavaScript.Obsidian.Blocks/**'
       - 'Rock.Version/AssemblySharedInfo.cs'
       - 'Directory.Build.props'
+      # Three core files that Set-RockThemeCustomization.ps1 holds copies of, and
+      # test_theme_customization_command.py compares against. The script writes one
+      # JSON document into Theme.AdditionalSettingsJson, and two of the values in it
+      # are C# facts rather than choices: the key Rock reads the document under is
+      # the settings class's own name, and the two theme purposes that consume
+      # customization are the pair GetThemeCssContent gates on.
+      #
+      # Both drift silently. A renamed class means the script writes valid JSON to a
+      # property Rock never looks at; a changed purpose list means it stops warning
+      # that a write will render nothing. The run reports success either way, and the
+      # symptom is a production site that upgrades to stock Rock blue. Listed
+      # individually rather than as a tree, for the reason the comment above gives
+      # about RockWeb -- the suite reads three known files, not the core codebase.
+      - 'Rock/Cms/ThemeCustomizationSettings.cs'
+      - 'Rock/SystemGuid/DefinedValue.cs'
+      - 'Rock/Model/CMS/Theme/ThemeService.cs'
       # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
       - 'CONTEXT.md'
   workflow_dispatch:
