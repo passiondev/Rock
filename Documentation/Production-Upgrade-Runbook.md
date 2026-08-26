@@ -265,11 +265,29 @@ Each step says what proves it worked. A step with no evidence behind it has not 
 
 9. **Put the branding back.** The upgrade takes it away, and nothing in the deploy puts
    it back. Migration `202508051740308_Rollup_20250805` repoints the internal site at the
-   `RockNextGen` theme unconditionally. Half the site's look is committed and rides in the
-   artifact -- `Themes/Rock/Styles/_variable-overrides.less` and its RockManager twin. The
-   other half is one column, `Theme.AdditionalSettingsJson`, and it is per-catalog, so no
-   deploy has ever carried it anywhere. On `RockNextGen` it is empty. Staging measured what
-   that looks like: correct fonts, correct icons, stock Rock blue.
+   `RockNextGen` theme unconditionally, and `RockNextGen` arrives unbranded.
+
+   A theme's look comes from two places, and only one of them is the problem here.
+
+   On disk it is two files per theme, `_variable-overrides.less` and `_css-overrides.less`,
+   which Rock's own Theme Styler writes. **The deploy preserves whatever the server already
+   has in these**, so nothing an administrator has ever set through Admin Tools is at risk
+   at cutover. That is worth knowing precisely because it used to be: measured against
+   production on 2026-08-26, eight of these files across five themes hold customization the
+   artifact does not carry, and before this was fixed the copy would have replaced all eight
+   with upstream's empty pair. `Themes/Rock/Styles/_variable-overrides.less` and the
+   RockManager pair are the exception -- someone copied those into the fork, so they match
+   either way.
+
+   `RockNextGen` gets none of that protection, and should not. The server has never had the
+   theme, so there is nothing of its own to preserve and its files come from the artifact
+   empty. That is deliberate: `theme.less` imports `_variable-overrides.less`
+   unconditionally, and a theme missing the file does not compile at all.
+
+   Which leaves the second place, one column: `Theme.AdditionalSettingsJson`. It is
+   per-catalog, so no deploy has ever carried it anywhere, and on `RockNextGen` it is empty.
+   Staging measured what that looks like: correct fonts, correct icons, stock Rock blue.
+   This step fills that column in.
 
    **This step has to come after step 8, and the reason is not the migration.**
    `ThemeService.UpdateThemes()` runs at application startup, scans `RockWeb/Themes` on
@@ -318,6 +336,25 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    The same workflow, pointed at staging's catalog, is how staging got its branding -- so
    this is a step that has been run before, not one being tried for the first time on
    production.
+
+   **Separately, confirm the deploy preserved the other themes' files.** This checks the
+   half of step 9 that is supposed to need no action, which is exactly the half that fails
+   quietly. Each of these is customized on production and empty in the artifact, so a zero
+   from any of them means the copy overwrote the server's file:
+
+   ```bash
+   for f in Rock/_css-overrides Stark/_variable-overrides Stark/_css-overrides \
+            LandingPage/_variable-overrides LandingPage/_css-overrides \
+            CheckinElectric/_variable-overrides CheckinElectric/_css-overrides \
+            DashboardStark/_variable-overrides; do
+     n=$(curl -s "https://connect.passion.team/Themes/${f%%/*}/Styles/${f##*/}.less" | wc -c)
+     printf '%-44s %s bytes\n' "$f" "$n"
+   done
+   ```
+
+   Measured on production 2026-08-26, in the same order: 310, 189, 207, 340, 131, 287, 272,
+   20. The deploy log carries the other side of it -- one
+   `Keeping this site's own copies of N theme override file(s)` line, where N is 8.
 
 10. **Check the performance settings landed.** This deploy is the first one that configures
    the app pool and turns ASP.NET debug mode off on production. Both were measured as
