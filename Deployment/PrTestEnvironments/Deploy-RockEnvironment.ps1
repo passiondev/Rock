@@ -1052,9 +1052,26 @@ function Sync-ServerOwnedAssets {
         # Free and Pro Font Awesome share every filename and differ only in size,
         # and a theme override file that arrived is a few hundred bytes where the
         # stock one it replaced is a few dozen.
-        $totalBytes = (Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue |
+        # Coalesced, because Measure-Object over nothing sums to $null rather than
+        # to 0 and the message then interpolates it as an empty string -- the line
+        # reads "restored from the base site ( bytes on disk)", which is the one
+        # shape an operator scanning for trouble will read straight past.
+        $measured = (Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue |
             Measure-Object -Property Length -Sum).Sum
-        Write-DeployStep "Server-owned $relativePath restored from the base site ($totalBytes bytes on disk)."
+        $totalBytes = if ($null -eq $measured) { 0 } else { $measured }
+
+        # Zero is reported as a warning rather than as a restore. robocopy can
+        # return a success code having moved nothing -- pointing it at a file as
+        # though it were a directory does exactly that -- so "it did not throw" is
+        # not evidence the file arrived, and this is the only line that would say
+        # otherwise.
+        if ($totalBytes -eq 0) {
+            Write-Warning "Server-owned $relativePath copied 0 bytes. The base site has the path but nothing arrived at the destination; check this before trusting the deploy."
+            Write-DeployStep "Server-owned $relativePath restored from the base site (0 bytes on disk -- see warning above)."
+        }
+        else {
+            Write-DeployStep "Server-owned $relativePath restored from the base site ($totalBytes bytes on disk)."
+        }
     }
 }
 

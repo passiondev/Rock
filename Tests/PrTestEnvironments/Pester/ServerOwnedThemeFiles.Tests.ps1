@@ -257,3 +257,108 @@ Describe 'Sync-ServerOwnedAssets with a path that names a file' {
         $script:RobocopyCalls | Should -HaveCount 0
     }
 }
+
+Describe 'Sync-ServerOwnedAssets byte reporting for a path that names a file' {
+
+    <#
+        The runbook tells an operator to read this line to confirm the restore
+        happened, so a line that says "0 bytes" for a file that arrived intact
+        would send them chasing a fault that is not there.
+
+        It reports with Get-ChildItem -Recurse -File against the destination path,
+        which was written when every path in the list was a directory. That it
+        also returns the item when handed a leaf is real PowerShell behaviour and
+        not an accident, but it is not obvious from reading the line, so it is
+        pinned here rather than left to be rediscovered.
+
+        The stub copies, unlike the one above. This test is about the number in
+        the message, and a stub that moved nothing could only ever report on what
+        the artifact had already put there.
+    #>
+
+    BeforeAll {
+        function robocopy {
+            # Mirror the real call shape: two directories, then a filename filter.
+            $from = $args[0]
+            $to = $args[1]
+            $leaf = $args | Select-Object -Skip 2 | Where-Object { $_ -notmatch '^/' } | Select-Object -First 1
+            if ($leaf) {
+                Copy-Item -Path (Join-Path $from $leaf) -Destination (Join-Path $to $leaf) -Force
+            }
+            $global:LASTEXITCODE = 1
+        }
+
+        function Write-DeployStep {
+            param([string]$Message)
+            $script:DeployMessages += $Message
+        }
+    }
+
+    BeforeEach {
+        $script:DeployMessages = @()
+
+        $script:Source = Join-Path $TestDrive 'reportbase'
+        $script:Destination = Join-Path $TestDrive 'reportnew'
+        foreach ($root in @($script:Source, $script:Destination)) {
+            if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+        }
+        New-Item -ItemType Directory -Path $script:Destination -Force | Out-Null
+    }
+
+    It 'reports the restored file''s own size, not zero' {
+        $sourceStyles = Join-Path $script:Source 'Themes/Rock/Styles'
+        New-Item -ItemType Directory -Path $sourceStyles -Force | Out-Null
+
+        # 310 bytes, which is what production's Rock/_css-overrides.less measured.
+        $body = 'x' * 310
+        Set-Content -Path (Join-Path $sourceStyles '_css-overrides.less') -Value $body -NoNewline
+
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @('Themes/Rock/Styles/_css-overrides.less')
+
+        $line = $script:DeployMessages | Where-Object { $_ -match '_css-overrides\.less restored' }
+        $line | Should -Not -BeNullOrEmpty
+        $line | Should -Match '\(310 bytes on disk\)'
+    }
+
+    It 'says zero rather than blank, and warns, when nothing arrived' {
+        # Measure-Object over an empty set sums to $null, so the uncoalesced line
+        # printed "( bytes on disk)". robocopy can report success having moved
+        # nothing, which is precisely when this line is the only evidence.
+        $sourceStyles = Join-Path $script:Source 'Themes/Rock/Styles'
+        New-Item -ItemType Directory -Path $sourceStyles -Force | Out-Null
+        Set-Content -Path (Join-Path $sourceStyles '_css-overrides.less') -Value ('x' * 310) -NoNewline
+
+        # Shadow the copying stub for this test only, so the copy is a no-op.
+        function robocopy { $global:LASTEXITCODE = 1 }
+
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @('Themes/Rock/Styles/_css-overrides.less') -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $line = $script:DeployMessages | Where-Object { $_ -match '_css-overrides\.less restored' }
+        $line | Should -Match '0 bytes on disk'
+        $line | Should -Not -Match '\(\s+bytes'
+        $warnings | Should -Not -BeNullOrEmpty
+        ($warnings -join ' ') | Should -Match 'copied 0 bytes'
+    }
+
+    It 'reports only the named file, not everything beside it in Styles' {
+        # The count comes from the destination path. If that were ever widened to
+        # the parent directory the number would silently become the whole theme's
+        # Styles folder, which reads as success no matter what arrived.
+        $sourceStyles = Join-Path $script:Source 'Themes/Rock/Styles'
+        New-Item -ItemType Directory -Path $sourceStyles -Force | Out-Null
+        Set-Content -Path (Join-Path $sourceStyles '_css-overrides.less') -Value ('x' * 310) -NoNewline
+
+        $destStyles = Join-Path $script:Destination 'Themes/Rock/Styles'
+        New-Item -ItemType Directory -Path $destStyles -Force | Out-Null
+        Set-Content -Path (Join-Path $destStyles 'theme.less') -Value ('y' * 9000) -NoNewline
+
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @('Themes/Rock/Styles/_css-overrides.less')
+
+        $line = $script:DeployMessages | Where-Object { $_ -match '_css-overrides\.less restored' }
+        $line | Should -Match '\(310 bytes on disk\)'
+        $line | Should -Not -Match '9310'
+    }
+}
