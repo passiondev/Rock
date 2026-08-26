@@ -258,6 +258,22 @@ if ($EnvironmentName -cnotmatch '^[a-z][a-z0-9-]{1,30}$') {
 # Directories the artifact must never overwrite or delete. Content and uploaded
 # files live only on the server -- they are user data, not build output. App_Data
 # holds the Rock cache and the migration lock. Logs are forensic evidence.
+#
+# This binds on the InPlace branch only, and the asymmetry is deliberate rather
+# than an oversight. InPlace copies the artifact over a live webroot, so it hands
+# this list to robocopy as /XD exclusions for both the backup and the copy and
+# the directories are never touched. DedicatedSite deletes $SitePath outright and
+# moves the extracted artifact into its place, so nothing named here survives a
+# staging or pr-* deploy. Only $PreservedFiles is carried across that replace, by
+# hand, through $preservedStash.
+#
+# What makes that acceptable is where the data actually lives. Every binary file
+# in this install is in S3 through the pillars storage provider, so Content and
+# Uploads on a dedicated site hold nothing the bucket does not also hold, and
+# App_Data is a cache Rock rebuilds at startup. Logs is the one with a real cost:
+# a staging deploy destroys the evidence of whatever went wrong on the previous
+# one, which matters when a deploy is being run to chase a fault rather than to
+# ship. Anyone who needs those logs must copy them off the box first.
 $PreservedDirectories = @('Content', 'App_Data', 'Logs', 'Uploads')
 
 # Files that are per-server configuration, not build output.
@@ -1230,7 +1246,15 @@ try {
         Write-DeployStep "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
         Write-DeployStep "Would back up $SitePath to $(Join-Path (Join-Path $BackupRoot $EnvironmentName) '<timestamp>')."
         Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
-        Write-DeployStep "Would preserve directories: $($PreservedDirectories -join ', ')"
+        # Mode-aware, because the two branches do opposite things with this list
+        # and a plan that promised preservation on a dedicated site would be
+        # telling the reviewer the reverse of what the apply run does.
+        if ($Mode -eq 'DedicatedSite') {
+            Write-DeployStep "Would replace $SitePath wholesale. These directories would NOT survive: $($PreservedDirectories -join ', ')"
+        }
+        else {
+            Write-DeployStep "Would preserve directories: $($PreservedDirectories -join ', ')"
+        }
         Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
         Write-DeployStep "Would leave server-owned paths untouched: $($ServerOwnedDirectories -join ', ')"
         Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."

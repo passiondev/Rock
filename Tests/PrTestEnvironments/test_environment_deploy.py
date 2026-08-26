@@ -51,6 +51,42 @@ def _block_body(lines, opener_index):
     raise AssertionError(f"unbalanced braces after line {opener_index + 1}")
 
 
+def _enclosing_opener(lines, index):
+    """Index of the line opening the innermost block containing lines[index].
+
+    Walks upwards counting braces, so the answer is the `if`/`else`/`foreach` the
+    line actually sits inside rather than the nearest one that happens to be
+    above it. Returns None when the line is at the top level of the script.
+    """
+    depth = 0
+    for candidate in range(index - 1, -1, -1):
+        line = lines[candidate]
+        depth += line.count("}") - line.count("{")
+        if depth < 0:
+            return candidate
+    return None
+
+
+def _chained_if(lines, opener):
+    """Index of the `if` that lines[opener] chains from, or opener itself.
+
+    `else {` carries no condition of its own, so a caller asking what a block
+    branches on has to follow the chain back to the `if` that opened it.
+    """
+    text = lines[opener].strip()
+    if not (text.startswith("else") or text.startswith("} else") or text.startswith("elseif")):
+        return opener
+
+    depth = 0
+    start = opener if text.startswith("}") else opener - 1
+    for candidate in range(start, -1, -1):
+        line = lines[candidate]
+        depth += line.count("}") - line.count("{")
+        if depth == 0 and "{" in line:
+            return _chained_if(lines, candidate)
+    raise AssertionError(f"could not find the `if` that line {opener + 1} chains from")
+
+
 class EnvironmentDeployScriptTests(unittest.TestCase):
     def test_script_supports_both_dedicated_site_and_in_place_modes(self):
         text = DEPLOY_SCRIPT.read_text()
@@ -443,6 +479,108 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         self.assertIn("'web.ConnectionStrings.config'", text)
         self.assertIn("$PreservedDirectories", text)
         self.assertIn("$PreservedFiles", text)
+
+    def test_the_preserved_directory_list_says_it_only_binds_in_place(self):
+        """The list reads like a promise the whole script keeps, and it is not.
+
+        InPlace hands it to robocopy as /XD exclusions and the directories survive.
+        DedicatedSite deletes $SitePath outright and moves the artifact in, so the
+        same four directories are destroyed on every staging and pr-* deploy. Only
+        $PreservedFiles crosses that replace, by hand.
+
+        The asymmetry is fine -- blobs are in S3 and App_Data is a rebuildable
+        cache -- but it has to be written down. Somebody reading the declaration and
+        no further will assume staging keeps its Logs, and reach for a deploy to
+        reproduce a fault that the deploy has already erased the evidence of.
+        """
+        text = DEPLOY_SCRIPT.read_text()
+        lines = text.splitlines()
+
+        declaration = next(
+            (index for index, line in enumerate(lines) if line.startswith("$PreservedDirectories = @(")),
+            None,
+        )
+        self.assertIsNotNone(declaration, "$PreservedDirectories is no longer declared at column 0")
+
+        # The comment block immediately above the declaration, walked upwards.
+        start = declaration
+        while start > 0 and lines[start - 1].startswith("#"):
+            start -= 1
+        comment = "\n".join(lines[start:declaration])
+
+        self.assertIn(
+            "DedicatedSite",
+            comment,
+            "the $PreservedDirectories comment never mentions the branch that ignores it",
+        )
+        self.assertIn(
+            "$PreservedFiles",
+            comment,
+            "the comment does not say which list does survive a DedicatedSite replace",
+        )
+        # "Logs" alone would be a vacuous check -- the first paragraph already says
+        # "Logs are forensic evidence" and said so before any of this was written.
+        # S3 is the claim that is actually load-bearing and actually new: it is the
+        # reason losing Content and Uploads on a dedicated site is survivable, and
+        # without it the paragraph is an unexplained assertion that this is fine.
+        self.assertIn(
+            "S3",
+            comment,
+            "the comment says the asymmetry is acceptable without saying why -- name where "
+            "the binary files actually live",
+        )
+
+    def test_the_dry_run_plan_does_not_promise_preservation_it_will_not_deliver(self):
+        """A dry run exists so a human can read the plan and decide. On DedicatedSite
+        the unconditional line "Would preserve directories: Content, App_Data, Logs,
+        Uploads" told that human the exact reverse of what the apply run does."""
+        text = DEPLOY_SCRIPT.read_text()
+        lines = text.splitlines()
+
+        # Each message and the one mode it is true for. Both directions are checked,
+        # because guarding the promise behind a branch and then putting it in the
+        # wrong arm is a plan that is not merely unhelpful but exactly backwards.
+        expected = {
+            "Would preserve directories:": "InPlace",
+            "would NOT survive": "DedicatedSite",
+        }
+
+        for message, mode in expected.items():
+            occurrences = [index for index, line in enumerate(lines) if message in line]
+            self.assertTrue(
+                occurrences,
+                f'the dry run no longer says "{message}" at all',
+            )
+            for index in occurrences:
+                # Walk out to the innermost block containing the line, follow any
+                # else back to its if, and read the mode off that condition. An
+                # unguarded line fails here because the first opener above it is
+                # the dry-run `if`, which does not branch on $Mode.
+                opener = _enclosing_opener(lines, index)
+                self.assertIsNotNone(
+                    opener,
+                    f'"{message}" at line {index + 1} sits at the top level of the script, '
+                    "where no branch can be guarding it",
+                )
+                condition_index = _chained_if(lines, opener)
+                condition = lines[condition_index]
+                match = re.search(r"\$Mode\s+-eq\s+'(\w+)'", condition)
+                self.assertIsNotNone(
+                    match,
+                    f'"{message}" at line {index + 1} is inside `{condition.strip()}`, which does '
+                    "not branch on $Mode -- so it is reported for both modes",
+                )
+                arm = match.group(1)
+                if opener != condition_index:
+                    # An else arm, so the line runs for the mode the condition rejects.
+                    # Two modes in the ValidateSet, so rejecting one selects the other.
+                    arm = "InPlace" if arm == "DedicatedSite" else "DedicatedSite"
+                self.assertEqual(
+                    arm,
+                    mode,
+                    f'"{message}" at line {index + 1} is reported for {arm}, and it is only true '
+                    f"for {mode}. The two arms of the dry-run plan are the wrong way round.",
+                )
 
     def test_production_connection_string_on_disk_is_left_alone_when_none_supplied(self):
         """CI has no production database credentials by design. With no connection
