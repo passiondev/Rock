@@ -971,6 +971,38 @@ function ConvertTo-NativePath {
     return $Path.Replace([char]'/', $Separator).Replace([char]'\', $Separator)
 }
 
+function Resolve-SharedAssetSource {
+    <#
+    .SYNOPSIS
+        The site the shared-asset overlay and the server-owned restore read from.
+
+    .DESCRIPTION
+        Extracted because the dry run and the apply run both need the answer and
+        had worked it out separately. The apply path falls back to the Default Web
+        Site's physical path when no explicit source is configured, which is the
+        normal case; the plan read the configured value alone and so reported
+        "none found" for a run that would go on to restore eight files. A plan
+        that under-reports is the same defect as one that over-promises.
+    #>
+    param(
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ConfiguredPath
+    )
+
+    if (![string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        return [Environment]::ExpandEnvironmentVariables($ConfiguredPath)
+    }
+
+    # Get-Website is absent off Windows and absent when the IIS module is not
+    # loaded. Neither is an error here: the caller treats an empty source as
+    # "nothing to overlay from", which is the right answer in both cases.
+    $defaultSite = Get-Website -Name 'Default Web Site' -ErrorAction SilentlyContinue
+    if ($null -ne $defaultSite -and ![string]::IsNullOrWhiteSpace($defaultSite.physicalPath)) {
+        return [Environment]::ExpandEnvironmentVariables($defaultSite.physicalPath)
+    }
+
+    return ''
+}
+
 function Get-ServerOwnedThemeFilePaths {
     <#
     .SYNOPSIS
@@ -1441,8 +1473,18 @@ try {
         }
         Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
         Write-DeployStep "Would leave server-owned paths untouched: $($ServerOwnedDirectories -join ', ')"
+        # Resolved the same way the apply run resolves it, not read straight off
+        # the parameter. The parameter is normally blank and the apply run falls
+        # back to the Default Web Site, so reading it directly made the plan say
+        # "none found" for a run that would restore eight files.
+        $plannedSource = if ($Mode -eq 'DedicatedSite') {
+            Resolve-SharedAssetSource -ConfiguredPath $SharedAssetSourcePath
+        }
+        else {
+            $SitePath
+        }
         $plannedOverrides = @(Get-ServerOwnedThemeFilePaths `
-            -SiteRoot $(if ($Mode -eq 'DedicatedSite') { $SharedAssetSourcePath } else { $SitePath }) `
+            -SiteRoot $plannedSource `
             -FileNames $ServerOwnedThemeFiles)
         Write-DeployStep "Would keep this site's own theme override files: $(if ($plannedOverrides.Count -gt 0) { $plannedOverrides -join ', ' } else { 'none found' })"
         Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
@@ -1541,16 +1583,7 @@ try {
             }
         }
 
-        $sharedAssetSource = ''
-        if (![string]::IsNullOrWhiteSpace($SharedAssetSourcePath)) {
-            $sharedAssetSource = [Environment]::ExpandEnvironmentVariables($SharedAssetSourcePath)
-        }
-        else {
-            $defaultSite = Get-Website -Name 'Default Web Site' -ErrorAction SilentlyContinue
-            if ($null -ne $defaultSite -and ![string]::IsNullOrWhiteSpace($defaultSite.physicalPath)) {
-                $sharedAssetSource = [Environment]::ExpandEnvironmentVariables($defaultSite.physicalPath)
-            }
-        }
+        $sharedAssetSource = Resolve-SharedAssetSource -ConfiguredPath $SharedAssetSourcePath
 
         Sync-SharedSiteAssets `
             -SourceRoot $sharedAssetSource `

@@ -549,9 +549,12 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
             deploying.append((index, root.group(1)))
 
         # The dry run reports a plan for whichever mode it was invoked in, so it
-        # legitimately reads both roots off one conditional. Only the two real
-        # call sites are asserted here.
-        real = [(index, root) for index, root in deploying if not root.startswith("$(")]
+        # legitimately reads both roots off one variable. Only the two real call
+        # sites are asserted here; the plan's own correctness is a separate test.
+        real = [
+            (index, root) for index, root in deploying
+            if not root.startswith("$(") and root != "$plannedSource"
+        ]
         self.assertEqual(
             len(real), 2,
             f"expected one discovery call per mode, found {len(real)}: {real}",
@@ -571,6 +574,56 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                     "the live site which files it has, or it excludes files the artifact "
                     "needs to deliver",
                 )
+
+    def test_the_plan_resolves_the_overlay_source_the_way_the_apply_run_does(self):
+        """The dry run must not work out the base site differently from the apply run.
+
+        The apply run falls back to the Default Web Site's physical path when no
+        source is configured, and no source is configured in the normal case. A plan
+        that read the parameter directly reported "none found" for a run that would
+        go on to restore eight files -- under-reporting, which is the same defect as
+        promising something that will not happen, and harder to notice because it
+        reads as nothing being at stake.
+
+        Both now go through one function, so they cannot disagree.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        resolvers = [
+            index for index, line in enumerate(lines)
+            if "Resolve-SharedAssetSource" in line
+            and not line.lstrip().startswith("#")
+            and not line.lstrip().startswith("function ")
+        ]
+        self.assertGreaterEqual(
+            len(resolvers), 2,
+            "the plan and the apply run must both resolve the overlay source through "
+            f"Resolve-SharedAssetSource; found {len(resolvers)} call(s)",
+        )
+
+        # The plan feeds the resolver's answer into the discovery call rather than
+        # reading $SharedAssetSourcePath itself. The assignment spans an if
+        # expression, so match over a window rather than one line.
+        planned = [
+            index for index, line in enumerate(lines)
+            if "$plannedSource" in line and "=" in line
+            and "Resolve-SharedAssetSource" in "\n".join(lines[index:index + 6])
+        ]
+        self.assertTrue(
+            planned,
+            "$plannedSource must come from Resolve-SharedAssetSource, or the plan can "
+            "still disagree with the apply run",
+        )
+
+        # And nothing reads the raw parameter as a site root any more.
+        for index, line in enumerate(lines):
+            if "-SiteRoot" not in line:
+                continue
+            self.assertNotIn(
+                "$SharedAssetSourcePath", line,
+                f"line {index + 1} discovers against the raw parameter; it must use the "
+                "resolved source so a blank parameter still finds the Default Web Site",
+            )
 
     def test_in_place_deploy_is_a_dry_run_unless_apply_is_passed(self):
         """A production overwrite should never be one mistyped argument away. The
