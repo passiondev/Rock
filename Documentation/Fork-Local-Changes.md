@@ -74,14 +74,14 @@ up as a build error a long way from the file that caused it.
 **Nothing tests it.** There is no coverage of this feature in the repository, so the only
 thing standing between it and a bad merge is this page. That is worth fixing separately.
 
-## 3. Workflow person entry is full width, and campus is required
+## 3. Workflow person entry is full width
 
 - `Rock.JavaScript.Obsidian.Blocks/src/WorkFlow/WorkflowEntry/Actions/entryFormPersonEntry.partial.obs`
 
-**What it does.** Three edits to the person-entry block on workflow forms. The primary
-person editor becomes full width (`col-md-12` in place of `col-md-6`), the spouse editor
-moves out of that column into a row of its own, and the Campus dropdown gains
-`rules="required"`.
+**What it does.** Two edits to the person-entry block on workflow forms. The primary
+person editor becomes full width (`col-md-12` in place of `col-md-6`), and the spouse
+editor moves out of that column into a row of its own. Net effect is a two-line file
+growth, because the change relocates markup rather than adding any.
 
 **Why it is listed separately.** Until 2026-08-26 this file sat under item 2, described
 as part of the header image. It is not: the file contains no `HeaderImage` reference at
@@ -89,13 +89,13 @@ all, and the two changes touch different screens. Grouping them meant the entry 
 whoever was merging to look for image code in a file that has none.
 
 **If a merge drops it,** person-entry forms silently return to half width with the spouse
-editor beside the primary, and campus stops being required. Nothing fails to compile and
-no error is logged, so the only signal is someone noticing the form looks different.
+editor beside the primary. Nothing fails to compile and no error is logged, so the only
+signal is someone noticing the form looks different.
 
-**The campus rule is not in production.** `passion-18.4.1` carries the width and spouse
-changes but not `rules="required"`. It reaches production with the v19 cutover, which
-makes campus mandatory on every workflow form that shows the field. Confirm that is
-wanted before the cutover rather than after.
+**Not this entry:** the Campus dropdown's `rules="required"` in this same file is
+upstream's, added between `hotfix-18.4` and `hotfix-19.3`. It was briefly recorded here
+as fork-local on 2026-08-26 and is not. Take upstream's version of that attribute at
+every merge. The layout above is the only thing in this file worth protecting.
 
 ---
 

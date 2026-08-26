@@ -32,7 +32,7 @@ name: Deploy Production
           repository's default branch while an upgrade is in flight -- unless you are
           rolling back, in which case use an earlier commit on it.
         required: true
-        default: passion-18.4.1
+        default: passion-19.3.4
         type: string
       apply:
         description: Actually deploy. Leave unchecked for a dry run that only reports its plan.

@@ -262,6 +262,24 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    failures, because a faulted app domain caches its own startup exception and can never
    recover by retrying alone. Only the window expiring is a failure.
 
+## User-visible changes that arrive with v19
+
+Neither of these is a fault, and both will look like one to whoever reports it first.
+They are listed so the answer is already written down.
+
+- **Campus becomes mandatory on workflow person-entry forms.** Upstream added
+  `rules="required"` to the Campus dropdown in
+  `Rock.JavaScript.Obsidian.Blocks/src/WorkFlow/WorkflowEntry/Actions/entryFormPersonEntry.partial.obs`
+  between `hotfix-18.4` and `hotfix-19.3`. Every workflow form that shows the campus
+  field will refuse to submit without one, where 18.4.1 accepted a blank. This is stock
+  Rock 19 behaviour rather than a fork change, so reverting it means deliberately
+  diverging from upstream on a file the fork already patches for layout -- check
+  `Documentation/Fork-Local-Changes.md` item 3 before touching it.
+
+- **The first load after the deploy is slow, and some health-check attempts fail.**
+  Covered in step 8. Worth repeating here because it is the single most likely thing to
+  be escalated during the window.
+
 ## Rollback
 
 **Binaries roll back. The database does not.** Once migrations have started, restoring the

@@ -42,7 +42,7 @@ EXPECTED_ENVIRONMENT_DOMAIN = "rock-dev.connect.passion.team"
 #
 # So it is pinned here rather than exempted. Both constants are asserted; neither can
 # drift unnoticed. At production cutover, set this to EXPECTED_BASE_BRANCH's value.
-EXPECTED_PRODUCTION_BRANCH = "passion-18.4.1"
+EXPECTED_PRODUCTION_BRANCH = "passion-19.3.4"
 
 
 class BaseBranchConfigTests(unittest.TestCase):
