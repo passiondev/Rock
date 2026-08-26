@@ -2057,8 +2057,8 @@ One suspect is gone regardless: `Import-Module WebAdministration` runs at line 2
 the truncation, so a first-time module load inside the job is not what breaks the stream.
 
 **It could not be reproduced off the box.** `Start-Job` does not spawn on macOS in this
-environment (`Exec format error`), and per the notes in item 25's neighbourhood the test VM's
-sshd is not listening, so there is no way to attach to the box and watch it happen.
+environment (`Exec format error`), and the test VM's sshd does not answer -- see the table under
+"Where to pick it up" -- so there is no way to attach to the box and watch it happen.
 
 **What was done instead.** `Write-DeployStep` now also appends each stamped line to a file on the
 VM, and the agent's new `Get-CommandLogText` reads that file back and appends it to whatever the
@@ -2074,10 +2074,26 @@ out total runtime as the mechanism, so a short command is not thereby safe. Unti
 known, the honest statement about any of those three is that their logs are unverified, not that
 they are short enough to be fine.
 
-**Where to pick it up.** Getting sshd listening on `connect-srv-test` is the prerequisite; it is
-the same prerequisite item 25's notes identify for diagnosing the script refresh, so the two are
-worth doing together. Until then, treat any command log that ends mid-run as *unproven*, not as
-evidence of where the command stopped.
+**Where to pick it up.** Getting sshd answering on `connect-srv-test` is still the prerequisite,
+and it is the same one item 25's notes identify for the script refresh, so the two are worth doing
+together. What changed on 2026-08-25 is where to look. Measured rather than assumed:
+
+| Half of the path | State |
+|---|---|
+| Firewall | `allow-rdp-ingress-from-iap` already allows `tcp:22` from `35.235.240.0/20`, with no target tags, so it covers both VMs |
+| Instance metadata | `enable-windows-ssh` is already set on `connect-srv-test` |
+| IAP tunnel | Establishes. `gcloud compute ssh --tunnel-through-iap` gets as far as forwarding |
+| sshd itself | **Does not answer.** `Connection timed out during banner exchange` |
+
+So the network and metadata halves are done and neither is the gap. Whatever is missing is inside
+the guest -- the Windows SSH agent not installed, not running, or not listening. Do not spend the
+first hour on firewall rules and metadata flags, which is where this would naturally start.
+
+One asymmetry worth checking first: `connect-srv-prod` carries `enable-osconfig` in its metadata
+and `connect-srv-test` does not. That is the only metadata difference between the two boxes.
+
+Until sshd answers, treat any command log that ends mid-run as *unproven*, not as evidence of
+where the command stopped.
 
 ## Fixed since the last revision — recorded so nobody re-diagnoses these
 
@@ -2185,7 +2201,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     them first (the commands are in item 9), or do item 14, before deleting anything
 15. Items 5, 6 and 18 — the "CI can't see this" gaps, once the above is stable. Item 18's guard
     and item 16's are the same GCS list written twice; build them together
-16. ~~Item 22~~ — **the backup half is done** (2026-08-18, re-verified live 2026-08-19).
+16. ~~Item 22~~ — **the backup half is done** (2026-08-18, re-verified live 2026-08-19 and
+    again 2026-08-25: `connect-prod` still reads `storageAutoResize: false` while the sandbox
+    reads `true`, so the one missed command below is still missed).
     `connect-restore-test` now matches prod on backups, PITR and retention. What is left is one
     command: `storage-auto-increase` on **`connect-prod`**, which was missed when the same flip
     was applied to the sandbox instance. No downtime, and it closes a failure mode — a full disk
@@ -2202,7 +2220,8 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
 18. Item 30 — one value, either repointed or removed. It is not on the production path, but it is
     the way step 2 of the cutover checklist fails today, and the failure names a login rather than
     the missing database
-19. Item 31 — needs sshd on `connect-srv-test` before it can be diagnosed at all, so pair it with
+19. Item 31 — needs sshd answering on `connect-srv-test` before it can be diagnosed at all
+    (the firewall and metadata halves are already done; the gap is guest-side), so pair it with
     the script-refresh work that needs the same thing. The cutover itself no longer waits on it:
     the deploy timeline is written to disk and read back, so a production log covers the offline
     window whatever the stream does

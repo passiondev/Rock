@@ -1,8 +1,20 @@
 # Production Upgrade Runbook
 
-**Last verified:** 2026-08-24 · **Audience:** whoever is running the production cutover.
+**Last verified:** 2026-08-25 · **Audience:** whoever is running the production cutover.
 Nothing in here has been executed. It is the checklist for the upgrade, written while the
-machinery for it was built. The PR test fleet and staging are a different document
+machinery for it was built.
+
+**Step 1 is done.** The pipeline changes merged to the default branch on 2026-08-25, so
+**Production Bootstrap Command Queue** is dispatchable and step 1's own evidence check passes.
+Everything from step 2 on is untouched, and step 2 is the irreversible one.
+
+Re-read live against GCP on 2026-08-25, and all of it still holds: `connect-srv-prod` is
+`RUNNING` with `automaticRestart: false` and the `devstorage.read_only` scope alongside
+`logging.write` and `monitoring.write`, and carries no `windows-startup-script-ps1`.
+`connect-prod` is a 418 GB disk with `storageAutoResize: false`, nightly backups at 01:00 UTC,
+point-in-time recovery on with 7 days of transaction logs, the last four backups `SUCCESSFUL`,
+and exactly one user database. The rollback section's database-name warning did **not** hold and
+has been rewritten. The PR test fleet and staging are a different document
 (`PR-Test-Environments-Operator-Runbook.md`); the trunk cutover described there has already
 happened, and this is the second half of it.
 
@@ -267,12 +279,21 @@ measured on staging. Decide by where you are:
 takes back only what you intend even though it is instance-level. That is not true of the
 sandbox instance, which holds several -- do not carry the habit across.
 
-**Two different databases are called `RockConnectProd`.** Production's is on `connect-prod`.
-The sandbox instance `connect-restore-test` holds a copy under the same name, seeded on
-2026-04-14 and shared by the whole `pr-*` fleet. Every restore command here names an instance,
-and the instance is the only thing distinguishing them -- a command that reads correctly and
-names the wrong instance either destroys the fleet's catalog or overwrites production with a
-four-month-old copy of itself.
+**The name collision that used to be here is gone, and the hazard behind it is not.** This
+section used to warn that `connect-restore-test` held its own `RockConnectProd`, so the instance
+name was the only thing telling the two apart. Re-read live on 2026-08-25, the sandbox holds
+`RockStaging` and `RockStaging20260824` and no `RockConnectProd` at all -- item 7's database
+split renamed it. Verify before relying on either version of this paragraph:
+
+```bash
+gcloud sql databases list --instance=connect-restore-test --project=passioncitychurch-com
+```
+
+What has not changed is the thing that actually bites. `gcloud sql backups restore` restores a
+whole **instance**; it never names a database. So a command that reads correctly and names the
+wrong `--instance` still overwrites everything on it, and the differing database names give no
+protection at all -- nothing in the command mentions them. The collision was never the hazard.
+The instance argument was.
 
 A restore of production's data is the largest action in this document. Read the `--instance`
 back out loud before running it.
