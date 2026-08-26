@@ -1110,13 +1110,40 @@ and the dashboard's computed `--base-primary` and `--color-primary` are both `#0
 that lives in the database rather than on disk, it survives every deploy — which is the whole
 point of the v19 change.
 
-**Do not reach for the `Rock` theme as the "restore the old look" lever.** It is stock orange too:
-`RockWeb/Themes/Rock/Styles/_variables.less` sets `@brand-color: #ee7725`, and the deployed copy
-compiles to exactly that, so swapping `RockNextGen` → `Rock` trades one orange for another. Every
-Passion theme that *is* branded is already claimed by a public-facing site — `CONNECT` by sites 9
-and 11, `PassionCityChurch` by 13, `PassionTeam` by 16, `Agency` by 17 — so there is no branded
-theme free to hand to the internal site wholesale. Setting the colour on `RockNextGen` is the only
-option that produces Passion branding.
+**Do not reach for the `Rock` theme as the "restore the old look" lever.** Not because it is
+unbranded — see the correction below, it is branded on production — but because v19 has moved the
+internal site off it. Every Passion theme is claimed by a public-facing site: `CONNECT` by sites 9
+and 11, `PassionCityChurch` by 13, `PassionTeam` by 16, `Agency` by 17. Setting the colour on
+`RockNextGen` is still the option that brands the internal site.
+
+**Correction, 2026-08-26 — the `Rock` theme is not stock orange on production, and the wrong file
+was read.** This entry said `RockWeb/Themes/Rock/Styles/_variables.less` sets `@brand-color:
+#ee7725` "and the deployed copy compiles to exactly that". The first half is true and the second
+is not. `_variables.less` is stock on both boxes, byte for byte with upstream; the branding sits
+in `_variable-overrides.less`, which is the file Rock provides for it. Production's copy reads
+
+```less
+@brand-color: #00b8e4;
+@link-color: #599ac2;
+@link-hover-color: #51c0f5;
+@brand-critical: #ee7625;
+@text-selection-color: #000000;
+```
+
+and production's compiled `Themes/Rock/Styles/theme.css` carries `#00b8e4` seventy times.
+`RockManager` carries the brand colour too. Both files were readable over HTTP the whole time —
+IIS serves `.less` — so this was checkable from a laptop and was not checked.
+
+What the mistake cost: staging was diagnosed as "no branded theme exists" and fixed by hand in one
+environment's database, which left production's real customization sitting on production's disk,
+in no repository, waiting for the first automated deploy to overwrite it.
+
+**Fixed in code 2026-08-26.** Both override files are now committed and match production byte for
+byte, so the branding rides in the artifact. `Documentation/Fork-Local-Changes.md` item 4 records
+them as fork-local, and `Tests/PrTestEnvironments/test_theme_branding.py` fails if a merge resolves
+either towards upstream. This does not replace the `RockNextGen` database settings below — v19
+moves the internal site off the `Rock` theme, so both are needed — but every site still on a
+LESS theme now keeps its branding through a deploy, in both environments, without a manual step.
 
 **Also set: the link colour.** Production's `Rock` theme compiles `--link-color` to `#599AC2`
 rather than Bootstrap's `#006DCC`, so `RockNextGen`'s Link Color is set to `#599AC2` to match. On
@@ -1186,7 +1213,7 @@ await ( await fetch( '/api/Themes?$select=Name,AdditionalSettingsJson' ) ).json(
 
 ---
 
-### 29. On staging, only database-backed files work — every image in cloud storage 404s, and new uploads fail
+### 29. On staging, only database-backed files worked — every image in cloud storage 404d — fixed 2026-08-26
 
 **Found 2026-08-20, while trying to upload a logo through the theme editor** (item 28). The upload
 returned "A storage provider has not been registered for this file type or the current storage
@@ -1231,20 +1258,96 @@ That asymmetry cuts both ways, and the second direction is the one to watch:
   images. Worth stating plainly, because the staging symptom invites exactly the opposite
   conclusion.
 - **Production does not keep its theme edits.** `InPlace` still *overwrites* every file the
-  artifact does contain, and `RockWeb/Themes/Rock/Styles/_variables.less` is one of them.
-  Production's copy carries Passion's blue; the artifact's carries `@brand-color: #ee7725`. Any
-  deploy reverts it, with nothing reporting that it did. For the v19 window this is moot — the
-  migration moves the internal site off that theme anyway — but a site left on any git-tracked
-  theme loses its branding on the next deploy. This is the same mechanism that made staging's
-  `Rock` theme orange while production's stayed blue, and it is the reason item 28 puts the fix in
-  the database rather than in a `.less` file.
+  artifact does contain. The file is `_variable-overrides.less`, not `_variables.less` as this
+  entry first said — see item 28's correction. Production's copy carried Passion's blue and the
+  artifact's carried upstream's stock; any deploy would have reverted it, with nothing reporting
+  that it did. This is the same mechanism that made staging's `Rock` theme orange while
+  production's stayed blue. **Fixed 2026-08-26** by committing production's copies, so the
+  artifact now carries the branding rather than erasing it.
 
-**What this costs as a rehearsal.** Anything touching a binary file behaves differently on
-staging: person photos, uploaded documents, check-in labels, merge templates, and any block that
-uploads. A production rehearsal there cannot exercise those paths. Two honest options — put the
-plugin in the repository so the artifact carries it and give staging its own bucket, or record
-that staging is knowingly image-blind so a broken image there stops being re-investigated as a
-finding.
+**Fixed 2026-08-26 — `bin` joined the shared-asset overlay, and staging reads production's
+bucket.** Neither of the two options below was taken. The assembly does not need to be in the
+repository, because the base site on the same VM already has it: adding `bin` to
+`$SharedAssetDirectories` backfills `rocks.pillars.AmazonStorageProvider.dll`,
+`rocks.pillars.AzureStorageProvider.dll` and `rocks.pillars.ServiceReservation.dll` into a
+`DedicatedSite` deploy. The overlay runs `robocopy /E /XC /XN /XO`, which copies only files absent
+at the destination, so it cannot overwrite a v19 assembly with an older one — it can only fill
+gaps. That property is what makes overlaying `bin` safe, and it is why those exclusions must stay.
+
+The read side needed nothing further. Staging reaches production's bucket with the credentials the
+plugin already had, so `GetImage.ashx?id=105941` now answers **200 `image/png`** with the same
+`Last-Modified` and `ETag` production returns for the same file. The deploy log states the outcome
+rather than leaving it to be inferred:
+
+```
+Overlay bin backfilled 261 file(s) from the base site (592 -> 853).
+Plugin assemblies present in bin: 3 (rocks.pillars.AmazonStorageProvider.dll, ...)
+```
+
+**And it answers a cutover question that had no other cheap test.** The Pillars assemblies were
+compiled against 18.4.1. They load and serve files under v19's `Rock.dll`, which is now measured
+rather than assumed — production's images will survive the upgrade for the same reason.
+
+**Still true:** the reason production was never in this state is the `DedicatedSite`/`InPlace`
+asymmetry above, and the overlay is reachable only from the `DedicatedSite` branch.
+`test_environment_deploy.py` asserts that, so the backfill cannot start running against
+production.
+
+**What this cost as a rehearsal, while it lasted.** Anything touching a binary file behaved
+differently on staging: person photos, uploaded documents, check-in labels, merge templates, and
+any block that uploads. Those paths are exercisable there now.
+
+---
+
+### 32. The artifact ships Font Awesome Free over both servers' Pro fonts — fixed 2026-08-26
+
+**Found 2026-08-26, while making staging match production.** Passion holds a Font Awesome Pro
+licence and the Pro webfonts sit on both boxes. Upstream Rock ships the Free fonts under the same
+filenames, so the artifact always carries a copy that is wrong and looks right:
+
+| File | Production (Pro) | Artifact (Free) |
+|---|---|---|
+| `fa-solid-900.woff2` | 137,104 b | 78,196 b |
+| `fa-regular-400.woff2` | 168,824 b | 13,276 b |
+| `fa-light-300.woff2` | 184,204 b | not shipped |
+
+Free covers roughly 1,600 glyphs; Pro covers more than 16,000. Wherever the Free copy wins, every
+Pro-only icon renders as an empty box and nothing is logged.
+
+**Neither deployment mode handled it, for opposite reasons.** On staging the shared-asset overlay
+runs `robocopy /E /XC /XN /XO` — only files absent at the destination — so it filled the Light gap
+and skipped Solid and Regular, which the artifact had already placed. `fa-light-300.woff2` matching
+production byte for byte while the other two did not is the tell, and it is what made the fault
+findable. On production nothing had happened yet only because nothing had run: the InPlace copy is
+plain `robocopy /E`, which copies whenever source and destination differ in size, and production's
+`fa-solid-900.woff2` is dated **2021-08-04** — five years before this pipeline existed. The v19
+cutover would have been the first automated deploy ever to touch production, and it would have
+downgraded the fonts on the way through.
+
+**The fonts cannot be committed, which is why this needed a mechanism rather than a file.**
+`passiondev/Rock` is a **public** fork of `SparkDevNetwork/Rock`. The Pro webfonts are licensed
+commercial binaries; pushing them here would breach the licence and could not be taken back, since
+git history, forks and GitHub's CDN each keep their own copy.
+`test_theme_branding.py::test_the_pro_webfont_binaries_are_not_committed` enforces that by size,
+because Free and Pro share every filename.
+
+**Fixed by `$ServerOwnedDirectories` in `Deploy-RockEnvironment.ps1`** — one list, opposite
+mechanisms per mode, which is why it lives outside both branches:
+
+| Mode | Mechanism | Effect |
+|---|---|---|
+| `DedicatedSite` | `Sync-ServerOwnedAssets`, after the overlay, no `/XC /XN /XO` | the base site's Pro fonts replace the artifact's Free ones |
+| `InPlace` | the same paths become `robocopy /XD` exclusions | the artifact never reaches production's copies |
+
+Order matters on the first: run before the overlay and every file it copies is overwritten again.
+`/MIR` and `/PURGE` stay out of both — the base site is authoritative for the files it has, not for
+the absence of files it does not have. The paths are excluded from the production *copy* but
+deliberately not from the production *backup*, so if the exclusion is ever wrong the backup is what
+puts the fonts back.
+
+**Generalizes past Font Awesome.** Anything the servers own and the artifact also carries belongs
+on that list. Font Awesome is the first case; a licensed asset, a hand-tuned config, or any
+server-side file with a same-named stock version in the artifact has the same shape.
 
 ---
 
