@@ -333,9 +333,18 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    the site is not using. The dry run names the theme and the catalog it read, so compare
    against that rather than re-running the apply.
 
-   The same workflow, pointed at staging's catalog, is how staging got its branding -- so
-   this is a step that has been run before, not one being tried for the first time on
-   production.
+   **This workflow has never been run.** Checked on 2026-08-26: zero runs, against any
+   catalog. Its dry run and its rollback generation are covered by tests and neither has
+   executed against a live database, so production must not be the first. Dispatch it
+   against staging's catalog first, with `apply` unticked, then with `apply` ticked, and
+   confirm staging's theme changes on screen before this step is attempted on production.
+
+   One consequence of it never having run: the `database-write` environment it names does
+   not exist. GitHub creates a missing environment on first use with no protection rules,
+   and **an environment with no required reviewers approves itself**, so the apply gate is
+   currently decorative. Create the environment and give it a required reviewer before the
+   first production apply, or the dry run is the only thing standing between a dispatch and
+   a write.
 
    **Separately, confirm the deploy preserved the other themes' files.** This checks the
    half of step 9 that is supposed to need no action, which is exactly the half that fails
