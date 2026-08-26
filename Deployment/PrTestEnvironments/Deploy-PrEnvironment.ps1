@@ -52,9 +52,16 @@ param(
     # page, and that takes /Login and every admin page redirecting to it with it.
     # Nobody can sign in to a PR environment at all. Removing Plugins from this
     # list puts that failure straight back.
+    # bin rides along for the same reason, one layer down: the plugin source above
+    # is useless without the assemblies that define its namespaces, and those
+    # exist only in the base site's bin. Missing them takes out every
+    # BinaryFileType, which stores through rocks.pillars.AmazonStorageProvider,
+    # so GetImage.ashx 404s every image on the site. Sync-SharedSiteAssets uses
+    # robocopy /XC /XN /XO -- absent files only -- so this can never overwrite an
+    # assembly the artifact shipped.
     [Parameter(Mandatory = $false)]
     [string]
-    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles,Plugins' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES })
+    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles,Plugins,bin' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES })
 )
 
 Set-StrictMode -Version Latest

@@ -73,6 +73,33 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         for existing in ["Themes", "Content", "Assets", "Styles"]:
             self.assertIn(existing, directories, f"overlay default must still carry {existing}")
 
+    def test_shared_asset_overlay_backfills_bin_for_staging(self):
+        """Plugin source without plugin assemblies is not a working site. The
+        namespaces the .ascx.cs files reference are defined in DLLs that live only
+        in the base site's bin -- not in git, not in the artifact -- so a deploy
+        that backfills Plugins but not bin fails to compile them with
+
+            error CS0103: The name 'rocks' does not exist in the current context
+
+        Worse than the blocks, it takes out file storage. Every BinaryFileType on
+        this catalog stores through
+        rocks.pillars.AmazonStorageProvider.S3BlobStorage, and Rock 19 ships no
+        core S3 provider to fall back to, so a missing assembly means the provider
+        cannot load and GetImage.ashx answers 404 for every image on the site.
+
+        Distinguishing that from missing data is worth keeping written down:
+        GetImage.ashx sets Last-Modified and ETag after the metadata lookup but
+        before the content lookup, so a 404 that still carries those headers means
+        the row was found and only the bytes were missing.
+        """
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(r"PR_TEST_SHARED_ASSET_DIRECTORIES\)\)\s*\{\s*'([^']+)'\s*\}", text)
+        self.assertIsNotNone(match, "could not find the shared asset directory default list")
+
+        directories = [entry.strip() for entry in match.group(1).split(",")]
+        self.assertIn("bin", directories, f"overlay default must backfill bin, got {directories}")
+
     def test_shared_asset_overlay_never_runs_against_production(self):
         """This is what makes adding Plugins to the overlay default safe to ship
         without a production window: the overlay is reachable only from the

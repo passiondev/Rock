@@ -123,9 +123,28 @@ param(
     # serves "Error Loading Block: Login" as its landing page and nobody can sign
     # in at all. Only the DedicatedSite branch below reaches the overlay, so this
     # list has no effect on an InPlace production deploy.
+    # bin is in this list for the same reason as Plugins, one layer down. The
+    # plugin *source* under Plugins/ is useless without the compiled assemblies
+    # that define its namespaces, and those live only in the base site's bin --
+    # never in git, never in the artifact. Every BinaryFileType on this catalog
+    # stores through rocks.pillars.AmazonStorageProvider.S3BlobStorage, so when
+    # that assembly is missing the storage provider cannot load, BinaryFile
+    # content resolves to null, and GetImage.ashx answers 404 for every image on
+    # the site -- profile photos, logos, content channel images, all of it. The
+    # tell that it is this and not missing data is that the 404 still carries
+    # Last-Modified and ETag: GetImage.ashx sets those before the content lookup,
+    # so headers-present means the row was found and only the bytes were not.
+    # The matching compile error lands in ExceptionLog as
+    # "The name 'rocks' does not exist in the current context".
+    #
+    # Sync-SharedSiteAssets runs robocopy /XC /XN /XO, which excludes Changed,
+    # Newer and Older and so copies only files that are absent at the
+    # destination. It therefore cannot overwrite a v19 assembly with the base
+    # site's older one; it can only fill gaps. That property is what makes
+    # overlaying bin safe at all, and it is why the exclusions must stay.
     [Parameter(Mandatory = $false)]
     [string]
-    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles,Plugins' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES }),
+    $SharedAssetDirectories = $(if ([string]::IsNullOrWhiteSpace($env:PR_TEST_SHARED_ASSET_DIRECTORIES)) { 'Themes,Content,Assets,Styles,Plugins,bin' } else { $env:PR_TEST_SHARED_ASSET_DIRECTORIES }),
 
     # Fifteen minutes, not five. Rock runs EF and plugin migrations on the first
     # request after a deploy, and the pr-4 environment needed three 30-second
@@ -785,6 +804,14 @@ function Sync-SharedSiteAssets {
         if (!(Test-Path $sourcePath)) { continue }
 
         Ensure-Directory -Path $destinationPath
+
+        # Counted either side of the copy because robocopy is told to say nothing
+        # (/NFL /NDL /NJH /NJS), so without this the overlay is invisible in the
+        # log and "did the base site actually have anything to give us" cannot be
+        # answered after the fact. It is the only read-back this deploy has: the
+        # VM has no reachable sshd, and nothing else reports on the box's state.
+        $filesBefore = @(Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue).Count
+
         # /XC /XN /XO means "only files that do not exist at the destination", so
         # the branch stays authoritative for everything it actually ships. See the
         # long note in Deploy-PrEnvironment.ps1 -- this was /MIR and it silently
@@ -794,6 +821,9 @@ function Sync-SharedSiteAssets {
         if ($exitCode -gt 7) {
             throw "robocopy failed for shared asset directory $directory with exit code $exitCode."
         }
+
+        $filesAfter = @(Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue).Count
+        Write-DeployStep "Overlay $directory backfilled $($filesAfter - $filesBefore) file(s) from the base site ($filesBefore -> $filesAfter)."
     }
 }
 
@@ -1224,6 +1254,19 @@ try {
         # the overlay has since backfilled Plugins from the base site and brought
         # that site's own bin/obj along with it.
         Remove-PluginBuildArtifacts -Path $SitePath
+
+        # Whether the plugin assemblies actually arrived, stated in the timeline
+        # rather than inferred from a green run. Every BinaryFileType on this
+        # catalog stores through rocks.pillars.AmazonStorageProvider.S3BlobStorage
+        # and Rock 19 ships no core S3 provider, so if this reports 0 then every
+        # image on the site will 404 and the overlay source is the thing to go
+        # look at -- not the catalog, and not the artifact. A warning and not a
+        # throw: a site with no images is still worth having up to look at.
+        $pluginAssemblies = @(Get-ChildItem -Path (Join-Path $SitePath 'bin') -Filter 'rocks.pillars.*.dll' -ErrorAction SilentlyContinue)
+        Write-DeployStep "Plugin assemblies present in bin: $($pluginAssemblies.Count) ($($pluginAssemblies.Name -join ', '))."
+        if ($pluginAssemblies.Count -eq 0) {
+            Write-Warning "No rocks.pillars.* assemblies in bin. Binary file storage will not load and every image on the site will answer 404."
+        }
 
         Write-RuntimeConfiguration -Path $SitePath -Connection $ConnectionString
         Ensure-AppPool -Name $AppPoolName

@@ -103,6 +103,29 @@ class DeployPrEnvironmentScriptTests(unittest.TestCase):
         for existing in ["Themes", "Content", "Assets", "Styles"]:
             self.assertIn(existing, directories, f"overlay default must still carry {existing}")
 
+    def test_shared_asset_overlay_backfills_bin_so_plugin_assemblies_resolve(self):
+        """Same argument as Plugins, one layer down: the source is worthless
+        without the compiled assemblies that define its namespaces, and those sit
+        only in the base site's bin. Without them the plugin .ascx.cs files fail
+        to compile with "The name 'rocks' does not exist in the current context",
+        and every BinaryFileType -- all of which store through
+        rocks.pillars.AmazonStorageProvider -- loses its storage provider, so
+        GetImage.ashx 404s every image on the site.
+
+        This is only safe because the overlay's robocopy passes /XC /XN /XO and so
+        copies absent files only. It can fill a gap in bin; it can never replace an
+        assembly the artifact shipped with the base site's older copy. The test
+        above pins those exclusions, and this entry is why they now matter far more
+        than they did when the overlay carried content directories alone.
+        """
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(r"PR_TEST_SHARED_ASSET_DIRECTORIES\)\)\s*\{\s*'([^']+)'\s*\}", text)
+        self.assertIsNotNone(match, "could not find the shared asset directory default list")
+
+        directories = [entry.strip() for entry in match.group(1).split(",")]
+        self.assertIn("bin", directories, f"overlay default must backfill bin, got {directories}")
+
     def test_plugin_build_artifacts_are_stripped_after_the_overlay(self):
         """Remove-PluginBuildArtifacts keeps a developer's bin/obj leftovers out of
         a deployed site. It used to run before the overlay, which was harmless
