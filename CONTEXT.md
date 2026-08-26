@@ -55,7 +55,7 @@ it should stay that way.
 | Term | Means |
 |---|---|
 | **catalog** | One SQL database. The word disambiguates from *instance*, which holds several. |
-| **the shared catalog** | Whatever `secrets.DB_NAME` names, on `connect-restore-test`. Every `pr-*` environment falls back to it, because `PR_TEST_DB_NAME` is deliberately unset. The name is a secret and is not in this repository, so do not write it down here. This row said `RockConnectProd` until 2026-08-26, and that catalog is no longer on the instance: a deploy that falls back today fails with `Cannot open database`, which reads as a credential problem and is not one. |
+| **the shared catalog** | Whatever `vars.PR_TEST_DB_NAME` names, currently `RockStaging`, on `connect-restore-test`. Every `pr-*` environment runs on it. They share it with each other and with nothing else. Set on 2026-08-26. Until then the fleet fell back to `secrets.DB_NAME`, which names a catalog that had already left the instance, so the fallback was dead: a deploy taking it failed with `Cannot open database`, which reads as a credential problem and is not one. |
 | **the staging catalog** | Whatever `vars.STAGING_DB_NAME` names, currently `RockStaging20260824`, on the same instance. Staging alone, since 2026-08-18. `RockStaging` is the earlier copy and is still on the instance, so the two names are both real and only one is live. |
 | **sandbox** | An adjective for the non-production data, never a noun for an environment. *Sandbox catalog*, *sandbox file storage*. |
 

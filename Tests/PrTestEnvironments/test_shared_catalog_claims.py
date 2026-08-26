@@ -181,7 +181,7 @@ class SharedCatalogClaimTests(harness.HarnessAssertions, unittest.TestCase):
         remembered one.
         """
         rows = {
-            "the shared catalog": "secrets.DB_NAME",
+            "the shared catalog": "vars.PR_TEST_DB_NAME",
             "the staging catalog": "vars.STAGING_DB_NAME",
         }
         context = (REPO_ROOT / "CONTEXT.md").read_text(encoding="utf-8")

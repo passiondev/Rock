@@ -90,8 +90,12 @@ def _write_version(workdir, version, layout):
         raise AssertionError(f"unknown layout {layout!r}")
 
 
-def _run_guard(version, pinned_branch, staging_db_name, layout="assemblyinfo"):
-    """Run the guard against a throwaway version file. Returns (exit code, output)."""
+def _run_guard(version, pinned_branch, staging_db_name, layout="assemblyinfo", fleet_db_name=""):
+    """Run the guard against a throwaway version file. Returns (exit code, output).
+
+    `fleet_db_name` is `vars.PR_TEST_DB_NAME`. It defaults to empty because that is
+    what it was for the whole period these tests were written in, and the tests
+    above still describe that state."""
     script = _guard_script()
 
     with tempfile.TemporaryDirectory() as workdir:
@@ -100,6 +104,7 @@ def _run_guard(version, pinned_branch, staging_db_name, layout="assemblyinfo"):
         env = dict(os.environ)
         env["PINNED_BASE_BRANCH"] = pinned_branch
         env["STAGING_DB_NAME"] = staging_db_name
+        env["PR_TEST_DB_NAME"] = fleet_db_name
         env["GITHUB_OUTPUT"] = str(pathlib.Path(workdir) / "github_output")
 
         completed = subprocess.run(
@@ -156,6 +161,59 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
                     code,
                     0,
                     f"staging was refused a v19 deploy onto its own dedicated catalog:\n{output}",
+                )
+
+    def test_the_fleet_sharing_stagings_catalog_is_refused(self):
+        """The mirror image of the case above, and the one the earlier guard could not
+        see. Its escape hatch was `STAGING_DB_NAME` being set at all, so once staging
+        owned a catalog the guard exited 0 without ever asking *which* catalog the
+        fleet was on. Point both variables at one name and the collision the split
+        exists to prevent is back, with the guard reporting success.
+
+        The operator runbook predicted exactly this when the fleet variable was still
+        unset: "If PR_TEST_DB_NAME is ever introduced, the guard needs the
+        mirror-image condition or this ordering goes unenforced."
+        """
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard(
+                    "19.3.4", "passion-19.3.4", "RockStaging", layout, fleet_db_name="RockStaging"
+                )
+                self.assertNotEqual(
+                    code,
+                    0,
+                    "staging and the pr-* fleet were allowed onto one catalog, which is "
+                    f"what put pr-3 on a permanent 500 on 2026-08-11:\n{output}",
+                )
+                self.assertIn("RockStaging", output)
+
+    def test_the_same_catalog_under_a_different_case_is_still_the_same_catalog(self):
+        """SQL Server catalog names are not case sensitive under the default collation,
+        so a guard that compares the raw strings is bypassed by a typo that changes
+        nothing about which database gets opened."""
+        code, output = _run_guard(
+            "19.3.4", "passion-19.3.4", "RockStaging", "props", fleet_db_name="rockstaging"
+        )
+        self.assertNotEqual(
+            code,
+            0,
+            f"a case difference was read as two different catalogs:\n{output}",
+        )
+
+    def test_separate_catalogs_are_allowed(self):
+        """The state this change is moving the fleet into, and the one that has to stay
+        cheap: two named catalogs that are not the same catalog."""
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard(
+                    "19.3.4",
+                    "passion-19.3.4",
+                    "RockStaging20260824",
+                    layout,
+                    fleet_db_name="RockStaging",
+                )
+                self.assertEqual(
+                    code, 0, f"two distinct catalogs were refused:\n{output}"
                 )
 
     def test_an_unreadable_version_file_refuses_rather_than_waves_through(self):

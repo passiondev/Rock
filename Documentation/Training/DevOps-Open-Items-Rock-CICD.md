@@ -315,9 +315,9 @@ PR closed more than a week ago.
 > prints `STAGING_DB_NAME: RockStaging` and the line "staging has its own catalog", which is
 > how you confirm it from a run log.
 >
-> **The fleet is still shared, and that half is still open.** `PR_TEST_DB_NAME` is
-> deliberately unset, so every `pr-*` site continues to fall back to `secrets.DB_NAME`
-> (`RockConnectProd`) and they still share one catalog *with each other*. Two `pr-*` sites on
+> **The fleet half closed on 2026-08-26.** `PR_TEST_DB_NAME` names `RockStaging`, the copy
+> staging left behind on 2026-08-24, so the fleet no longer falls back to `secrets.DB_NAME`.
+> It does still share that one catalog *with itself*, deliberately, and two `pr-*` sites on
 > different Rock minors will still break each other exactly as described below. Everything
 > from here down is the original finding, kept because the mechanism is unchanged for the
 > fleet and because the 2026-08-11 incident is the proof that it is not hypothetical.
@@ -327,7 +327,7 @@ the same four secrets — `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PA
 neither deploy script derives a per-environment catalog. So every `pr-*` environment, and
 staging too until the split above, points at one catalog on the shared test Cloud SQL
 instance. Each side accepts its own override — `STAGING_DB_NAME` for staging,
-`PR_TEST_DB_NAME` for the fleet — and only the staging one has been set.
+`PR_TEST_DB_NAME` for the fleet — and both are now set, to two different catalogs.
 
 That is one shared mutable dependency behind every isolated-looking test site. Rock runs EF
 and plugin migrations at `Application_Start`, writes global attributes such as
@@ -448,12 +448,13 @@ to try one — and on 2026-08-18 a v19 artifact was deployed to staging against 
 which stranded it part-way through the v19 migration set and took the whole fleet down with it
 (`Documentation/Incidents/2026-08-18-staging-v19-shared-catalog.md`).
 
-`pr-test-deploy.yml` now reads its own `vars.PR_TEST_DB_NAME`. Both variables are unset and both
-fall back to `secrets.DB_NAME`, so today's arrangement is unchanged to the byte; what changes is
-that setting one moves one environment. The invariant the 2026-08-17 decision was protecting is
-kept by the guard in `staging-deploy.yml`, which refuses a staging deploy whose Rock minor differs
-from the fleet's pin while `STAGING_DB_NAME` is unset. That is the same rule, checked against the
-variable as it actually is at deploy time rather than assumed from the wiring.
+`pr-test-deploy.yml` reads its own `vars.PR_TEST_DB_NAME`. Both variables are now set, to two
+different catalogs, so neither environment takes the `secrets.DB_NAME` fallback any more. The
+invariant the 2026-08-17 decision was protecting is kept by the guard in `staging-deploy.yml`,
+which refuses a staging deploy whose Rock minor differs from the fleet's pin while
+`STAGING_DB_NAME` is unset, and since 2026-08-26 also refuses when the two variables name the
+same catalog. That is the same rule, checked against the variables as they actually are at
+deploy time rather than assumed from the wiring.
 
 #### The refresh mechanism — measured 2026-08-17, and there is no nightly refresh
 
@@ -1975,7 +1976,7 @@ reach it either: `staging-deploy.yml` passes `vars.STAGING_DB_NAME`, which is se
 | Path | How it gets there |
 |---|---|
 | `db-find-legacy-text-columns.yml` | `inputs.db_name \|\| secrets.DB_NAME`, and the runbook's own step 2 describes the empty case as scanning "the shared sandbox one" |
-| `pr-test-deploy.yml` | `vars.PR_TEST_DB_NAME \|\| secrets.DB_NAME`, and `PR_TEST_DB_NAME` is unset |
+| `pr-test-deploy.yml` | `vars.PR_TEST_DB_NAME \|\| secrets.DB_NAME`. `PR_TEST_DB_NAME` is set as of 2026-08-26, so this one no longer reaches the fallback |
 | `env-deploy-command.yml` | any caller that passes no `db_name` |
 
 The fleet is pruned, so nothing is currently broken by it. What it costs is the next person who
@@ -2163,9 +2164,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
    staging is image-blind, so the next person does not re-investigate a broken image as a
    finding. Worth settling before the production window, because it bounds what a rehearsal
    there can actually prove
-6. Item 7 — **the staging half is done** (`RockStaging`, split 2026-08-18). What's left is the
-   `pr-*` fleet, which still shares one catalog with itself: decide whether to give the fleet
-   `PR_TEST_DB_NAME` too, or to accept the risk while only one PR site runs at a time
+6. Item 7 — **done, both halves.** Staging split off on 2026-08-18, the fleet on 2026-08-26
+   (`PR_TEST_DB_NAME` = `RockStaging`). The fleet still shares that catalog with itself, which
+   is the accepted design: every `pr-*` site is the same Rock minor by construction
 7. Item 24 — decide the test fleet's network exposure. It is a decision plus, if the answer
    is option 1, a single firewall rule and a tag; the reason it sits this high is that the
    data behind it became prod-derived on 2026-08-18 and the decision has never actually been

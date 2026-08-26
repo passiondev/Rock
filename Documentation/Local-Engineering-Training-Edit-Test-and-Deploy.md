@@ -1016,7 +1016,7 @@ Re-verify these before trusting this document:
 | Environment domain | `rock-dev.connect.passion.team` | same file |
 | Staging URL | `staging.rock-dev.connect.passion.team` | `.github/workflows/staging-deploy.yml` |
 | Staging database catalog | `RockStaging` — its own, split from the fleet 2026-08-18 | `gh variable list -R passiondev/Rock` |
-| `pr-*` database catalog | shared: all `pr-*` sites use the same one | `PR_TEST_DB_NAME` unset ⇒ falls back to `secrets.DB_NAME`. That secret names a catalog no longer on the instance as of 2026-08-26, so a fresh `pr-*` deploy needs `PR_TEST_DB_NAME` set |
+| `pr-*` database catalog | shared: all `pr-*` sites use the same one, `RockStaging` since 2026-08-26 | `gh variable list -R passiondev/Rock` shows `PR_TEST_DB_NAME`. Not to be confused with staging's `RockStaging20260824` |
 | Office allowlisted IP — **RDP (3389) and SQL (1433) only**, never HTTPS | `159.63.145.194` | GCP firewall rules |
 | Public reachability of test URLs | 443 and 80 open to `0.0.0.0/0` (`https-from-world`, `pr-test-acme-http`); the test VM shares production's `prod-passion-compute` tag | GCP firewall rules; open item 24 |
 | Certificate health, `pr-*` | Valid Let's Encrypt when a site exists. Renewal runs weekly, Monday 08:00 UTC, so a host created after the last run serves a self-signed placeholder until then | `curl -v https://pr-<n>.rock-dev.connect.passion.team` |

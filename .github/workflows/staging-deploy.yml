@@ -149,8 +149,10 @@ jobs:
         env:
           PINNED_BASE_BRANCH: ${{ steps.pin.outputs.base_branch }}
           STAGING_DB_NAME: ${{ vars.STAGING_DB_NAME }}
+          PR_TEST_DB_NAME: ${{ vars.PR_TEST_DB_NAME }}
         run: |
           staging_db_name="${STAGING_DB_NAME:-}"
+          fleet_db_name="${PR_TEST_DB_NAME:-}"
           pinned_branch="${PINNED_BASE_BRANCH:-}"
 
           # Two layouts, because the cutover this guard protects is also the
@@ -183,6 +185,22 @@ jobs:
           pinned_minor="$(printf '%s\n' "$pinned_branch" | sed -n 's/^passion-\([0-9][0-9]*\)\..*$/\1/p')"
           if [ -z "$pinned_minor" ]; then
             echo "::error::Could not read the fleet's pinned Rock minor from '$pinned_branch'. Refusing rather than assuming it matches."
+            exit 1
+          fi
+
+          # The mirror image of the refusal below, and the case the original guard
+          # could not see. Its escape hatch was STAGING_DB_NAME being set at all, so
+          # the moment staging owned a catalog it stopped asking *which* catalog the
+          # fleet was on. Point both variables at one name and the collision the
+          # split was built to prevent is back, with the guard reporting success.
+          #
+          # Case-folded on purpose. SQL Server catalog names are not case sensitive
+          # under the default collation, so 'rockstaging' and 'RockStaging' open the
+          # same database and a raw string compare would wave the collision through.
+          staging_key="$(printf '%s' "$staging_db_name" | tr '[:upper:]' '[:lower:]')"
+          fleet_key="$(printf '%s' "$fleet_db_name" | tr '[:upper:]' '[:lower:]')"
+          if [ -n "$staging_key" ] && [ "$staging_key" = "$fleet_key" ]; then
+            echo "::error::Refusing to deploy Rock $artifact_version to staging. STAGING_DB_NAME and PR_TEST_DB_NAME both name '$staging_db_name', so staging and every pr-* site would run on one catalog. Rock migrates at Application_Start, so whichever site is hit first migrates the schema out from under the others -- that is what put pr-3 on a permanent HTTP 500 on 2026-08-11. Give one of the two a catalog of its own."
             exit 1
           fi
 
