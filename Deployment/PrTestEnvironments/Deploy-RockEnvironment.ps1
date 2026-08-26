@@ -549,6 +549,30 @@ function Stop-EnvironmentAppPool {
 }
 
 function Ensure-AppPool {
+    <#
+    .SYNOPSIS
+        Create the app pool if it is missing, and hold it at Rock's production settings.
+
+    .DESCRIPTION
+        Until 2026-08-26 this set the runtime version and the identity and left
+        everything else at the IIS defaults. Those defaults are tuned for a shared
+        host running many small sites. Rock is the opposite shape: one application
+        that spends a minute and a half rebuilding its caches before it can answer
+        the first request, and then answers in a quarter of a second.
+
+        Staging measured 16.07s for a first request and 0.25s for the next one on
+        2026-08-26. Nothing about the machine changed between those two numbers.
+        IIS had shut the worker process down twenty minutes earlier and the first
+        visitor paid for the restart.
+
+        This function is the staging and production pool only. Deploy-PrEnvironment.ps1
+        carries its own Ensure-AppPool for the PR fleet and is deliberately left
+        alone -- idleTimeout of zero across a dozen PR pools would hold every one of
+        them resident on a 32GB box that hosts them all at once.
+
+    .PARAMETER Name
+        The application pool to create or reconfigure.
+    #>
     param([Parameter(Mandatory = $true)][string]$Name)
 
     if (!(Test-Path "IIS:\AppPools\$Name")) {
@@ -556,6 +580,37 @@ function Ensure-AppPool {
     }
     Set-ItemProperty "IIS:\AppPools\$Name" -Name managedRuntimeVersion -Value "v4.0"
     Set-ItemProperty "IIS:\AppPools\$Name" -Name processModel.identityType -Value "ApplicationPoolIdentity"
+
+    # idleTimeout defaults to 20 minutes: no requests for twenty minutes and IIS
+    # ends the worker process, so the next person through the door pays a full Rock
+    # start. On a staff intranet that is every morning and most lunchtimes.
+    Set-ItemProperty "IIS:\AppPools\$Name" -Name processModel.idleTimeout -Value ([TimeSpan]::Zero)
+
+    # With no idle shutdown, something still has to start the pool after a reboot
+    # or a recycle. AlwaysRunning has WAS start it immediately instead of leaving
+    # the cost for whoever browses to the site first.
+    Set-ItemProperty "IIS:\AppPools\$Name" -Name startMode -Value "AlwaysRunning"
+
+    # startupTimeLimit defaults to 90 seconds and a cold Rock start was measured at
+    # 95-107s. Left at the default, IIS can end the very startup AlwaysRunning just
+    # asked for, and it reports that as a process that failed to start rather than
+    # as a timeout.
+    Set-ItemProperty "IIS:\AppPools\$Name" -Name processModel.startupTimeLimit -Value ([TimeSpan]::FromMinutes(5))
+
+    # The stock recycle is a rolling 29-hour timer counted from the last start, so
+    # the daily restart walks around the clock and eventually lands in the middle of
+    # a Sunday service. Zero turns the rolling timer off; the schedule below puts a
+    # fixed time in its place.
+    Set-ItemProperty "IIS:\AppPools\$Name" -Name recycling.periodicRestart.time -Value ([TimeSpan]::Zero)
+
+    # 04:00 and not 03:00, because Rock warns that a restart inside the hour
+    # daylight saving repeats can run a scheduled job twice.
+    #
+    # Cleared first because this is a collection and not a value. New-ItemProperty
+    # appends, so without the clear every deploy would add another 04:00 entry --
+    # harmless to IIS, and baffling to whoever opens Advanced Settings next.
+    Clear-ItemProperty "IIS:\AppPools\$Name" -Name recycling.periodicRestart.schedule
+    New-ItemProperty "IIS:\AppPools\$Name" -Name recycling.periodicRestart.schedule -Value @{ value = "04:00:00" } | Out-Null
 }
 
 function Get-EnvironmentCertificateThumbprint {
@@ -615,6 +670,21 @@ function Ensure-Website {
     else {
         Set-ItemProperty "IIS:\Sites\$Name" -Name physicalPath -Value $PhysicalPath
         Set-ItemProperty "IIS:\Sites\$Name" -Name applicationPool -Value $PoolName
+    }
+
+    # AlwaysRunning on the pool starts the worker process. It does not start Rock.
+    # The process comes up idle and the application is still cold until a request
+    # arrives, so preload is the half that matters: IIS sends the site a request of
+    # its own and Rock runs Application_Start with nobody waiting on it.
+    #
+    # Wrapped because preloadEnabled needs the Application Initialization role
+    # feature, which is installed on both Rock boxes today. A rebuilt VM that came
+    # up without it should serve a slow first request, not fail the deploy.
+    try {
+        Set-ItemProperty "IIS:\Sites\$Name" -Name applicationDefaults.preloadEnabled -Value $true
+    }
+    catch {
+        Write-Warning "Could not enable preload on $Name, so the site will start cold on the first request after a recycle: $($_.Exception.Message)"
     }
 
     $httpBinding = Get-WebBinding -Name $Name -Protocol http -ErrorAction SilentlyContinue |
@@ -684,6 +754,70 @@ function Sync-SharedSiteAssets {
     }
 }
 
+function Set-ProductionCompilationSettings {
+    <#
+    .SYNOPSIS
+        Turn ASP.NET debug mode off in a web.config, and pin the execution timeout.
+
+    .DESCRIPTION
+        Applied on the server rather than committed to RockWeb/web.config, for two
+        reasons. Upstream owns that file and edits it most releases, so a fork-local
+        change there conflicts at every merge and can be resolved away in silence.
+        And debug="true" is the right setting for a developer running Rock out of
+        Visual Studio -- it is only wrong on a server.
+
+        Doing it here also means Rock's own in-application update process cannot
+        leave it reverted: Rock Update rewrites web.config, and the next deploy puts
+        this back.
+
+        Measured on production 2026-08-26 with debug still on. ASP.NET was serving
+        MicrosoftAjax.debug.js at 320KB where the release build is roughly 100KB,
+        and a 414KB script bundle unminified at 45 characters per line. Bundling was
+        already happening; minification is what debug="true" turns off. Worth 400 to
+        500KB of a 3.26MB page. The Obsidian ES modules are unaffected either way.
+
+        The timeout is not optional. debug="true" sets the execution timeout to
+        30,000,000 seconds, so the 110 second default has never applied here.
+        Turning debug off brings it back, and a cold Rock start was measured at 95
+        to 107 seconds -- close enough that a slow morning would surface as a
+        request timeout on a site that is working. Both settings move together or
+        neither does, which is why one function does both.
+
+        A pure string transform so it can be tested without IIS, a server, or a
+        file on disk.
+
+    .PARAMETER WebConfig
+        The contents of web.config.
+
+    .PARAMETER ExecutionTimeoutSeconds
+        Seconds to allow one request. The default also covers the first request
+        after a deploy, when Rock runs its EF and plugin migrations inline.
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$WebConfig,
+        [Parameter(Mandatory = $false)][int]$ExecutionTimeoutSeconds = 600
+    )
+
+    # Rewritten rather than appended to, so a redeploy over a site this already ran
+    # against produces the same file instead of a second copy of each attribute.
+    if ($WebConfig -match '<compilation\b[^>]*\bdebug=') {
+        $WebConfig = $WebConfig -replace '(<compilation\b[^>]*\bdebug=")[^"]*(")', '${1}false${2}'
+    }
+    else {
+        $WebConfig = $WebConfig -replace '(<compilation\b)', '${1} debug="false"'
+    }
+
+    if ($WebConfig -match '<httpRuntime\b[^>]*\bexecutionTimeout=') {
+        $WebConfig = $WebConfig -replace '(<httpRuntime\b[^>]*\bexecutionTimeout=")[^"]*(")', "`${1}$ExecutionTimeoutSeconds`${2}"
+    }
+    else {
+        $WebConfig = $WebConfig -replace '(<httpRuntime\b)', "`${1} executionTimeout=`"$ExecutionTimeoutSeconds`""
+    }
+
+    return $WebConfig
+}
+
 function Write-RuntimeConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -723,6 +857,7 @@ function Write-RuntimeConfiguration {
     if (Test-Path $webConfigPath) {
         $webConfig = Get-Content $webConfigPath -Raw
         $webConfig = $webConfig -replace '(<attributeValue\s+attributeKey="PublicApplicationRoot"[^>]*value=")"', "`${1}$PublicRoot`""
+        $webConfig = Set-ProductionCompilationSettings -WebConfig $webConfig
         $webConfig | Out-File -FilePath $webConfigPath -Encoding UTF8 -Force
     }
 }
