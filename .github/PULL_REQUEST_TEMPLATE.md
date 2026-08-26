@@ -49,7 +49,7 @@ Example:
 Add the `rock:start` label to this PR. CI builds the branch on a Windows
 runner and deploys it to its own site at:
 
-    https://pr-<this PR number>.rock-dev.connect.passion.team
+    https://pr-<this PR number>.staging.connect.passion.team
 
 The build takes roughly 25-35 minutes. Labels track progress:
 

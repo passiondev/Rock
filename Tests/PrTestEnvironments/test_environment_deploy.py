@@ -28,7 +28,7 @@ STAGING_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "staging-deploy.yml"
 PRODUCTION_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "production-deploy.yml"
 
 TRUNK_BRANCH = "passion-19.3.4"
-STAGING_HOST = "staging.rock-dev.connect.passion.team"
+STAGING_HOST = "staging.connect.passion.team"
 
 
 def _block_body(lines, opener_index):

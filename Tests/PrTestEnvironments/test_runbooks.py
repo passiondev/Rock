@@ -52,7 +52,7 @@ class RunbookTests(RunbookAssertions, unittest.TestCase):
 
     def test_operator_runbook_covers_infrastructure_and_recovery(self):
         self.assertCovers(OP_RUNBOOK, [
-            '*.rock-dev.connect.passion.team',
+            '*.staging.connect.passion.team',
             "Let's Encrypt",
             'pr-test-renew-certificates.yml',
             '159.63.145.194/32',

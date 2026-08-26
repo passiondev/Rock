@@ -251,7 +251,7 @@ Slide 13's table answers "why does it take so long" before it's asked. The line 
 them the compiled file that a MacBook cannot produce, and leave it at that — don't open the tab
 yet. It is step 5b of the demo runbook: one line changed in a `.obs` Vue component, and the
 string comes back out of
-`pr-<N>.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`. Setting it up
+`pr-<N>.staging.connect.passion.team/Obsidian/Blocks/security/login.obs.js`. Setting it up
 here and closing it there is what turns this slide from an assertion into a demonstration.
 
 Slide 14, reason 3 is for the Technology Director: credentials live in GitHub secrets and are
@@ -287,8 +287,8 @@ version of this line said 30 minutes and no recent run has come in under 40.
 >
 > Warm the two tabs the demo actually uses, not just the home page — the same app pool serves
 > all of them, so one request warms the site, but having them already open saves fumbling:
-> `pr-<N>.rock-dev.connect.passion.team/this-page-does-not-exist` and
-> `staging.rock-dev.connect.passion.team/this-page-does-not-exist`.
+> `pr-<N>.staging.connect.passion.team/this-page-does-not-exist` and
+> `staging.connect.passion.team/this-page-does-not-exist`.
 
 Slide 15's table is the mental model for the whole hour. Walk the rows in order — PR,
 staging, production — and note that the first two share a sandbox database.
@@ -402,7 +402,7 @@ commits prove" below. You do not rewrite them; you bring the branch forward and 
 3. **Apply `rock:start`.** Then apply **`rock:auto`** as well. `rock:auto` is what makes step 7
    of the sequence possible, and a PR without it silently ignores pushes.
 4. **Wait for `rock:deployed`,** then record three things at the top of your own notes: the PR
-   number `<N>`, the deployed SHA, and the URL `https://pr-<N>.rock-dev.connect.passion.team`.
+   number `<N>`, the deployed SHA, and the URL `https://pr-<N>.staging.connect.passion.team`.
    Every `pr-<N>` in this script means that number.
 5. **Confirm the four checks** in the morning-of checklist below at least once now, while there
    is still time to rebuild.
@@ -423,8 +423,8 @@ branch intact for next time. If you skip this, the next fleet prune does it for 
 ## Demo runbook
 
 **Pre-built:** your demo PR from the section above — `pr-<N>`, base = the repository default.
-Live: `https://pr-<N>.rock-dev.connect.passion.team`
-Staging: <https://staging.rock-dev.connect.passion.team>
+Live: `https://pr-<N>.staging.connect.passion.team`
+Staging: <https://staging.connect.passion.team>
 
 **Nothing in this section builds anything.** Every artifact below was built and deployed before
 the room sat down. You are not starting a build in front of anyone, and you should say so
@@ -501,14 +501,14 @@ running on that host.
    see that every step is named and logged. This is where "it's a black box" dies.
 5. **The live site.** Two tabs, in this order.
 
-   **a. The banner.** `https://pr-<N>.rock-dev.connect.passion.team/this-page-does-not-exist` —
+   **a. The banner.** `https://pr-<N>.staging.connect.passion.team/this-page-does-not-exist` —
    a green bar across the top of Rock's "We Can't Find That Page". That bar exists in my branch
    and nowhere else: not on staging, not in production. Say the quiet part rather than hoping
    nobody notices it: *"I asked for a page that doesn't exist on purpose — it's the one page a
    signed-out visitor can see that this repository actually owns."*
 
    **b. The thing a MacBook cannot make.**
-   `https://pr-<N>.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`, then ⌘F
+   `https://pr-<N>.staging.connect.passion.team/Obsidian/Blocks/security/login.obs.js`, then ⌘F
    for `CI/CD Training Build`. That file is *compiled output*. I edited one line of a Vue
    single-file component; a Windows runner on GitHub turned it into that bundle. This is the
    whole argument of the previous section made physical — nobody in this room could have
@@ -539,7 +539,7 @@ running on that host.
    > the same certificate). Quicker still: `curl -s -o /dev/null -w '%{http_code}' https://<host>/`
    > with **no** `-k`. If it returns a status code rather than a TLS error, the certificate
    > validates.
-6. **Staging.** <https://staging.rock-dev.connect.passion.team/this-page-does-not-exist> —
+6. **Staging.** <https://staging.connect.passion.team/this-page-does-not-exist> —
    the same page, on the same server, with **no green bar**, because staging builds the trunk
    and the banner only exists on the branch. Two tabs side by side is the entire argument for
    PR environments in one screen: staging shows what is merged, the PR site shows what is
@@ -588,13 +588,13 @@ running on that host.
 
 Do this at least 90 minutes before, so a rebuild is still possible.
 
-- [ ] `https://pr-<N>.rock-dev.connect.passion.team` loads, and the login box actually renders —
+- [ ] `https://pr-<N>.staging.connect.passion.team` loads, and the login box actually renders —
       no "Error Loading Block". No VPN needed; 443 is open to the world on the test VM.
-- [ ] `https://pr-<N>.rock-dev.connect.passion.team/this-page-does-not-exist` shows the green
+- [ ] `https://pr-<N>.staging.connect.passion.team/this-page-does-not-exist` shows the green
       banner. This is the demo's money shot; check it, don't assume it.
-- [ ] `https://pr-<N>.rock-dev.connect.passion.team/Obsidian/Blocks/security/login.obs.js`
+- [ ] `https://pr-<N>.staging.connect.passion.team/Obsidian/Blocks/security/login.obs.js`
       contains `CI/CD Training Build`.
-- [ ] <https://staging.rock-dev.connect.passion.team> loads, and its
+- [ ] <https://staging.connect.passion.team> loads, and its
       `/this-page-does-not-exist` has **no** banner — that contrast is step 6.
 - [ ] Your demo PR still shows `rock:deployed`, and still carries `rock:auto`.
 - [ ] The demo host's certificate — see the certificate box in step 5b. Decide now whether you
@@ -633,7 +633,7 @@ you run the renewal by hand that day, warm the sites *after* it finishes, not be
 # Run this immediately before presenting. Both should come back fast the second time.
 for h in "pr-<N>" staging; do    # substitute your demo PR's number
   curl -s -o /dev/null -k -w "$h  %{http_code}  %{time_total}s\n" \
-    --max-time 240 "https://$h.rock-dev.connect.passion.team/"
+    --max-time 240 "https://$h.staging.connect.passion.team/"
 done
 ```
 

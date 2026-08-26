@@ -5,7 +5,7 @@ name: Deploy Staging
 # staging runs. That name carries the Rock version and is renamed at every upgrade,
 # so read it there rather than trusting a copy of it in prose.
 #
-#   https://staging.rock-dev.connect.passion.team
+#   https://staging.connect.passion.team
 #
 # It is its own IIS site on the test VM (connect-srv-test). Nothing here can touch
 # production.
@@ -222,7 +222,7 @@ jobs:
     uses: ./.github/workflows/pr-test-artifact.yml
     with:
       head_sha: ${{ needs.resolve.outputs.sha }}
-      host_name: staging.rock-dev.connect.passion.team
+      host_name: staging.connect.passion.team
       artifact_slug: staging
     secrets: inherit
 
@@ -232,7 +232,7 @@ jobs:
     uses: ./.github/workflows/env-deploy-command.yml
     with:
       environment_name: staging
-      host_name: staging.rock-dev.connect.passion.team
+      host_name: staging.connect.passion.team
       sha: ${{ needs.resolve.outputs.sha }}
       artifact_gcs_object_path: ${{ needs.build.outputs.artifact_gcs_object_path }}
       mode: DedicatedSite

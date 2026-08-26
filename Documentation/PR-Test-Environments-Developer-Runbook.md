@@ -11,10 +11,10 @@ The currently enabled PR base branch is configured in `.github/pr-test-environme
 Each PR uses:
 
 ```text
-https://pr-<number>.rock-dev.connect.passion.team
+https://pr-<number>.staging.connect.passion.team
 ```
 
-Example: `https://pr-123.rock-dev.connect.passion.team`.
+Example: `https://pr-123.staging.connect.passion.team`.
 
 ## Access
 
@@ -50,6 +50,6 @@ A sticky PR comment shows the current status, URL, deployed SHA, logs, and comma
   (issuer `O=Let's Encrypt`, expires 2026-11-09). A host created since the last renewal serves
   a self-signed placeholder until the weekly job runs -- Monday 08:00 UTC -- so a site created
   on a Tuesday waits almost a week. Clicking through is safe for
-  `*.rock-dev.connect.passion.team` only. There is no VPN involved in reaching any of them:
+  `*.staging.connect.passion.team` only. There is no VPN involved in reaching any of them:
   port 443 is open to the internet.
 - DNS failure (host does not resolve at all): ask an operator to verify the wildcard record.

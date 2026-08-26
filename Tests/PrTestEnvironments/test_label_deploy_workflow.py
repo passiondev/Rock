@@ -34,7 +34,7 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
         # than once per producer. What stays here is what this workflow chooses.
         self.assertIn("attempts: '120'", text)
         self.assertIn("artifactGcsPath", text)
-        self.assertIn("rock-dev.connect.passion.team", text)
+        self.assertIn("staging.connect.passion.team", text)
         self.assertNotIn("sshpass", text)
 
     def test_workflow_reconciles_command_and_state_labels(self):

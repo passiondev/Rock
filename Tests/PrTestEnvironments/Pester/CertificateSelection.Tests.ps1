@@ -43,8 +43,8 @@ BeforeAll {
         }
     }
 
-    $script:HostHeader = 'pr-14.rock-dev.connect.passion.team'
-    $script:Wildcard = 'CN=*.rock-dev.connect.passion.team'
+    $script:HostHeader = 'pr-14.staging.connect.passion.team'
+    $script:Wildcard = 'CN=*.staging.connect.passion.team'
 
     # New-SelfSignedCertificate is a Windows PKI cmdlet, and these tests run on the
     # same Linux runner as the rest of the suite so they can gate every pull request.

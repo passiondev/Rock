@@ -1,5 +1,5 @@
 {
   "baseBranch": "passion-19.3.4",
   "productionBranch": "passion-19.3.4",
-  "environmentDomain": "rock-dev.connect.passion.team"
+  "environmentDomain": "staging.connect.passion.team"
 }

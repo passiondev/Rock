@@ -66,7 +66,7 @@ file when you needed the admin UI produces a change that appears to do nothing.
 
    5. You open your PR's  ◄──  4. The package is installed on a private
       private copy of the        copy of the site, just for your PR:
-      site and test it          https://pr-<number>.rock-dev.connect.passion.team
+      site and test it          https://pr-<number>.staging.connect.passion.team
 
                                     │
                                     ▼
@@ -173,7 +173,7 @@ branch is today, so the link never needs updating:
 ```json
 {
   "baseBranch": "passion-<version>",
-  "environmentDomain": "rock-dev.connect.passion.team"
+  "environmentDomain": "staging.connect.passion.team"
 }
 ```
 
@@ -261,7 +261,7 @@ comment spam. It looks like this:
 | Field | Value |
 | --- | --- |
 | Status | **deployed** |
-| URL | https://pr-42.rock-dev.connect.passion.team |
+| URL | https://pr-42.staging.connect.passion.team |
 | Deployed SHA | `aea0dba…` |
 | Artifact | `gs://…/RockWeb-pr-42-aea0dba.zip` |
 | Last updated | 2026-05-05T14:33:21Z |
@@ -277,7 +277,7 @@ Go do something else; the comment updates itself.
 ### Step 7 — Open your environment
 
 ```
-https://pr-<your PR number>.rock-dev.connect.passion.team
+https://pr-<your PR number>.staging.connect.passion.team
 ```
 
 This works from anywhere — no VPN, no office network.
@@ -290,7 +290,7 @@ Two things to expect on first visit:
   exception: it starts on a self-signed placeholder until the weekly renewal issues a
   certificate for its host name, so a warning on a site you just spun up is expected and not a
   sign that anything is wrong. Click through it once for these
-  `*.rock-dev.connect.passion.team` hosts — and nowhere else.
+  `*.staging.connect.passion.team` hosts — and nowhere else.
 
 - **A very slow first page load.** Rock compiles and warms up on the first request; a
   minute or more is normal. Subsequent pages are fast. If it times out, reload once
@@ -332,7 +332,7 @@ Then either:
 **Merging your PR into the default branch deploys it to staging automatically.** It does not
 touch production, it does not reboot anything, and it does not need anyone's permission —
 but roughly 40 minutes later your change is live on
-<https://staging.rock-dev.connect.passion.team> for the whole team to see. That is the
+<https://staging.connect.passion.team> for the whole team to see. That is the
 point: staging is the shared "does it work on a real server" copy, and it always shows
 what is on the trunk branch.
 
@@ -374,7 +374,7 @@ rather than expecting it to pop straight back up.
 `rock:queued` · `rock:building` · `rock:deploying` · `rock:deployed` ·
 `rock:stopped` · `rock:failed`
 
-Your environment is always at a predictable address: `pr-<number>.rock-dev.connect.passion.team`,
+Your environment is always at a predictable address: `pr-<number>.staging.connect.passion.team`,
 IIS site `rock-pr-<number>`, files at `C:\RockTestEnvs\pr-<number>\site` on the test host.
 
 ---
@@ -489,7 +489,7 @@ If *every* page of your environment returns a 500 — not one broken block, the 
 the odds are it has nothing to do with your PR. A platform-level fault looks exactly like
 "I broke it," and the error page is deliberately unhelpful about the difference.
 
-**How to tell in thirty seconds:** open <https://staging.rock-dev.connect.passion.team>.
+**How to tell in thirty seconds:** open <https://staging.connect.passion.team>.
 Staging runs trunk with none of your changes in it. If staging is broken too, it is not you.
 
 Worth knowing why the error page is useless here. Rock's `web.config` sets
@@ -615,7 +615,7 @@ on:
 ```
 
 Merging your PR is the trigger. Roughly 30 minutes later your change is live at
-<https://staging.rock-dev.connect.passion.team>. What it does, in order:
+<https://staging.connect.passion.team>. What it does, in order:
 
 1. Resolves the commit that was just merged.
 2. Builds Rock on a Windows runner — the same build the PR environments use (~25 min).
@@ -750,7 +750,7 @@ instructions do.
 | Build succeeded but my change isn't there | A project failed to compile ([Trap 5](#trap-5-a-green-build-does-not-prove-your-code-shipped)) or, before 2026-08-10, the file was under an overlaid directory ([Trap 1](#trap-1-themes-content-assets-and-styles-used-to-get-overwritten--fixed-2026-08-10)) | Search the build log for `Warning: Failed to build`. Build failures now fail the run, so a green build really did compile |
 | URL doesn't load at all | Environment never deployed, or DNS | It is *not* VPN — these hosts are public. Confirm the status comment says `deployed`, then ask DevOps to check DNS |
 | Every page returns a 500 | Usually platform-wide, not your change ([Trap 6](#trap-6-a-500-on-every-page-is-probably-not-your-change)) | Open staging. If it is broken too, report both with your PR number |
-| Certificate warning | Expected only on a **brand-new** environment, which starts self-signed until the weekly renewal covers its host name. `staging` and existing `pr-*` hosts hold real Let's Encrypt certificates (measured 2026-08-11, after a deploy) | Click through for `*.rock-dev.connect.passion.team` only. Report it if you see it on an established host, or on any *other* domain |
+| Certificate warning | Expected on any host the weekly renewal has not reached yet. Since the move to `staging.connect.passion.team` that is **every host**: the earlier Let's Encrypt certificates were issued for `*.rock-dev.connect.passion.team` names and do not match the new ones. Renewal reissues per host | Click through for `*.staging.connect.passion.team` only. Report it if you see it on any *other* domain |
 | First page load times out | Cold start | Reload once. Report if it fails twice |
 | The page looks exactly the same as before my change | Very likely the page is drawn by a file this branch does not contain — the sign-in page, `/checkin`, and anything on the `CONNECT` theme all are ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Add a nonsense path to the test URL and look at the 404 page. It is the one page a signed-out visitor sees that comes from this branch, so it tells you whether your build actually deployed |
 | A plugin page looks wrong on a test site, or shows `Error Loading Block` | Plugin blocks are not in the repo; test sites borrow the server's copy through the overlay ([Trap 7](#trap-7-plugin-blocks-and-our-themes-are-not-on-this-branch-at-all)) | Not a bug in your PR, and your branch cannot fix it. Verify that page in production instead, and talk to DevOps |
@@ -1013,14 +1013,14 @@ Re-verify these before trusting this document:
 | Fact | Value as of 2026-08-19 | Where to check |
 | --- | --- | --- |
 | Eligible base branch / repo default branch | read it, don't memorise it — named `passion-<version>` | `.github/pr-test-environments.json` |
-| Environment domain | `rock-dev.connect.passion.team` | same file |
-| Staging URL | `staging.rock-dev.connect.passion.team` | `.github/workflows/staging-deploy.yml` |
+| Environment domain | `staging.connect.passion.team` | same file |
+| Staging URL | `staging.connect.passion.team` | `.github/workflows/staging-deploy.yml` |
 | Staging database catalog | `RockStaging` — its own, split from the fleet 2026-08-18 | `gh variable list -R passiondev/Rock` |
 | `pr-*` database catalog | shared: all `pr-*` sites use the same one, `RockStaging` since 2026-08-26 | `gh variable list -R passiondev/Rock` shows `PR_TEST_DB_NAME`. Not to be confused with staging's `RockStaging20260824` |
 | Office allowlisted IP — **RDP (3389) and SQL (1433) only**, never HTTPS | `159.63.145.194` | GCP firewall rules |
 | Public reachability of test URLs | 443 and 80 open to `0.0.0.0/0` (`https-from-world`, `pr-test-acme-http`); the test VM shares production's `prod-passion-compute` tag | GCP firewall rules; open item 24 |
-| Certificate health, `pr-*` | Valid Let's Encrypt when a site exists. Renewal runs weekly, Monday 08:00 UTC, so a host created after the last run serves a self-signed placeholder until then | `curl -v https://pr-<n>.rock-dev.connect.passion.team` |
-| Certificate health, `staging` | **Valid** — Let's Encrypt YR2, `CN=staging.rock-dev.connect.passion.team`, expires 2026-11-09 (verified 2026-08-19). An earlier revision of this table said "Untrusted"; that was true before the renewal selector was fixed | same command against the staging URL |
+| Certificate health, `pr-*` | Valid Let's Encrypt when a site exists. Renewal runs weekly, Monday 08:00 UTC, so a host created after the last run serves a self-signed placeholder until then | `curl -v https://pr-<n>.staging.connect.passion.team` |
+| Certificate health, `staging` | **Self-signed until renewal runs on the new domain.** The Let's Encrypt YR2 certificate verified on 2026-08-19 was issued for `CN=staging.rock-dev.connect.passion.team` and does not cover the new host name. Dispatch `pr-test-renew-certificates.yml` after the first deploy | same command against the staging URL |
 | Overlaid directories | `Themes,Content,Assets,Styles`, copy-if-absent only | `Deploy-PrEnvironment.ps1` |
 | Directories a deploy never touches | `Content`, `App_Data`, `Logs`, `Uploads`, `web.ConnectionStrings.config` | `Deploy-RockEnvironment.ps1` |
 | Typical build+deploy time | ~30 minutes | Recent Actions runs |

@@ -87,7 +87,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const config = JSON.parse(fs.readFileSync('.github/pr-test-environments.json', 'utf8'));
-            core.setOutput('environment_domain', config.environmentDomain || 'rock-dev.connect.passion.team');
+            core.setOutput('environment_domain', config.environmentDomain || 'staging.connect.passion.team');
 
             const explicit = (context.payload.inputs.pr_numbers || '').trim();
             let selected = [];

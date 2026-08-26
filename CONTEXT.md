@@ -43,7 +43,7 @@ Prefer **trunk** in prose. Keep `baseBranch`, `default branch` and
 | **environment** | One IIS site on the Windows VM, with its own app pool, host name and directory under `C:\RockTestEnvs`. |
 | **PR environment** | An environment created for a pull request, named `rock-pr-<number>`. |
 | **the fleet** / **the `pr-*` fleet** | Every PR environment at once. |
-| **staging** | The long-lived environment at `staging.rock-dev.connect.passion.team`. Not a PR environment: it survives, and since 2026-08-18 it has its own catalog. |
+| **staging** | The long-lived environment at `staging.connect.passion.team`. Not a PR environment: it survives, and since 2026-08-18 it has its own catalog. |
 | **production** | The live Rock. Reached only through `production-deploy.yml`, behind an approval gate. |
 
 Do not call an environment an *instance*. In this project `instance` means a

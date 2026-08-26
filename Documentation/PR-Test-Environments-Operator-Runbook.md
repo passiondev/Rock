@@ -7,7 +7,7 @@
 ## Infrastructure
 
 - Base branch config: `.github/pr-test-environments.json` controls which PR base branch is eligible for PR test environments. It currently targets `passion-19.3.4` for the Rock version pin. Update this value during Rock upgrades.
-- Wildcard DNS: `*.rock-dev.connect.passion.team` points to the Google Windows VM. Cloudflare is configured manually in DNS-only mode.
+- Wildcard DNS: `*.staging.connect.passion.team` points to the Google Windows VM. Cloudflare is configured manually in DNS-only mode.
 - TLS: PR hosts use Let's Encrypt certificates installed in LocalMachine `My` and bound in IIS. `.github/workflows/pr-test-renew-certificates.yml` runs weekly and can be dispatched manually; it temporarily applies the `pr-test-acme-http` VM network tag for HTTP-01 validation, queues `renew-certificate`, then removes the tag. A Cloudflare DNS token would allow a future wildcard DNS-01 flow.
 - Firewall: **as actually configured, HTTPS/443 is open to the whole internet** via the rule
   `https-from-world`, not restricted to office egress. The `159.63.145.194/32` allowlist covers
@@ -195,4 +195,4 @@ The consequence of the fix is that **"move the default branch" is now a required
   Measure the issuer with `openssl s_client`; a real certificate shows `O=Let's Encrypt`. If the
   fix is deployed and the issuer is still self-signed, dispatch
   `.github/workflows/pr-test-renew-certificates.yml` and confirm the log names the host.
-- DNS failures: confirm `*.rock-dev.connect.passion.team` resolves to `GCP_VM_EXTERNAL_IP`. This is public DNS; no VPN is required.
+- DNS failures: confirm `*.staging.connect.passion.team` resolves to `GCP_VM_EXTERNAL_IP`. This is public DNS; no VPN is required.
