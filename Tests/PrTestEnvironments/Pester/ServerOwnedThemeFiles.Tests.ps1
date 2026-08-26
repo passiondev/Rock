@@ -30,6 +30,7 @@ BeforeAll {
     . (Import-ScriptFunction -Path $script:DeployScript -Name @(
         'Get-ServerOwnedThemeFilePaths',
         'ConvertTo-NativePath',
+        'Resolve-SharedAssetSource',
         'Sync-ServerOwnedAssets',
         'Ensure-Directory',
         'Write-DeployStep'))
@@ -462,5 +463,60 @@ Describe 'ConvertTo-NativePath' {
             $already = 'C:\extract\Themes\Rock\x.less'
             ConvertTo-NativePath -Path $already -Separator $script:Backslash | Should -Be $already
         }
+    }
+}
+
+Describe 'Resolve-SharedAssetSource' {
+
+    <#
+        The plan and the apply run both need to know which site the overlay reads
+        from, and they used to work it out separately. The apply run fell back to
+        the Default Web Site when nothing was configured -- the normal case -- and
+        the plan did not, so the plan reported "none found" for a run that would
+        restore eight files.
+
+        The Get-Command guard is the part worth testing here. -ErrorAction does not
+        suppress a missing cmdlet: CommandNotFoundException is raised before any
+        parameter is bound. Without the guard this function throws on any machine
+        without the IIS module, which is every machine these tests run on, and the
+        dry run now calls it.
+    #>
+
+    It 'returns the configured path when one is given' {
+        Resolve-SharedAssetSource -ConfiguredPath '/srv/base-site' | Should -Be '/srv/base-site'
+    }
+
+    It 'expands environment variables in the configured path' {
+        # The apply run did this and the plan must not quietly stop doing it.
+        $env:ROCK_TEST_BASE = '/srv/expanded'
+        try {
+            Resolve-SharedAssetSource -ConfiguredPath '%ROCK_TEST_BASE%' | Should -Be '/srv/expanded'
+        }
+        finally {
+            Remove-Item Env:\ROCK_TEST_BASE -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'returns empty rather than throwing when Get-Website does not exist' {
+        # This is the whole point of the guard, and it is the state of every
+        # machine that runs this suite. Without it the call is a terminating error.
+        (Get-Command -Name 'Get-Website' -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
+
+        { Resolve-SharedAssetSource -ConfiguredPath '' } | Should -Not -Throw
+        Resolve-SharedAssetSource -ConfiguredPath '' | Should -Be ''
+    }
+
+    It 'treats whitespace as no configured path' {
+        { Resolve-SharedAssetSource -ConfiguredPath '   ' } | Should -Not -Throw
+        Resolve-SharedAssetSource -ConfiguredPath '   ' | Should -Be ''
+    }
+
+    It 'reads the Default Web Site when nothing is configured and IIS is present' {
+        # Stubbed, because there is no IIS here. What is being checked is that a
+        # blank parameter reaches the fallback at all -- the plan's original bug
+        # was that it never did.
+        function Get-Website { param($Name) [pscustomobject]@{ physicalPath = '/srv/default-web-site' } }
+
+        Resolve-SharedAssetSource -ConfiguredPath '' | Should -Be '/srv/default-web-site'
     }
 }

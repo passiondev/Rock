@@ -992,9 +992,22 @@ function Resolve-SharedAssetSource {
         return [Environment]::ExpandEnvironmentVariables($ConfiguredPath)
     }
 
-    # Get-Website is absent off Windows and absent when the IIS module is not
-    # loaded. Neither is an error here: the caller treats an empty source as
-    # "nothing to overlay from", which is the right answer in both cases.
+    # Guarded with Get-Command, and -ErrorAction is not enough on its own. A
+    # missing cmdlet raises CommandNotFoundException before any parameter is
+    # bound, so SilentlyContinue never gets the chance to suppress it -- verified,
+    # not assumed. That matters more than it used to: the dry run calls this now,
+    # and a plan that throws where the previous one returned a value is a
+    # regression in the one command an operator runs to find out what will happen.
+    # It also keeps the function callable from the tests, which do not run on
+    # Windows and have no IIS module.
+    #
+    # Absent is not an error. The caller treats an empty source as "nothing to
+    # overlay from", which is the right answer both off Windows and on a box where
+    # the site is configured explicitly.
+    if (!(Get-Command -Name 'Get-Website' -ErrorAction SilentlyContinue)) {
+        return ''
+    }
+
     $defaultSite = Get-Website -Name 'Default Web Site' -ErrorAction SilentlyContinue
     if ($null -ne $defaultSite -and ![string]::IsNullOrWhiteSpace($defaultSite.physicalPath)) {
         return [Environment]::ExpandEnvironmentVariables($defaultSite.physicalPath)
