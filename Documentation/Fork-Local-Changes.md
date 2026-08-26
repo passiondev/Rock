@@ -27,8 +27,8 @@ of confidently wrong SHAs beside it would be worse than no column.
 
 The list was longer than anyone expected when it was first derived on 2026-08-20. The
 working belief — written down in more than one place — was that the icon migration was
-the only spot where the fork changes Rock's behaviour. It is one of six files across two
-entirely unrelated changes.
+the only spot where the fork changes Rock's behaviour. It is one of six files across
+three entirely unrelated changes.
 
 ---
 
@@ -58,24 +58,44 @@ upstream this entry should be deleted rather than carried.
 - `Rock.ViewModels/Blocks/WorkFlow/FormBuilder/FormGeneralViewModel.cs`
 - `Rock.JavaScript.Obsidian.Blocks/src/WorkFlow/FormBuilder/FormBuilderDetail/generalSettings.partial.obs`
 - `Rock.JavaScript.Obsidian.Blocks/src/WorkFlow/FormBuilder/Shared/types.partial.ts`
-- `Rock.JavaScript.Obsidian.Blocks/src/WorkFlow/WorkflowEntry/Actions/entryFormPersonEntry.partial.obs`
 
 **What it does.** Adds a `HeaderImage` picker to the FormBuilder general-settings panel
 and renders the chosen image at the top of the user-facing form. The value is stored in a
 `HeaderImage` entity attribute on `WorkflowType` rather than in a column, so it can be
 read from Lava on the entry page.
 
-**Why it is fragile.** It spans five files across three layers — C# block, view model,
-and three Obsidian components. A merge that resolves any one of them towards upstream
-leaves the other four referencing a member that no longer exists, and the break shows up
-as a build error a long way from the file that caused it. Worse, a resolution that takes
-upstream's `entryFormPersonEntry.partial.obs` cleanly would compile fine and simply stop
-rendering the image.
+**Why it is fragile.** It spans four files across three layers — C# block, view model,
+and two Obsidian components. A merge that resolves any one of them towards upstream
+leaves the other three referencing a member that no longer exists, and the break shows
+up as a build error a long way from the file that caused it.
 
 **If a merge drops it,** forms lose their header image with no error anywhere.
 
 **Nothing tests it.** There is no coverage of this feature in the repository, so the only
 thing standing between it and a bad merge is this page. That is worth fixing separately.
+
+## 3. Workflow person entry is full width, and campus is required
+
+- `Rock.JavaScript.Obsidian.Blocks/src/WorkFlow/WorkflowEntry/Actions/entryFormPersonEntry.partial.obs`
+
+**What it does.** Three edits to the person-entry block on workflow forms. The primary
+person editor becomes full width (`col-md-12` in place of `col-md-6`), the spouse editor
+moves out of that column into a row of its own, and the Campus dropdown gains
+`rules="required"`.
+
+**Why it is listed separately.** Until 2026-08-26 this file sat under item 2, described
+as part of the header image. It is not: the file contains no `HeaderImage` reference at
+all, and the two changes touch different screens. Grouping them meant the entry told
+whoever was merging to look for image code in a file that has none.
+
+**If a merge drops it,** person-entry forms silently return to half width with the spouse
+editor beside the primary, and campus stops being required. Nothing fails to compile and
+no error is logged, so the only signal is someone noticing the form looks different.
+
+**The campus rule is not in production.** `passion-18.4.1` carries the width and spouse
+changes but not `rules="required"`. It reaches production with the v19 cutover, which
+makes campus mandatory on every workflow form that shows the field. Confirm that is
+wanted before the cutover rather than after.
 
 ---
 
