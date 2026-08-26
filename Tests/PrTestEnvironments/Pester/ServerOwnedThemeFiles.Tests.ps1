@@ -1,0 +1,259 @@
+<#
+    Everything an organisation has ever changed about a legacy LESS theme lives
+    in two files: _variable-overrides.less and _css-overrides.less. Upstream
+    ships an empty pair in every theme and never touches them again.
+
+    Production's copies carry the brand palette and the Pro Font Awesome wiring.
+    The artifact's copies carry neither, and they have the same names, so both
+    deployment modes get them wrong in opposite directions unless something
+    intervenes -- InPlace overwrites production's with upstream's empty pair, and
+    the DedicatedSite overlay skips production's because the artifact already put
+    a file there. That is why staging renders in stock Rock blue.
+
+    Get-ServerOwnedThemeFilePaths is what both modes ask, and the property that
+    makes it safe to use as a robocopy exclusion is that it only ever returns
+    paths that exist. A path returned for a theme the server does not have would
+    exclude that theme's override file from the copy, and theme.less imports the
+    file unconditionally, so the theme would stop compiling altogether.
+
+    These run against the shipped function body, loaded by AST so the script
+    itself never executes. Paths are built from $TestDrive: Join-Path resolves
+    the qualifier through the provider, so a Windows literal on a Linux runner
+    returns $null and an assertion comparing $null to $null passes having checked
+    nothing.
+#>
+
+BeforeAll {
+    Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
+
+    $script:DeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
+    . (Import-ScriptFunction -Path $script:DeployScript -Name @(
+        'Get-ServerOwnedThemeFilePaths',
+        'Sync-ServerOwnedAssets',
+        'Ensure-Directory',
+        'Write-DeployStep'))
+
+    $script:OverrideFiles = @('_variable-overrides.less', '_css-overrides.less')
+
+    # Defined here rather than inside the Describe: Pester 5 runs an It in a
+    # scope that does not see functions declared in the Describe body.
+    function New-ThemeFile {
+        param([string]$Theme, [string]$FileName, [string]$Content = 'x')
+        $styles = Join-Path (Join-Path (Join-Path $script:SiteRoot 'Themes') $Theme) 'Styles'
+        New-Item -ItemType Directory -Path $styles -Force | Out-Null
+        Set-Content -Path (Join-Path $styles $FileName) -Value $Content -NoNewline
+    }
+}
+
+Describe 'Get-ServerOwnedThemeFilePaths' {
+
+    BeforeEach {
+        # $TestDrive is scoped to the Describe, not to the It, so without this
+        # every test inherits the theme tree the previous one built and the
+        # "does not return a path for a file the site does not have" assertions
+        # pass or fail on whatever ran before them.
+        $script:SiteRoot = Join-Path $TestDrive 'site'
+        $script:SiteRoot | Should -Not -BeNullOrEmpty
+        if (Test-Path $script:SiteRoot) { Remove-Item $script:SiteRoot -Recurse -Force }
+    }
+
+    It 'finds both override files in a theme that has both' {
+        New-ThemeFile -Theme 'Rock' -FileName '_variable-overrides.less'
+        New-ThemeFile -Theme 'Rock' -FileName '_css-overrides.less'
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $script:SiteRoot -FileNames $script:OverrideFiles)
+
+        $found | Should -HaveCount 2
+        $found | Should -Contain 'Themes/Rock/Styles/_variable-overrides.less'
+        $found | Should -Contain 'Themes/Rock/Styles/_css-overrides.less'
+    }
+
+    It 'finds every theme, not just the first' {
+        # Production customises Stark as well as Rock, and Stark is the theme the
+        # login page renders in -- the first thing anyone sees.
+        New-ThemeFile -Theme 'Rock' -FileName '_variable-overrides.less'
+        New-ThemeFile -Theme 'Stark' -FileName '_variable-overrides.less'
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $script:SiteRoot -FileNames $script:OverrideFiles)
+
+        $found | Should -Contain 'Themes/Rock/Styles/_variable-overrides.less'
+        $found | Should -Contain 'Themes/Stark/Styles/_variable-overrides.less'
+    }
+
+    It 'does not return a path for a file the site does not have' {
+        # The safety property. This path becomes a robocopy /XF exclusion on the
+        # InPlace branch, so returning it for a theme v19 introduces would stop
+        # the artifact delivering the file and leave the theme unable to compile.
+        New-ThemeFile -Theme 'Rock' -FileName '_variable-overrides.less'
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $script:SiteRoot -FileNames $script:OverrideFiles)
+
+        $found | Should -Not -Contain 'Themes/Rock/Styles/_css-overrides.less'
+        $found | Should -HaveCount 1
+    }
+
+    It 'ignores a theme directory that has no Styles folder' {
+        $themeDirectory = Join-Path (Join-Path $script:SiteRoot 'Themes') 'Empty'
+        New-Item -ItemType Directory -Path $themeDirectory -Force | Out-Null
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $script:SiteRoot -FileNames $script:OverrideFiles)
+
+        $found | Should -HaveCount 0
+    }
+
+    It 'returns nothing rather than throwing when the site root does not exist' {
+        # The DedicatedSite caller passes the base site's path, and that path is
+        # discovered from IIS and can legitimately be absent. A throw here would
+        # fail a deploy over a theme file.
+        $missing = Join-Path $TestDrive 'no-such-site'
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $missing -FileNames $script:OverrideFiles)
+
+        $found | Should -HaveCount 0
+    }
+
+    It 'returns nothing rather than throwing when the site root is empty' {
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot '' -FileNames $script:OverrideFiles)
+
+        $found | Should -HaveCount 0
+    }
+
+    It 'returns nothing when the site has no Themes directory at all' {
+        New-Item -ItemType Directory -Path $script:SiteRoot -Force | Out-Null
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $script:SiteRoot -FileNames $script:OverrideFiles)
+
+        $found | Should -HaveCount 0
+    }
+
+    It 'skips a blank filename rather than matching the Styles directory itself' {
+        # Test-Path on a joined empty leaf answers for the directory, which would
+        # put 'Themes/Rock/Styles/' into a /XF exclusion list.
+        New-ThemeFile -Theme 'Rock' -FileName '_variable-overrides.less'
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $script:SiteRoot -FileNames @('', '_variable-overrides.less'))
+
+        $found | Should -HaveCount 1
+        $found[0] | Should -Be 'Themes/Rock/Styles/_variable-overrides.less'
+    }
+
+    It 'uses forward slashes, so the result concatenates with $ServerOwnedDirectories' {
+        # Both lists are handed to the same functions. $ServerOwnedDirectories is
+        # written with forward slashes for the reason its own comment gives.
+        New-ThemeFile -Theme 'Rock' -FileName '_variable-overrides.less'
+
+        $found = @(Get-ServerOwnedThemeFilePaths -SiteRoot $script:SiteRoot -FileNames $script:OverrideFiles)
+
+        $found[0] | Should -Not -Match '\\'
+    }
+}
+
+Describe 'Sync-ServerOwnedAssets with a path that names a file' {
+
+    <#
+        The restore pass was written for Assets/Fonts/FontAwesome, a directory.
+        The theme overrides are single files inside directories the artifact owns
+        and keeps writing, so they cannot be handled the same way.
+
+        robocopy takes two directories and an optional file filter. Pointing it at
+        a file as though it were a directory does not fail loudly -- it reports a
+        result and moves nothing -- so the split between the two shapes is the
+        whole of the behaviour, and getting it wrong leaves staging on stock Rock
+        blue with a deploy log that says the restore succeeded.
+
+        robocopy does not exist off Windows, so it is stubbed here and the call is
+        captured. That checks how the shipped function invokes it, which is where
+        this can go wrong; it does not check what robocopy then does with those
+        arguments.
+    #>
+
+    BeforeAll {
+        function robocopy {
+            $script:RobocopyCalls += , @($args)
+            # 1 is robocopy for "files were copied". Anything over 7 is a failure
+            # the function is supposed to throw on.
+            $global:LASTEXITCODE = 1
+        }
+
+        # Write-DeployStep stamps elapsed time against this. Nothing here reads the
+        # log, so any fixed start will do -- but it has to exist, or every call
+        # through the function under test dies subtracting from $null.
+        $script:DeployStartedUtc = (Get-Date).ToUniversalTime()
+    }
+
+    BeforeEach {
+        $script:RobocopyCalls = @()
+
+        $script:Source = Join-Path $TestDrive 'base'
+        $script:Destination = Join-Path $TestDrive 'new'
+        foreach ($root in @($script:Source, $script:Destination)) {
+            if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+        }
+        # Both roots have to exist before the call: the function resolves them to
+        # compare them, and Resolve-Path on a missing path is a terminating error.
+        # A real deploy has already extracted the artifact to the destination.
+        New-Item -ItemType Directory -Path $script:Destination -Force | Out-Null
+
+        $script:StylesRelative = 'Themes/Rock/Styles'
+        $sourceStyles = Join-Path (Join-Path $script:Source 'Themes/Rock') 'Styles'
+        New-Item -ItemType Directory -Path $sourceStyles -Force | Out-Null
+        Set-Content -Path (Join-Path $sourceStyles '_variable-overrides.less') `
+            -Value '@brand-color: #00b8e4;' -NoNewline
+    }
+
+    It 'copies the parent directory and names the file as a filter' {
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @("$script:StylesRelative/_variable-overrides.less")
+
+        $script:RobocopyCalls | Should -HaveCount 1
+        $call = $script:RobocopyCalls[0]
+
+        # Two directories, then the leaf as a filter. Passing the file itself as
+        # either directory is the mistake this exists to catch.
+        $call[0] | Should -Not -Match '_variable-overrides\.less$'
+        $call[1] | Should -Not -Match '_variable-overrides\.less$'
+        $call | Should -Contain '_variable-overrides.less'
+    }
+
+    It 'does not recurse when the path names a file' {
+        # /E from the Styles directory with a filename filter would rake that
+        # filter across everything beneath it. Each path is meant to move one file.
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @("$script:StylesRelative/_variable-overrides.less")
+
+        $script:RobocopyCalls[0] | Should -Not -Contain '/E'
+    }
+
+    It 'still recurses when the path names a directory' {
+        # Font Awesome is a directory and has to keep working exactly as before.
+        $fonts = Join-Path $script:Source 'Assets/Fonts/FontAwesome'
+        New-Item -ItemType Directory -Path $fonts -Force | Out-Null
+        Set-Content -Path (Join-Path $fonts 'fa-solid-900.woff2') -Value 'binary' -NoNewline
+
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @('Assets/Fonts/FontAwesome')
+
+        $script:RobocopyCalls | Should -HaveCount 1
+        $script:RobocopyCalls[0] | Should -Contain '/E'
+    }
+
+    It 'creates the parent directory rather than a directory named after the file' {
+        # Ensure-Directory on the file path would make a directory called
+        # _variable-overrides.less and robocopy would copy the file inside it.
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @("$script:StylesRelative/_variable-overrides.less")
+
+        $collision = Join-Path $script:Destination "$script:StylesRelative/_variable-overrides.less"
+        (Test-Path -Path $collision -PathType Container) | Should -BeFalse
+        (Test-Path -Path (Split-Path -Parent $collision) -PathType Container) | Should -BeTrue
+    }
+
+    It 'says the path was absent rather than copying, when the base site lacks it' {
+        # A theme production does not have is not an error. The artifact's copy
+        # stays, which is the only thing that could be right.
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @('Themes/RockNextGen/Styles/_variable-overrides.less')
+
+        $script:RobocopyCalls | Should -HaveCount 0
+    }
+}

@@ -315,6 +315,52 @@ $PreservedFiles = @('web.ConnectionStrings.config')
 # rather than as escapes.
 $ServerOwnedDirectories = @('Assets/Fonts/FontAwesome')
 
+# The same problem one level down: files the organisation owns that sit inside
+# directories the artifact owns. These two are server-owned for a reason that has
+# nothing to do with this pipeline -- Rock writes them itself. The Theme Styler
+# block saves both with File.WriteAllText (RockWeb/Blocks/Cms/ThemeStyler.ascx.cs,
+# lines 134 and 249), so they hold whatever an administrator last did in Admin
+# Tools. A file the running application writes cannot also be owned by the
+# artifact, or every deploy silently reverts an administrator's work. Content and
+# Uploads are on the preserved list for the same reason.
+#
+# Measured against production on 2026-08-26: eight of these files across five
+# themes differ from what the artifact ships -- Rock, Stark, LandingPage,
+# CheckinElectric and DashboardStark. They carry the brand palette
+# (@brand-color: #00b8e4, the link colours, @brand-critical), the Pro Font
+# Awesome wiring, and hand-written CSS fixes. Only Themes/Rock/Styles/
+# _variable-overrides.less matches the repository, because at some point someone
+# copied that one file into the fork. The other seven exist only on the box.
+#
+# Both modes lost them, in opposite directions:
+#
+#   InPlace        robocopy /E copies whenever source and destination differ, and
+#                  nothing excluded these, so the v19 cutover would have replaced
+#                  all eight with upstream's empty pair.
+#   DedicatedSite  the overlay runs /XC /XN /XO and skips anything the artifact
+#                  already placed, so it never delivered them. That is why staging
+#                  renders in stock Rock blue, and why its Stark login page -- the
+#                  first screen anyone sees -- does not match production either.
+#
+# This also decides whether the Font Awesome exclusion above achieves anything.
+# Restoring the Pro .woff2 binaries is half the job: the compiled CSS only asks
+# for the Pro faces because _variable-overrides.less sets @fa-edition and calls
+# .fa-font-face for the regular and light weights. Lose the override and the Pro
+# fonts sit on disk unreferenced.
+#
+# The cost of this, stated plainly: the box is now authoritative for these eight
+# files, so editing one in the repository will not change production. Change them
+# through Admin Tools > CMS > Themes, which is what writes them. The repository's
+# copy of Themes/Rock/Styles/_variable-overrides.less is a snapshot, not the
+# delivery path.
+#
+# Which themes have these files is read off the box rather than listed here.
+# Get-ServerOwnedThemeFilePaths only returns paths that exist, so a theme v19
+# adds and the box has never seen still gets its file from the artifact -- and it
+# needs to, because theme.less imports the file unconditionally and a theme
+# missing it does not compile at all.
+$ServerOwnedThemeFiles = @('_variable-overrides.less', '_css-overrides.less')
+
 $EnvironmentPath = Join-Path $EnvironmentRoot $EnvironmentName
 $ArtifactPath = Join-Path $EnvironmentPath "artifact.zip"
 $ExtractPath = Join-Path $EnvironmentPath "extract"
@@ -879,6 +925,48 @@ function Sync-SharedSiteAssets {
     }
 }
 
+function Get-ServerOwnedThemeFilePaths {
+    <#
+    .SYNOPSIS
+        Site-relative paths of the per-organisation theme files that exist under
+        a given site root.
+
+    .DESCRIPTION
+        Discovery rather than a hard-coded list, because the answer differs by
+        box and by Rock version. Only paths that exist are returned, which is
+        what makes this safe to use as a robocopy exclusion: a theme the artifact
+        introduces and the server has never had is not excluded, so its file
+        arrives from the artifact instead of going missing.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SiteRoot,
+        # AllowEmptyString as well as AllowEmptyCollection, so the blank-name
+        # guard below is reachable. Without it the binder rejects a blank element
+        # before the function runs and the guard is unreachable code.
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$FileNames
+    )
+
+    $found = @()
+    if ([string]::IsNullOrWhiteSpace($SiteRoot) -or !(Test-Path $SiteRoot)) { return $found }
+
+    $themesRoot = Join-Path $SiteRoot 'Themes'
+    if (!(Test-Path $themesRoot)) { return $found }
+
+    foreach ($theme in (Get-ChildItem -Path $themesRoot -Directory -ErrorAction SilentlyContinue)) {
+        foreach ($fileName in $FileNames) {
+            if ([string]::IsNullOrWhiteSpace($fileName)) { continue }
+            $candidate = Join-Path (Join-Path $theme.FullName 'Styles') $fileName
+            if (Test-Path $candidate) {
+                # Forward slashes to match $ServerOwnedDirectories, which the
+                # callers concatenate this with and pass to the same functions.
+                $found += "Themes/$($theme.Name)/Styles/$fileName"
+            }
+        }
+    }
+
+    return $found
+}
+
 function Sync-ServerOwnedAssets {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SourceRoot,
@@ -914,7 +1002,25 @@ function Sync-ServerOwnedAssets {
             continue
         }
 
-        Ensure-Directory -Path $destinationPath
+        # A path may name a file rather than a directory -- the theme override
+        # files are single files inside directories the artifact owns. robocopy
+        # takes two directories and an optional file filter, so a file is copied
+        # by pointing it at the parent and naming the leaf. Ensure-Directory has
+        # to follow the same split, or a file path would create a directory with
+        # the file's name and the copy would land inside it.
+        $sourceIsFile = Test-Path -Path $sourcePath -PathType Leaf
+        if ($sourceIsFile) {
+            $copyFrom = Split-Path -Parent $sourcePath
+            $copyTo = Split-Path -Parent $destinationPath
+            $copyFilter = @(Split-Path -Leaf $sourcePath)
+        }
+        else {
+            $copyFrom = $sourcePath
+            $copyTo = $destinationPath
+            $copyFilter = @()
+        }
+
+        Ensure-Directory -Path $copyTo
 
         # No /XC /XN /XO, which is the whole point: the shared-asset overlay ran
         # first and skipped every one of these because the artifact had already
@@ -922,7 +1028,20 @@ function Sync-ServerOwnedAssets {
         # -- the base site is authoritative for the files it has, not for the
         # absence of files it does not have, so a weight the artifact ships and
         # the box lacks survives.
-        & robocopy $sourcePath $destinationPath /E /NFL /NDL /NJH /NJS /NP
+        #
+        # /E only when copying a directory. Recursing from a parent directory
+        # with a filename filter would rake that filter across every theme under
+        # it, and each path in the list is meant to move exactly one file.
+        #
+        # [string[]] on both, and not decoration. An if expression unrolls a
+        # single-element array to the element, so `$recurse = if (...) { @('/E') }`
+        # leaves a string behind -- and splatting a string splats it one character
+        # at a time, handing robocopy '/' and 'E' as two arguments instead of the
+        # switch. The directory copy then loses /E and stops recursing, which takes
+        # the Font Awesome restore down with it.
+        [string[]]$recurse = if ($sourceIsFile) { @() } else { @('/E') }
+        [string[]]$arguments = @($copyFilter) + @($recurse)
+        & robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for server-owned path $relativePath with exit code $exitCode."
@@ -930,7 +1049,9 @@ function Sync-ServerOwnedAssets {
 
         # Byte counts rather than file counts. The files are already present either
         # way, so a count cannot show that the right ones arrived; the size can.
-        # Free and Pro Font Awesome share every filename and differ only in size.
+        # Free and Pro Font Awesome share every filename and differ only in size,
+        # and a theme override file that arrived is a few hundred bytes where the
+        # stock one it replaced is a few dozen.
         $totalBytes = (Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue |
             Measure-Object -Property Length -Sum).Sum
         Write-DeployStep "Server-owned $relativePath restored from the base site ($totalBytes bytes on disk)."
@@ -1257,6 +1378,10 @@ try {
         }
         Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
         Write-DeployStep "Would leave server-owned paths untouched: $($ServerOwnedDirectories -join ', ')"
+        $plannedOverrides = @(Get-ServerOwnedThemeFilePaths `
+            -SiteRoot $(if ($Mode -eq 'DedicatedSite') { $SharedAssetSourcePath } else { $SitePath }) `
+            -FileNames $ServerOwnedThemeFiles)
+        Write-DeployStep "Would keep this site's own theme override files: $(if ($plannedOverrides.Count -gt 0) { $plannedOverrides -join ', ' } else { 'none found' })"
         Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
         Write-DeployStep "Would set compilation debug=false and executionTimeout=600 in the deployed web.config."
         Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
@@ -1373,10 +1498,17 @@ try {
         # the artifact already placed, which is exactly the set this pass exists
         # to replace. See $ServerOwnedDirectories for why Font Awesome cannot be
         # solved by the first pass or by committing the files.
+        # Discovered against the base site rather than against the new one: the
+        # question this answers is "which of these does production actually
+        # have", and only paths it has can be restored from it.
+        $serverOwnedPaths = @($ServerOwnedDirectories) + @(Get-ServerOwnedThemeFilePaths `
+            -SiteRoot $sharedAssetSource `
+            -FileNames $ServerOwnedThemeFiles)
+
         Sync-ServerOwnedAssets `
             -SourceRoot $sharedAssetSource `
             -DestinationRoot $SitePath `
-            -RelativePaths $ServerOwnedDirectories
+            -RelativePaths $serverOwnedPaths
 
         # Again, after the overlay. The strip above ran on the extracted artifact;
         # the overlay has since backfilled Plugins from the base site and brought
@@ -1443,6 +1575,23 @@ try {
             $copyExclusions += '/XD'
             $copyExclusions += (Join-Path $ExtractPath $directory)
         }
+
+        # /XF and not /XD, because these are single files inside directories the
+        # artifact does own and must keep writing. Discovered against $SitePath:
+        # only a file production actually has is excluded, so a theme v19 adds
+        # still gets its override file from the artifact rather than landing
+        # without one and failing to compile.
+        #
+        # Excluded from the copy and deliberately not from the backup, on the
+        # same reasoning as Font Awesome above. If this is ever wrong, the backup
+        # is what puts the brand back.
+        $themeOverrides = @(Get-ServerOwnedThemeFilePaths -SiteRoot $SitePath -FileNames $ServerOwnedThemeFiles)
+        foreach ($file in $themeOverrides) {
+            $copyExclusions += '/XF'
+            $copyExclusions += (Join-Path $ExtractPath $file)
+        }
+        Write-DeployStep "Keeping this site's own copies of $($themeOverrides.Count) theme override file(s): $($themeOverrides -join ', ')."
+
         Write-DeployStep "Copying the artifact over $SitePath."
         & robocopy $ExtractPath $SitePath /E @copyExclusions /R:3 /W:5 /NFL /NDL /NP
         $copyExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }

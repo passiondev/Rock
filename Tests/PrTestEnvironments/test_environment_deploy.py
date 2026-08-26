@@ -443,6 +443,135 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
             f"found strips at {[index + 1 for index in strips]}",
         )
 
+    def test_theme_override_files_are_kept_by_both_modes(self):
+        """Everything this organisation has changed about a legacy LESS theme is in
+        _variable-overrides.less and _css-overrides.less. Production's copies carry
+        the brand palette and the Pro Font Awesome wiring; upstream ships an empty
+        pair under the same names.
+
+        Both modes lose them without help, in opposite directions. InPlace robocopies
+        the artifact over the site and overwrites production's pair at the moment of
+        the v19 cutover. DedicatedSite runs the overlay with /XC /XN /XO, which skips
+        production's pair because the artifact has already put a file there -- which
+        is why staging renders in stock Rock blue while production renders in #00b8e4.
+
+        This also decides whether the Font Awesome exclusion works at all. Restoring
+        the Pro .woff2 files is half the job: the compiled CSS only asks for the Pro
+        faces because _variable-overrides.less sets @fa-edition and calls
+        .fa-font-face for the regular and light weights.
+        """
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(r"\$ServerOwnedThemeFiles\s*=\s*@\(([^)]*)\)", text)
+        self.assertIsNotNone(match, "could not find the $ServerOwnedThemeFiles list")
+        declared = set(re.findall(r"'([^']+)'", match.group(1)))
+        self.assertEqual(
+            declared,
+            {"_variable-overrides.less", "_css-overrides.less"},
+            "the two files Rock reserves for per-organisation theme customization",
+        )
+
+        # Both files exist in the repository, so a rename upstream is caught here
+        # rather than by a staging deploy that silently keeps nothing.
+        for name in sorted(declared):
+            self.assertTrue(
+                (REPO_ROOT / "RockWeb" / "Themes" / "Rock" / "Styles" / name).is_file(),
+                f"RockWeb/Themes/Rock/Styles/{name} does not exist, so nothing in the "
+                "artifact has that name and the exclusion protects nothing",
+            )
+
+    def test_theme_overrides_are_excluded_as_files_not_as_directories(self):
+        """/XD against a file name excludes nothing, so the copy would proceed and
+        overwrite production's brand with upstream's empty pair while the deploy log
+        reported the exclusion as applied."""
+        text = DEPLOY_SCRIPT.read_text()
+
+        loop = re.search(
+            r"foreach \(\$file in \$themeOverrides\) \{(.*?)\n\s*\}", text, re.DOTALL,
+        )
+        self.assertIsNotNone(
+            loop,
+            "$themeOverrides is never turned into robocopy exclusions, so the production "
+            "copy overwrites this site's theme customization",
+        )
+        self.assertIn("/XF", loop.group(1), "a single file is excluded with /XF, not /XD")
+        self.assertNotIn("/XD", loop.group(1))
+        self.assertIn(
+            "$ExtractPath", loop.group(1),
+            "robocopy matches exclusions against the source tree, so the path has to be "
+            "built from $ExtractPath and not from $SitePath",
+        )
+
+    def test_each_mode_discovers_theme_overrides_against_the_site_that_has_them(self):
+        """The argument is the whole correctness of this, and both wrong answers are
+        silent.
+
+        InPlace asks $SitePath, because the question is which files production has
+        that the artifact must not overwrite. Asking $ExtractPath instead would answer
+        "all of them" -- every theme in the artifact ships the pair -- and exclude the
+        file from themes v19 adds and the box has never had. theme.less imports it
+        unconditionally, so those themes would stop compiling.
+
+        DedicatedSite asks the base site, because the question is which files there
+        are worth copying onto the new one. Asking $SitePath instead would find the
+        artifact's stock copies and restore them onto themselves, logging a successful
+        restore that changed nothing.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        # A comment and the definition also carry the name, and neither is a call.
+        calls = [
+            index for index, line in enumerate(lines)
+            if "Get-ServerOwnedThemeFilePaths" in line
+            and not line.lstrip().startswith("#")
+            and not line.lstrip().startswith("function ")
+        ]
+        self.assertTrue(calls, "nothing calls Get-ServerOwnedThemeFilePaths")
+
+        openers = [
+            index for index, line in enumerate(lines)
+            if line.strip() == "if ($Mode -eq 'DedicatedSite') {"
+        ]
+        self.assertTrue(openers, "no DedicatedSite branch found")
+        dedicated = set()
+        for opener in openers:
+            start, end = _block_body(lines, opener)
+            dedicated.update(range(start, end))
+
+        # The -SiteRoot argument may sit on the call line or on a continued one.
+        deploying = []
+        for index in calls:
+            window = "\n".join(lines[index:index + 4])
+            root = re.search(r"-SiteRoot\s+(\S+)", window)
+            self.assertIsNotNone(
+                root, f"the call at line {index + 1} passes no -SiteRoot"
+            )
+            deploying.append((index, root.group(1)))
+
+        # The dry run reports a plan for whichever mode it was invoked in, so it
+        # legitimately reads both roots off one conditional. Only the two real
+        # call sites are asserted here.
+        real = [(index, root) for index, root in deploying if not root.startswith("$(")]
+        self.assertEqual(
+            len(real), 2,
+            f"expected one discovery call per mode, found {len(real)}: {real}",
+        )
+
+        for index, root in real:
+            if index in dedicated:
+                self.assertEqual(
+                    root, "$sharedAssetSource",
+                    f"the DedicatedSite call at line {index + 1} discovers against {root}, so it "
+                    "restores the artifact's stock files onto themselves",
+                )
+            else:
+                self.assertEqual(
+                    root, "$SitePath",
+                    f"the InPlace call at line {index + 1} discovers against {root}; it must ask "
+                    "the live site which files it has, or it excludes files the artifact "
+                    "needs to deliver",
+                )
+
     def test_in_place_deploy_is_a_dry_run_unless_apply_is_passed(self):
         """A production overwrite should never be one mistyped argument away. The
         script reports its plan and returns unless -Apply is explicitly given."""
