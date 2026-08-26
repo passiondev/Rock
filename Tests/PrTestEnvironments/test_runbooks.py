@@ -11,6 +11,7 @@ PROD_RUNBOOK = REPO_ROOT / "Documentation" / "Production-Upgrade-Runbook.md"
 
 PRODUCTION_BOOTSTRAP_WORKFLOW = harness.WORKFLOWS_DIR / "production-bootstrap-command-queue.yml"
 PRODUCTION_DEPLOY_WORKFLOW = harness.WORKFLOWS_DIR / "production-deploy.yml"
+THEME_WORKFLOW = harness.WORKFLOWS_DIR / "db-set-theme-customization.yml"
 
 
 class RunbookAssertions:
@@ -192,7 +193,7 @@ class StepsTheRunbookTellsYouToWatchTests(harness.HarnessAssertions, unittest.Te
         )
 
 
-class ProductionUpgradeRunbookTests(RunbookAssertions, unittest.TestCase):
+class ProductionUpgradeRunbookTests(RunbookAssertions, harness.HarnessAssertions, unittest.TestCase):
     """Production's upgrade is the one procedure in this repository where the
     pipeline deliberately stops short and hands off to prose.
 
@@ -358,6 +359,96 @@ class ProductionUpgradeRunbookTests(RunbookAssertions, unittest.TestCase):
             text,
             "the runbook names the branch policy without saying how to add one",
         )
+
+    def test_the_branding_step_dispatches_a_workflow_that_would_accept_it(self):
+        """Step 9 hands the operator a `gh workflow run` line to paste. It names the
+        workflow by title and passes three inputs by name, and every one of those is
+        a copy of something in db-set-theme-customization.yml.
+
+        A renamed input is not a typo here. It is a dispatch that comes back
+        `unexpected input`, during a cutover, on the step that decides whether staff
+        arrive to a site that looks like theirs. Nothing else checks it: the runbook
+        is prose, and the workflow has no idea it is being quoted."""
+        parsed = harness.workflow(THEME_WORKFLOW.name)
+        text = PROD_RUNBOOK.read_text()
+
+        self.assertIn(
+            f'gh workflow run "{parsed["name"]}"',
+            text,
+            "the runbook dispatches the branding workflow by a title it does not have, "
+            f"which is {parsed['name']!r}",
+        )
+
+        declared = set(parsed["on"]["workflow_dispatch"]["inputs"])
+        quoted = set(re.findall(r"-f ([a-z_]+)=", text.split("**Put the branding back.**", 1)[1]))
+
+        self.assertNotVacuous(
+            quoted, "the runbook's dispatch line passes no inputs, so this checks nothing"
+        )
+        self.assertEqual(
+            set(),
+            quoted - declared,
+            "the runbook passes inputs the workflow does not declare, so the dispatch "
+            f"is refused: {sorted(quoted - declared)}",
+        )
+
+    def test_the_branding_step_verifies_against_the_theme_it_sets(self):
+        """The step ends in a curl that greps a colour out of a stylesheet, and both
+        halves are copies -- the theme name it writes to and the theme directory it
+        reads back from. Drift between them and the check reports zero on a write
+        that worked, which reads as the write having failed."""
+        step = PROD_RUNBOOK.read_text().split("**Put the branding back.**", 1)[1]
+        step = step.split("\n10. ", 1)[0]
+
+        theme = re.search(r"-f theme_name=(\S+)", step)
+        self.assertIsNotNone(theme, "the step no longer names the theme it writes to")
+
+        self.assertIn(
+            f"/Themes/{theme.group(1)}/Styles/theme.css",
+            step,
+            "the verification reads a different theme's stylesheet than the one the "
+            "dispatch writes to, so it can report zero on a write that worked",
+        )
+
+        colour = re.search(r"-f variable_values='base-primary=(#[0-9A-Fa-f]{6})'", step)
+        self.assertIsNotNone(colour, "the step no longer names the colour it writes")
+        self.assertIn(
+            f"grep -c '{colour.group(1).lower()}'",
+            step,
+            "the verification greps for a colour the dispatch does not set. Rock emits "
+            "the value lowercased, which is why these two are not the same string",
+        )
+
+    def test_the_branding_step_comes_after_the_migrations(self):
+        """Not a preference. The theme row is inserted at application startup from the
+        directories on disk, so before the site has come up on a v19 artifact there is
+        nothing to write to. Reordering the two steps produces a run that fails with
+        `No theme named RockNextGen` and reads as a broken workflow."""
+        text = PROD_RUNBOOK.read_text()
+
+        # find() rather than index(), so a renamed heading reads as the heading that
+        # moved rather than as ValueError from inside str.index.
+        migrations = text.find("**Load the site and watch the migrations finish.**")
+        branding = text.find("**Put the branding back.**")
+
+        self.assertNotEqual(-1, migrations, "the migrations step is gone or renamed")
+        self.assertNotEqual(-1, branding, "the branding step is gone or renamed")
+        self.assertLess(
+            migrations, branding, "the branding step runs before the row it writes exists"
+        )
+
+    def test_the_branding_step_says_the_write_alone_changes_nothing(self):
+        """The one thing about this step that surprises people. Editing a theme in
+        Admin Tools clears the CSS cache through Theme.SaveHook; writing the column
+        directly runs no save hook, so a correct write leaves the site serving what it
+        built before, and the natural reading of that is that the write did not work.
+        The runbook has to say so, or the next move is a second write."""
+        self.assertCovers(PROD_RUNBOOK, [
+            'Theme.SaveHook',
+            'CssProcessor.ClearCache()',
+            'Cache Manager',
+        ], "the runbook does not say that a direct write leaves the cache stale, so the "
+           "step reads as having failed when it worked")
 
     def test_the_literals_it_tells_you_to_verify_match_the_workflow(self):
         """Step 4 tells the operator to read the installed task's command line and

@@ -20,8 +20,13 @@ name: DB - Set theme customization
 # against production's catalog after the migration and the blue comes back.
 #
 # Note the ordering that implies: the theme this addresses may not exist until the
-# deploy that runs just before it. A run against a catalog still on 18.x fails with
-# "No theme named RockNextGen", which is the correct answer rather than a fault.
+# deploy that runs just before it. The row is not the migration's doing --
+# ThemeService.UpdateThemes() runs at application startup, scans RockWeb/Themes on
+# disk, and inserts a row for anything the catalog does not have. RockWeb/Themes/
+# RockNextGen is a build output that arrives with the v19 artifact, so the row appears
+# the first time the app starts on it. Run this after the site is up, not before. A
+# run against a catalog whose site is still on an 18.x artifact fails with "No theme
+# named RockNextGen", which is the correct answer rather than a fault.
 #
 # Why it goes through the deploy VM rather than connecting from this runner is the
 # reason db-find-legacy-text-columns.yml gives at length: the Cloud SQL instance is

@@ -263,7 +263,63 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    failures, because a faulted app domain caches its own startup exception and can never
    recover by retrying alone. Only the window expiring is a failure.
 
-9. **Check the performance settings landed.** This deploy is the first one that configures
+9. **Put the branding back.** The upgrade takes it away, and nothing in the deploy puts
+   it back. Migration `202508051740308_Rollup_20250805` repoints the internal site at the
+   `RockNextGen` theme unconditionally. Half the site's look is committed and rides in the
+   artifact -- `Themes/Rock/Styles/_variable-overrides.less` and its RockManager twin. The
+   other half is one column, `Theme.AdditionalSettingsJson`, and it is per-catalog, so no
+   deploy has ever carried it anywhere. On `RockNextGen` it is empty. Staging measured what
+   that looks like: correct fonts, correct icons, stock Rock blue.
+
+   **This step has to come after step 8, and the reason is not the migration.**
+   `ThemeService.UpdateThemes()` runs at application startup, scans `RockWeb/Themes` on
+   disk, and inserts a row for any theme the catalog does not have.
+   `RockWeb/Themes/RockNextGen` is a build output whose `.gitignore` ignores everything in
+   it, so the directory arrives with the v19 artifact and the row appears the first time
+   the app starts on it. Run this before the site is up and it fails with
+   `No theme named RockNextGen`, which is the correct answer and not a fault.
+
+   Dispatch **DB - Set theme customization** with `db_name` set to production's catalog,
+   `theme_name` left at `RockNextGen`, and `apply` unticked. The dry run prints the
+   before-and-after of every value it would write and generates the rollback; read that,
+   then dispatch again with `apply` ticked and approve the `database-write` environment.
+
+   Two properties worth knowing before approving. It **merges** -- the column also holds
+   the enabled icon sets and Font Awesome weights, and Rock's own writer preserves siblings,
+   so a writer that replaced the document would take the icons out and report success. And
+   the rollback is written before anything else happens, restoring the previous string byte
+   for byte, so the dry run produces the same undo the apply would.
+
+   ```bash
+   gh workflow run "DB - Set theme customization" -R passiondev/Rock \
+     -f db_name=PRODUCTION_CATALOG -f theme_name=RockNextGen \
+     -f variable_values='base-primary=#00B8E4'
+   ```
+
+   **Then clear the cache, or nothing changes on screen.** Editing a theme in Admin Tools
+   clears it on the way out: `Theme.SaveHook` publishes `ThemeWasUpdatedMessage` and
+   `ThemeWasUpdatedConsumer` calls `CssProcessor.ClearCache()`. Writing the column directly
+   runs no save hook and publishes nothing, so the site keeps serving the CSS it already
+   built and a correct write reads as having done nothing. **Admin Tools > General Settings
+   > Cache Manager > Clear Cache** empties `RockCache`, which is where
+   `Rock.Web.CssProcessor.CssCache` lives. An app pool recycle does the same by starting an
+   empty process.
+
+   **What proves it worked**, off the box and with no login:
+
+   ```bash
+   curl -s https://connect.passion.team/Themes/RockNextGen/Styles/theme.css | grep -c '#00b8e4'
+   ```
+
+   A count of zero after a cache clear means the write did not take, or it landed on a theme
+   the site is not using. The dry run names the theme and the catalog it read, so compare
+   against that rather than re-running the apply.
+
+   The same workflow, pointed at staging's catalog, is how staging got its branding -- so
+   this is a step that has been run before, not one being tried for the first time on
+   production.
+
+10. **Check the performance settings landed.** This deploy is the first one that configures
    the app pool and turns ASP.NET debug mode off on production. Both were measured as
    missing on 2026-08-26 and neither has ever been set on that box, so neither can be
    assumed.

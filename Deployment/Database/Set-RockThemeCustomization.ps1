@@ -26,6 +26,14 @@
     looks like: correct fonts and icons, stock Rock blue. Running this against the
     production catalog after the migration puts Passion's blue back.
 
+    The row itself is not the migration's doing, which matters for when this can be
+    run. RockApplicationStartupHelper calls ThemeService.UpdateThemes() on every
+    application start, and that scans RockWeb/Themes on disk and inserts a row for
+    any theme the catalog does not already have. RockWeb/Themes/RockNextGen is a
+    build output -- its .gitignore ignores everything in it -- so the directory
+    arrives with the v19 artifact and the row appears the first time the app starts
+    on it. Deploy, let the site come up, then run this.
+
     How the value is stored, and why this script merges rather than overwrites.
     AdditionalSettingsJson is a JSON object keyed by settings-class name --
     Rock's SetAdditionalSettings uses typeof( TSettings ).Name -- so the theme's
@@ -259,7 +267,7 @@ WHERE t.[Name] = @themeName;
     }
 
     if ($matchCount -eq 0) {
-        throw "No theme named '$ThemeName'. On a catalog that has not run the v19 migrations yet, RockNextGen does not exist. Nothing was changed."
+        throw "No theme named '$ThemeName'. The row is inserted at application startup from the theme directories on disk, so on a catalog whose site is still running an 18.x artifact RockNextGen does not exist yet. Deploy, let the site start, then re-run. Nothing was changed."
     }
     if ($matchCount -gt 1) {
         throw "Name '$ThemeName' matches $matchCount themes. Refusing to guess which one. Nothing was changed."
@@ -410,9 +418,19 @@ WHERE [Id] = @id;
     }
     Write-Host "Updated Theme Id=$themeId."
 
+    # Saying it here rather than leaving it to be discovered. Editing the theme in
+    # Admin Tools clears this cache on the way out: Theme.SaveHook publishes
+    # ThemeWasUpdatedMessage, ThemeWasUpdatedConsumer calls CssProcessor.ClearCache().
+    # A direct write to the column runs no save hook and publishes nothing, so the
+    # site keeps serving the CSS it already built and the write reads as having done
+    # nothing at all.
     Write-Host ""
-    Write-Host "Rock caches the generated theme.css. The new values are not visible until"
-    Write-Host "that cache is cleared or the app pool recycles."
+    Write-Host "The site is still serving the theme.css it built before this write."
+    Write-Host "Writing the column directly runs no save hook, so nothing cleared the"
+    Write-Host "cache the way the theme editor would. Clear it with:"
+    Write-Host "  Admin Tools > General Settings > Cache Manager > Clear Cache"
+    Write-Host "which empties RockCache, including Rock.Web.CssProcessor.CssCache."
+    Write-Host "An app pool recycle does the same by starting an empty process."
 }
 finally {
     $connection.Close()
