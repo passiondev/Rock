@@ -261,6 +261,11 @@ jobs:
           # rather than inline in it, which is the only way the Pester suite can
           # execute it. That puts it outside both Deployment/ and the extractor.
           $targets += Get-ChildItem -Path .github/actions -Recurse -Filter *.ps1 -File
+          # And a workflow can do the same, for the same reason: a validator called
+          # from two jobs is duplicated inline, and the duplicate is what the inline
+          # budget in test_powershell_job.py exists to stop. `scripts` is a sibling of
+          # `workflows`, not a child, so neither glob above reaches it.
+          $targets += Get-ChildItem -Path .github/scripts -Recurse -Filter *.ps1 -File
           $targets += Get-ChildItem -Path "$env:RUNNER_TEMP/powershell-blocks" -Filter *.ps1 -File
 
           if ($targets.Count -lt 1) {
