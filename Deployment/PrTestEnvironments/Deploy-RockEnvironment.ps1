@@ -925,6 +925,52 @@ function Sync-SharedSiteAssets {
     }
 }
 
+function ConvertTo-NativePath {
+    <#
+    .SYNOPSIS
+        A site-relative path with its separators in the shape this platform uses.
+
+    .DESCRIPTION
+        The server-owned lists are written with forward slashes so one string can
+        serve both Test-Path and robocopy. Join-Path only normalises the seam it
+        creates, so joining 'C:\extract' to 'Themes/Rock/Styles/x.less' leaves
+        'C:\extract\Themes/Rock/Styles/x.less' -- mixed, and handed to robocopy
+        as an /XF or /XD argument.
+
+        Windows resolves mixed separators when it opens a file, so the copy source
+        would still be found. Exclusion matching is the part that is not worth
+        assuming: a /XF that quietly fails to match copies the artifact's stock
+        file over production's during the cutover, and robocopy reports success
+        either way. Normalising costs one call and removes the question.
+
+        String.Replace rather than -replace, and the reason is worth recording.
+        The regex form needs the separator escaped to survive the pattern, and
+        Regex::Escape on a backslash returns two characters -- which a
+        replacement string takes literally, so every separator comes back
+        doubled. That is a worse path than the mixed one this exists to fix. A
+        plain character replace has no such trap.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+
+        # Injectable, and not for flexibility -- no caller passes it. It is here
+        # so the behaviour that only happens on Windows can be tested off it.
+        # This script runs on Windows and nowhere else, but its tests run on the
+        # developer's machine and on a Linux runner, where DirectorySeparatorChar
+        # is '/' and every backslash-specific bug is invisible. The first version
+        # of this function was broken on Windows and passed its tests on macOS
+        # for exactly that reason.
+        [Parameter(Mandatory = $false)]
+        [char]$Separator = [System.IO.Path]::DirectorySeparatorChar
+    )
+
+    if ([string]::IsNullOrEmpty($Path)) { return $Path }
+
+    # Both directions, so the result is native whichever way the input was
+    # written. One of the two is always a no-op on any given platform.
+    return $Path.Replace([char]'/', $Separator).Replace([char]'\', $Separator)
+}
+
 function Get-ServerOwnedThemeFilePaths {
     <#
     .SYNOPSIS
@@ -1590,7 +1636,7 @@ try {
         # turning into an empty box.
         foreach ($directory in $ServerOwnedDirectories) {
             $copyExclusions += '/XD'
-            $copyExclusions += (Join-Path $ExtractPath $directory)
+            $copyExclusions += (ConvertTo-NativePath -Path (Join-Path $ExtractPath $directory))
         }
 
         # /XF and not /XD, because these are single files inside directories the
@@ -1605,7 +1651,7 @@ try {
         $themeOverrides = @(Get-ServerOwnedThemeFilePaths -SiteRoot $SitePath -FileNames $ServerOwnedThemeFiles)
         foreach ($file in $themeOverrides) {
             $copyExclusions += '/XF'
-            $copyExclusions += (Join-Path $ExtractPath $file)
+            $copyExclusions += (ConvertTo-NativePath -Path (Join-Path $ExtractPath $file))
         }
         Write-DeployStep "Keeping this site's own copies of $($themeOverrides.Count) theme override file(s): $($themeOverrides -join ', ')."
 

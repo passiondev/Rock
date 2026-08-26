@@ -29,6 +29,7 @@ BeforeAll {
     $script:DeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
     . (Import-ScriptFunction -Path $script:DeployScript -Name @(
         'Get-ServerOwnedThemeFilePaths',
+        'ConvertTo-NativePath',
         'Sync-ServerOwnedAssets',
         'Ensure-Directory',
         'Write-DeployStep'))
@@ -360,5 +361,106 @@ Describe 'Sync-ServerOwnedAssets byte reporting for a path that names a file' {
         $line = $script:DeployMessages | Where-Object { $_ -match '_css-overrides\.less restored' }
         $line | Should -Match '\(310 bytes on disk\)'
         $line | Should -Not -Match '9310'
+    }
+}
+
+Describe 'ConvertTo-NativePath' {
+
+    <#
+        This exists for one caller: the robocopy /XF and /XD exclusion arguments
+        on the InPlace branch. The server-owned lists are written with forward
+        slashes and Join-Path only normalises the seam it creates, so the joined
+        path is mixed. An exclusion that fails to match is silent -- robocopy
+        copies the artifact's stock file over production's and reports success --
+        so this is the wrong place to rely on Windows being forgiving.
+
+        The first implementation used -replace with the separator passed through
+        Regex::Escape. That returns two characters for a backslash, and a
+        replacement string takes them literally, so every separator came back
+        doubled. These tests are written to fail on that.
+    #>
+
+    It 'returns a path whose separators are all native' {
+        $native = [System.IO.Path]::DirectorySeparatorChar
+        $foreign = if ($native -eq [char]'/') { [char]'\' } else { [char]'/' }
+
+        $result = ConvertTo-NativePath -Path ('Themes' + $foreign + 'Rock' + $foreign + 'Styles')
+
+        $result | Should -Be ('Themes' + $native + 'Rock' + $native + 'Styles')
+        $result.IndexOf($foreign) | Should -Be -1
+    }
+
+    It 'does not double a separator that was already native' {
+        # The Regex::Escape bug. 'a/b' became 'a\\b' on Windows, which is not a
+        # path any /XF argument could match.
+        $native = [System.IO.Path]::DirectorySeparatorChar
+        $result = ConvertTo-NativePath -Path ('a' + $native + 'b' + $native + 'c')
+
+        $result | Should -Be ('a' + $native + 'b' + $native + 'c')
+        $result | Should -Not -Match ([System.Text.RegularExpressions.Regex]::Escape("$native$native"))
+    }
+
+    It 'leaves the separator count unchanged' {
+        # Doubling is the failure mode, so count rather than inspect. Three
+        # separators in, three out, whichever way they were written.
+        $native = [System.IO.Path]::DirectorySeparatorChar
+        $result = ConvertTo-NativePath -Path 'Themes/Rock/Styles/_css-overrides.less'
+
+        ($result.ToCharArray() | Where-Object { $_ -eq $native }).Count | Should -Be 3
+    }
+
+    It 'normalises a path that mixes both separators, which is what Join-Path produces' {
+        # Join-Path 'C:\extract' 'Themes/Rock/x.less' is exactly this shape.
+        $native = [System.IO.Path]::DirectorySeparatorChar
+        $mixed = 'root' + [char]'\' + 'Themes' + [char]'/' + 'Rock' + [char]'/' + 'x.less'
+
+        $result = ConvertTo-NativePath -Path $mixed
+
+        $result | Should -Be ('root' + $native + 'Themes' + $native + 'Rock' + $native + 'x.less')
+    }
+
+    It 'passes an empty string through rather than throwing' {
+        ConvertTo-NativePath -Path '' | Should -Be ''
+    }
+
+    Context 'with the separator forced to a backslash, as on the box' {
+
+        <#
+            The tests above run against whatever this platform's separator is, so
+            on macOS and on a Linux runner they exercise '/' replacing '/' and
+            prove nothing about the deploy. These force the Windows separator so
+            the doubling bug is reachable off Windows.
+
+            Confirmed by reverting the implementation: the platform-relative
+            tests still passed, these fail.
+        #>
+
+        BeforeAll { $script:Backslash = [char]'\' }
+
+        It 'converts forward slashes to backslashes' {
+            ConvertTo-NativePath -Path 'Themes/Rock/Styles/_css-overrides.less' -Separator $script:Backslash |
+                Should -Be 'Themes\Rock\Styles\_css-overrides.less'
+        }
+
+        It 'does not double them, which Regex::Escape did' {
+            # Regex::Escape('\') is two characters, and a replacement string takes
+            # them literally. The result was 'Themes\\Rock\\Styles', which no /XF
+            # argument can ever match.
+            $result = ConvertTo-NativePath -Path 'Themes/Rock/Styles' -Separator $script:Backslash
+
+            $result | Should -Not -Match '\\\\'
+            ($result.ToCharArray() | Where-Object { $_ -eq $script:Backslash }).Count | Should -Be 2
+        }
+
+        It 'normalises the mixed path Join-Path actually produces on the box' {
+            # Join-Path 'C:\extract' 'Themes/Rock/x.less' returns this exactly.
+            ConvertTo-NativePath -Path 'C:\extract\Themes/Rock/Styles/x.less' -Separator $script:Backslash |
+                Should -Be 'C:\extract\Themes\Rock\Styles\x.less'
+        }
+
+        It 'leaves an already-backslashed path alone' {
+            $already = 'C:\extract\Themes\Rock\x.less'
+            ConvertTo-NativePath -Path $already -Separator $script:Backslash | Should -Be $already
+        }
     }
 }
