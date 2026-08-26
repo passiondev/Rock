@@ -224,7 +224,15 @@ function Write-DeployStep {
 
 Import-Module WebAdministration
 
-if ($EnvironmentName -notmatch '^[a-z][a-z0-9-]{1,30}$') {
+# Not a copy of the queue-name rule, despite the identical pattern. This name
+# becomes an IIS site name, an app pool name and a directory under the deploy
+# root, and the shapes coincide today. They are free to diverge, so neither
+# should be changed on the strength of the other looking the same.
+#
+# -cnotmatch for the reason recorded in Invoke-PrEnvironmentCommandQueue.ps1:
+# the default operator is case-insensitive, so a lowercase-only pattern was
+# accepting 'PR-1234' and creating a directory that no later lookup would find.
+if ($EnvironmentName -cnotmatch '^[a-z][a-z0-9-]{1,30}$') {
     throw "EnvironmentName must be lowercase letters, digits and hyphens, starting with a letter: '$EnvironmentName'."
 }
 

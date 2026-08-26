@@ -33,12 +33,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 # Only the two directories this module itself walks. `SCRIPTS_DIR`,
 # `DEPLOYMENT_DIR` and `DOCUMENTATION_DIR` were here too and nothing ever used
-# them, which looks like an oversight and is not: a test that addressed a file as
-# `DOCUMENTATION_DIR / "x.md"` would hide that path from
-# test_ci_trigger_coverage.py, which finds what the suite reads by looking for the
-# literal quoted-segment form. Adopting them would empty that scan file by file.
-# So test files spell their paths out, and these two stay because the walks below
-# are in this module, where the literal form is right here.
+# them, which looks like an oversight and is not. See ADR-0003: an accessor hides
+# its path from test_ci_trigger_coverage.py, which finds what the suite reads by
+# matching the literal quoted-segment form, so adopting accessors would empty that
+# scan one file at a time with nothing going red. These two stay because the walks
+# below are in this module, where the literal form is right here.
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 

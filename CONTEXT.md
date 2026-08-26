@@ -55,16 +55,19 @@ it should stay that way.
 | Term | Means |
 |---|---|
 | **catalog** | One SQL database. The word disambiguates from *instance*, which holds several. |
-| **the shared catalog** | `RockConnectProd` on `connect-restore-test`. Every `pr-*` environment points at it. |
-| **the staging catalog** | `RockStaging` on the same instance. Staging alone, since 2026-08-18. |
+| **the shared catalog** | Whatever `secrets.DB_NAME` names, on `connect-restore-test`. Every `pr-*` environment falls back to it, because `PR_TEST_DB_NAME` is deliberately unset. The name is a secret and is not in this repository, so do not write it down here. This row said `RockConnectProd` until 2026-08-26, and that catalog is no longer on the instance: a deploy that falls back today fails with `Cannot open database`, which reads as a credential problem and is not one. |
+| **the staging catalog** | Whatever `vars.STAGING_DB_NAME` names, currently `RockStaging20260824`, on the same instance. Staging alone, since 2026-08-18. `RockStaging` is the earlier copy and is still on the instance, so the two names are both real and only one is live. |
 | **sandbox** | An adjective for the non-production data, never a noun for an environment. *Sandbox catalog*, *sandbox file storage*. |
 
 **The word `sandbox` promises something it does not deliver.** The shared catalog
 is a straight copy of a production backup: real names, addresses and giving
 history. There is no sanitization step and there never has been. There is no
 refresh either — it was seeded once on 2026-04-14. Six documents said otherwise
-until 2026-08-21. `test_shared_catalog_claims.py` now guards every surface that
-describes it.
+until 2026-08-21. `test_shared_catalog_claims.py` guards every surface that
+describes it, and since 2026-08-26 that includes this file. It did not before:
+the guard swept `Documentation/` and `.github/`, and the document defining the
+term sits at the repository root, so the one place a reader looks up what the
+shared catalog is was the one place nothing checked.
 
 ## The control plane
 

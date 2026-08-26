@@ -107,18 +107,6 @@ jobs:
       # the one the log cannot show, because the connection string is redacted. A
       # findings list attributed to the wrong catalog is worse than no findings list:
       # it would clear staging on the strength of a scan of the shared sandbox.
-      # queue_name is concatenated into a GCS object path. The agent validates its own
-      # QueueName against exactly this pattern before it will poll a prefix; the
-      # workflow that writes into that prefix should not be laxer than the one reading
-      # it, or a dispatch could place a command outside the queue the VM watches --
-      # which fails as a silent timeout rather than an error.
-      - name: Validate the queue name
-        run: |
-          if ($env:QUEUE_NAME -notmatch '^[a-z][a-z0-9-]{1,30}$') {
-            Write-Host "::error::queue_name must be lowercase letters, digits and hyphens, starting with a letter: '$env:QUEUE_NAME'"
-            exit 1
-          }
-
       - name: Report which catalog will be scanned
         run: |
           Write-Host "Catalog source: $env:DB_NAME_SOURCE"

@@ -124,27 +124,179 @@ class SyntaxJobTests(unittest.TestCase):
 
         self.assertGreater(checked, 0, "No file declares pwsh; this test is checking nothing.")
 
-    def test_the_shared_wait_is_among_the_extracted_blocks(self):
-        """The action holds the largest single block of PowerShell in the pipeline and
-        it is the reason the parse job was written. A composite action's steps sit
-        under `runs:` rather than `jobs:`, so it is also the shape most likely to be
-        dropped by a change to the extractor."""
+    def test_a_composite_action_is_still_a_shape_the_extractor_understands(self):
+        """A composite action's steps sit under `runs:` rather than `jobs:`, so it is
+        the shape most likely to be dropped by a change to the extractor.
+
+        This used to assert on the wait's inline body, which held the largest block
+        of PowerShell in the pipeline. That block is a script now, so pwsh parses it
+        directly and the extractor has nothing to do with it. What is still worth
+        holding is that the extractor reads this file shape at all: the moment
+        someone inlines PowerShell into an action.yml again, it has to be found.
+        """
         module = load_extractor()
         parsed = yaml.safe_load(AWAIT_ACTION_FILE.read_text(encoding="utf-8"))
         blocks = list(module.powershell_steps(parsed, "await-vm-command"))
 
         self.assertEqual(1, len(blocks))
-        self.assertIn("AWAIT_COMMAND_ID", blocks[0][1])
+        self.assertIn("Await-VmCommand.ps1", blocks[0][1])
 
-    def test_a_runner_expression_does_not_become_two_empty_strings(self):
-        """`'${{ x }}'` is already quoted by its author. Adding another pair yields
-        `''PLACEHOLDER''`, which is a bareword between two empty strings -- a
-        different thing entirely, and in expression position a parse error the job
-        would report against innocent code."""
-        module = load_extractor()
 
-        self.assertEqual("Get-Content 'RUNNER_EXPRESSION' -Raw", module.substitute("Get-Content '${{ steps.a.outputs.b }}' -Raw"))
-        self.assertEqual("$x = 'RUNNER_EXPRESSION'", module.substitute("$x = ${{ inputs.y }}"))
+class ScriptsLiveInScriptFilesTests(harness.HarnessAssertions, unittest.TestCase):
+    """Script code embedded in YAML is a string until a runner expands it.
+
+    Nothing can execute it, so the strongest check available is a parse, and a
+    parse is not a run: it said the wait's log tail sliced without an error and
+    said nothing about which sixty lines it took. Two composite actions kept 97 and
+    64 lines inline, and neither had a test that ran a single branch. Both are
+    scripts now, and the branch that decides whether a certificate is self-signed
+    has a test for all three printed forms of a name, rather than a comment saying
+    all three were seen.
+
+    The rule is absolute for composite actions and a downward ratchet for
+    workflows. That split is deliberate, the reasoning for both halves is in
+    ADR-0002, and the numbers below are the state that reasoning describes.
+    """
+
+    # An invocation, a guard, a couple of exports. Past this a block has branches,
+    # and branches want a test that can reach them.
+    MAXIMUM_INLINE_LINES = 10
+
+    # What the workflows carried when the rule was written. It may fall. A change
+    # that raises it is adding script code nothing can run, which is the thing this
+    # file exists to stop.
+    WORKFLOW_BACKLOG = 27
+
+    def _inline_blocks(self, paths):
+        """(file, step name, executable line count) for every `run:` block."""
+        for path in paths:
+            parsed = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            groups = list((parsed.get("jobs") or {}).values())
+            runs = parsed.get("runs") or {}
+            if runs.get("steps"):
+                groups.append(runs)
+
+            for group in groups:
+                for step in group.get("steps") or []:
+                    body = step.get("run")
+                    if not body:
+                        continue
+                    lines = [
+                        line for line in body.splitlines()
+                        if line.strip() and not line.strip().startswith("#")
+                    ]
+                    yield path, step.get("name") or "(unnamed)", len(lines)
+
+    def _oversized(self, paths):
+        return sorted(
+            f"  {path.relative_to(harness.REPO_ROOT)} :: {name} ({count} lines)"
+            for path, name, count in self._inline_blocks(paths)
+            if count > self.MAXIMUM_INLINE_LINES
+        )
+
+    def test_no_composite_action_inlines_a_script(self):
+        actions = sorted((harness.REPO_ROOT / ".github" / "actions").glob("*/action.yml"))
+        self.assertNotVacuous(actions, "there are no composite actions to check")
+
+        oversized = self._oversized(actions)
+
+        self.assertEqual(
+            [],
+            oversized,
+            f"a `run:` block over {self.MAXIMUM_INLINE_LINES} lines cannot be executed "
+            "by any test. Several workflows call each action, so this is the surface "
+            "where one untested branch is untested everywhere. Move it beside its "
+            "action.yml as a .ps1 or .sh and call it from one line. See "
+            ".github/actions/queue-vm-command/Write-VmCommand.ps1 for the pattern:\n"
+            + "\n".join(oversized),
+        )
+
+    def test_the_workflows_are_not_adding_more_inline_script(self):
+        workflows = sorted((harness.REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+        self.assertNotVacuous(workflows, "there are no workflows to check")
+
+        oversized = self._oversized(workflows)
+
+        self.assertLessEqual(
+            len(oversized),
+            self.WORKFLOW_BACKLOG,
+            f"the workflows now hold {len(oversized)} `run:` blocks over "
+            f"{self.MAXIMUM_INLINE_LINES} lines, up from {self.WORKFLOW_BACKLOG}. "
+            "Put the new one in a .ps1 or .sh beside the workflow rather than "
+            "inline, where a test can run it:\n" + "\n".join(oversized),
+        )
+
+        self.assertEqual(
+            self.WORKFLOW_BACKLOG,
+            len(oversized),
+            f"the backlog is down to {len(oversized)}. Lower WORKFLOW_BACKLOG to "
+            "match so the ratchet keeps holding.",
+        )
+
+class DuplicateYamlKeyTests(harness.HarnessAssertions, unittest.TestCase):
+    """No workflow or action declares the same key twice in one mapping.
+
+    `yaml.safe_load` takes the last value and says nothing, and every test in this
+    suite loads YAML with it. So a duplicated key is invisible to the whole suite
+    while still being a real defect in the file.
+
+    Found the moment it happened. Extracting the bash out of `verify-public-url`
+    under ADR-0002 left the step with two `run: |` lines, one empty. The step ran
+    the second, so the action still worked by luck. Nothing in 550 tests noticed,
+    because the loader they all share had already dropped the evidence.
+
+    The lesson is narrower than "lint the YAML". It is that a tolerant parser makes
+    a class of defect unreachable for every assertion written on top of it, so the
+    intolerant parse has to be its own test."""
+
+    def _strict_load(self, path):
+        """Parse `path`, raising rather than resolving a duplicate mapping key."""
+
+        class Loader(yaml.SafeLoader):
+            pass
+
+        def no_duplicates(loader, node, deep=False):
+            mapping = {}
+            for key_node, value_node in node.value:
+                key = loader.construct_object(key_node, deep=deep)
+                if key in mapping:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"duplicate key {key!r}", key_node.start_mark
+                    )
+                mapping[key] = loader.construct_object(value_node, deep=deep)
+            return mapping
+
+        Loader.add_constructor(
+            yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicates
+        )
+        yaml.load(path.read_text(encoding="utf-8"), Loader=Loader)
+
+    def test_no_pipeline_yaml_declares_a_key_twice(self):
+        files = sorted(
+            [
+                *(harness.REPO_ROOT / ".github" / "workflows").glob("*.yml"),
+                *(harness.REPO_ROOT / ".github" / "actions").glob("*/action.yml"),
+            ]
+        )
+        self.assertNotVacuous(files, "there is no pipeline YAML to check")
+
+        offenders = []
+        for path in files:
+            try:
+                self._strict_load(path)
+            except yaml.constructor.ConstructorError as error:
+                offenders.append(
+                    f"  {path.relative_to(harness.REPO_ROOT)} :: {error.problem} "
+                    f"at line {error.problem_mark.line + 1}"
+                )
+
+        self.assertEqual(
+            [],
+            offenders,
+            "a key is declared twice in one mapping. safe_load takes the last one "
+            "and every other test in this suite will agree with it, so this is the "
+            "only assertion that can see it:\n" + "\n".join(offenders),
+        )
 
 
 class RunnerExpressionPlacementTests(harness.HarnessAssertions, unittest.TestCase):

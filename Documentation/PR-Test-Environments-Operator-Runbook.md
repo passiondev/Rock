@@ -86,7 +86,7 @@ That is correct, and for a simpler reason than this section used to give: **no r
 
 ## Provisioning the staging catalog
 
-**Done for staging on 2026-08-18: `STAGING_DB_NAME` is set to `RockStaging`.** Staging has its own catalog and no longer shares with anything. The `pr-*` fleet still shares `RockConnectProd` with itself -- `PR_TEST_DB_NAME` is deliberately unset -- so the mechanism below still applies within the fleet, just not between the fleet and staging.
+**Done for staging on 2026-08-18. `STAGING_DB_NAME` now names `RockStaging20260824`** (it was `RockStaging`, and that earlier copy is still on the instance). Staging has its own catalog and no longer shares with anything. `PR_TEST_DB_NAME` is deliberately unset, so the `pr-*` fleet still falls back to `secrets.DB_NAME` and the mechanism below still applies within the fleet. Note what that fallback now reaches: the secret names `RockConnectProd`, and as of 2026-08-26 there is no such catalog on `connect-restore-test` (item 30 and step 130 below). A `pr-*` deploy today would fail to open its database rather than share one.
 
 The mechanism, for whoever meets it next: when environments share a catalog, Rock's startup migrations from one of them rewrite the schema the others depend on. This is what put `pr-3` on a permanent HTTP 500 on 2026-08-11.
 
@@ -99,7 +99,7 @@ Current shared setup, for reference:
 | | |
 |---|---|
 | Instance | `connect-restore-test` (`172.20.0.2`) -- *not* `connect-prod` (`172.20.0.8`) |
-| Catalog | `RockConnectProd` -- the name is an artifact of restoring a prod backup, not production data. Still shared by the whole `pr-*` fleet; staging left it on 2026-08-18 |
+| Catalog | `secrets.DB_NAME`, which names `RockConnectProd` -- an artifact of restoring a prod backup, not production data. The fleet still falls back to it; staging left on 2026-08-18. **No catalog by that name is on the instance as of 2026-08-26**, so the fallback fails to open |
 | Consumed via | secrets `PR_TEST_DB_DATA_SOURCE`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` |
 
 To provision:

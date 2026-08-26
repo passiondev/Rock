@@ -19,7 +19,7 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
     $script:ActionScript = Get-RepositoryPath '.github/actions/queue-vm-command/Write-VmCommand.ps1'
-    . (Import-ScriptFunction -Path $script:ActionScript -Name 'New-VmCommand', 'Get-RedactedCommand')
+    . (Import-ScriptFunction -Path $script:ActionScript -Name 'New-VmCommand', 'Get-RedactedCommand', 'Clear-StaleResult', 'Assert-ValidQueueName')
 
     $script:Password = 'hunter2-correct-horse'
     $script:ConnectionString = "Data Source=tcp:10.0.0.5,1433;Initial Catalog=RockSandbox;User Id=rock;password=$($script:Password);Encrypt=true;"
@@ -223,5 +223,93 @@ Describe 'Get-RedactedCommand' {
         $redacted = Get-RedactedCommand -Command $command
 
         $redacted.prNumber | Should -Be 1234
+    }
+}
+
+Describe 'Clear-StaleResult' {
+    <#
+        `github.run_id` holds still across a re-run while `github.run_attempt`
+        counts up, so a command id built from the run alone repeats. Nothing
+        deletes a result object -- the agent removes the pending command when it
+        starts the work and leaves the result behind -- and await-vm-command
+        reports the first result it can copy. A re-run therefore read the previous
+        attempt's answer within seconds and called it this attempt's.
+
+        Every producer now carries the attempt in its id. This is the guard that
+        holds when a seventh producer forgets.
+    #>
+
+    BeforeAll {
+        # gsutil is a native command, and Pester can only mock something that
+        # resolves as a command in this scope. The shim is never called: every
+        # test below replaces it.
+        function gsutil { }
+    }
+
+    It 'reports nothing removed when the slot is empty' {
+        Mock gsutil { $global:LASTEXITCODE = 1 }
+
+        Clear-StaleResult -ResultUri 'gs://b/pr-environments/q/results/id.json' | Should -BeFalse
+        Should -Invoke gsutil -Times 1 -Exactly
+    }
+
+    It 'removes a result already sitting in the slot' {
+        Mock gsutil { $global:LASTEXITCODE = 0 }
+
+        Clear-StaleResult -ResultUri 'gs://b/pr-environments/q/results/id.json' | Should -BeTrue
+        Should -Invoke gsutil -Times 2 -Exactly
+    }
+
+    It 'throws rather than queueing behind a result it could not remove' {
+        # The dangerous case. Carrying on here queues the command while the old
+        # answer is still readable, and the wait reports that answer.
+        Mock gsutil {
+            if ($args -contains 'stat') { $global:LASTEXITCODE = 0 } else { $global:LASTEXITCODE = 1 }
+        }
+
+        { Clear-StaleResult -ResultUri 'gs://b/pr-environments/q/results/id.json' } |
+            Should -Throw -ExpectedMessage '*could not be removed*'
+    }
+}
+
+Describe 'Assert-ValidQueueName' {
+    <#
+        The queue name is concatenated into a GCS object path. A name outside this
+        shape puts the command where no agent is looking, and that fails as a
+        silent timeout rather than an error -- so it reads as a dead VM.
+
+        Three workflows carried a copy of this regex in a `run:` step, the agent
+        carries the same one on the far side, and Deploy-RockEnvironment.ps1
+        carries a fourth that looks like a fifth copy and validates something else
+        entirely. The check belongs to whoever writes the path. That is here.
+    #>
+
+    It 'accepts the queue names in use' {
+        foreach ($name in @('commands', 'staging-commands', 'production-commands', 'a1')) {
+            { Assert-ValidQueueName -QueueName $name } | Should -Not -Throw -Because "'$name' is a live queue name"
+        }
+    }
+
+    It 'rejects a name that would escape the queue prefix' {
+        # The case that motivates the check: `..` walks out of the queue directory.
+        { Assert-ValidQueueName -QueueName '../other' } | Should -Throw
+        { Assert-ValidQueueName -QueueName 'a/b' } | Should -Throw
+    }
+
+    It 'rejects an empty name, which would collapse the path' {
+        { Assert-ValidQueueName -QueueName '' } | Should -Throw
+    }
+
+    It 'rejects uppercase, which GCS keeps and the agent never matches' {
+        { Assert-ValidQueueName -QueueName 'Commands' } | Should -Throw
+    }
+
+    It 'rejects a name that does not start with a letter' {
+        { Assert-ValidQueueName -QueueName '1commands' } | Should -Throw
+        { Assert-ValidQueueName -QueueName '-commands' } | Should -Throw
+    }
+
+    It 'names the offending value so a dispatch typo is obvious' {
+        { Assert-ValidQueueName -QueueName 'Bad Name' } | Should -Throw -ExpectedMessage "*'Bad Name'*"
     }
 }

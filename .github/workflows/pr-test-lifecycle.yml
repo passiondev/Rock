@@ -127,7 +127,7 @@ jobs:
     if: needs.prepare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     env:
-      COMMAND_ID: lifecycle-${{ needs.prepare.outputs.pr_number }}-${{ github.run_id }}
+      COMMAND_ID: lifecycle-${{ needs.prepare.outputs.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
       PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
       COMMAND: ${{ needs.prepare.outputs.command }}
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}

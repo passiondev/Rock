@@ -7,6 +7,7 @@ import pipeline_harness as harness
 
 REPO_ROOT = harness.REPO_ROOT
 ACTION = REPO_ROOT / ".github" / "actions" / "verify-public-url" / "action.yml"
+ACTION_SCRIPT = REPO_ROOT / ".github" / "actions" / "verify-public-url" / "verify-public-url.sh"
 ACTION_REF = "./.github/actions/verify-public-url"
 
 # Every path that deploys something a human is expected to open in a browser.
@@ -138,8 +139,15 @@ class PublicUrlVerificationTests(unittest.TestCase):
         """These are different failures with different owners. A site nobody can load is
         an outage; a certificate a browser complains about is a chore. Folding them
         together means a renewal that is merely due reads as a broken deploy, and people
-        stop believing the check."""
-        body = _load(ACTION)["runs"]["steps"][0]["run"]
+        stop believing the check.
+
+        The bash left action.yml, so this reads the script. test_verify_public_url.py
+        makes the same claim by running it -- a self-signed certificate exits 0 and an
+        unreachable host exits 1 -- which is the stronger form. This stays as the
+        structural half: it fails if an `exit 1` is ever added below the certificate
+        line, naming the reason, where the behavioural test would only fail on
+        whichever case its stub happened to cover."""
+        body = ACTION_SCRIPT.read_text()
 
         certificate_section = body.index('cert="$(echo | openssl s_client')
         reachability = body[:certificate_section]

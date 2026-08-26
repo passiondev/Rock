@@ -187,7 +187,7 @@ jobs:
       matrix:
         pr_number: ${{ fromJson(needs.plan.outputs.pr_numbers) }}
     env:
-      COMMAND_ID: destroy-all-${{ matrix.pr_number }}-${{ github.run_id }}
+      COMMAND_ID: destroy-all-${{ matrix.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
       PR_NUMBER: ${{ matrix.pr_number }}
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     steps:
