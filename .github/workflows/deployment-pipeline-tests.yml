@@ -45,6 +45,12 @@ name: Deployment Pipeline Tests
       - 'RockWeb/Styles/**'
       - 'RockWeb/Bin/**'
       - 'RockWeb/packages.config'
+      # Narrow on purpose, and it is a licence guard rather than a behaviour one.
+      # test_theme_branding.py fails if a Font Awesome Pro webfont is ever committed
+      # here: this repository is a public fork, the Pro fonts are licensed binaries,
+      # and a push could not be taken back. That check is worth nothing unless adding
+      # a file to this directory is what runs it.
+      - 'RockWeb/Assets/Fonts/FontAwesome/**'
       # Trap 7 of the engineering guide states live counts of these four trees --
       # tracked plugins, themes, WebForms blocks, Obsidian blocks -- and a Rock upgrade
       # moves all of them at once. test_trap7_counts_match_the_tree.py re-derives each
@@ -83,6 +89,7 @@ name: Deployment Pipeline Tests
       - 'RockWeb/Styles/**'
       - 'RockWeb/Bin/**'
       - 'RockWeb/packages.config'
+      - 'RockWeb/Assets/Fonts/FontAwesome/**'
       - 'RockWeb/Plugins/**'
       - 'RockWeb/Themes/**'
       - 'RockWeb/Blocks/**'

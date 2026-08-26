@@ -27,8 +27,8 @@ of confidently wrong SHAs beside it would be worse than no column.
 
 The list was longer than anyone expected when it was first derived on 2026-08-20. The
 working belief — written down in more than one place — was that the icon migration was
-the only spot where the fork changes Rock's behaviour. It is one of six files across
-three entirely unrelated changes.
+the only spot where the fork changes Rock's behaviour. It is one of eight files across
+four entirely unrelated changes.
 
 ---
 
@@ -97,6 +97,44 @@ upstream's, added between `hotfix-18.4` and `hotfix-19.3`. It was briefly record
 as fork-local on 2026-08-26 and is not. Take upstream's version of that attribute at
 every merge. The layout above is the only thing in this file worth protecting.
 
+## 4. The internal-site themes carry Passion's branding
+
+- `RockWeb/Themes/Rock/Styles/_variable-overrides.less`
+- `RockWeb/Themes/RockManager/Styles/_variable-overrides.less`
+
+**What it does.** Sets Passion's colours on the two themes the internal site uses, and
+registers the Font Awesome Pro weights. The `Rock` theme takes eight lines: `@fa-edition:
+'pro'`, two `.fa-font-face` calls for the Regular and Light weights, and five colours led
+by `@brand-color: #00b8e4`. `RockManager` takes one, `@brand-color: #00b8e4`. Both files
+now match what production serves, byte for byte.
+
+**Why it exists.** It did not, until 2026-08-26 — that is the point of the entry. These
+were hand edits on the production box, dated 2026-01-22 and 2026-07-30 and present in no
+repository. Production has never had an automated deploy, so nothing had overwritten them
+yet, but the InPlace copy is plain `robocopy /E` and both paths are inside the artifact.
+The v19 cutover would have been the first run to reach them, and it would have reverted
+the internal site to stock Rock orange with no warning and no log line. Staging showed the
+outcome in advance: it deployed from the artifact, came up orange, and got its blue put
+back by hand through the admin UI — a staging-only database value that fixed the symptom
+in one environment and left the cause in place.
+
+`_variables.less` is *not* here and does not need to be. Both boxes run it unmodified, so
+the whole difference between a branded Rock and a stock one is the override file, which is
+the file upstream provides for exactly this.
+
+**If a merge drops it,** the staff-facing site reverts to Rock's default orange on the next
+deploy, and every Font Awesome Pro icon falls back to an empty box because
+`@fa-edition: 'pro'` stops being set. Nothing fails to compile and nothing is logged.
+`test_theme_branding.py` is the guard: it pins the colours and the Pro registration so a
+take-theirs resolution fails CI instead of shipping.
+
+**Not this entry:** the Pro *webfont binaries* are deliberately absent from git. This
+repository is a public fork and the fonts are licensed, so they stay on the servers and
+reach a deploy through `$ServerOwnedDirectories` in `Deploy-RockEnvironment.ps1`. The
+override file above only names the weights; it does not carry them.
+
+---
+
 ---
 
 ## Re-deriving this list
@@ -115,7 +153,7 @@ agree, and `test_upgrade_diff.py` fails when they do not.
 
 Paths under `.github/`, `Deployment/`, `Documentation/`, `Tests/PrTestEnvironments/` and
 `.gitignore` are excluded. The fork owns those outright; they are modified relative to
-upstream permanently and by design, and including them would bury these six.
+upstream permanently and by design, and including them would bury these eight.
 
 ## What to do at a merge
 

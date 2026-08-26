@@ -151,6 +151,165 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                 "so the shared-asset overlay now runs on the InPlace production path",
             )
 
+    def test_font_awesome_is_a_server_owned_path(self):
+        """Passion holds a Font Awesome Pro licence and the Pro webfonts sit on the
+        servers. Upstream Rock ships the Free fonts under the same filenames, so the
+        artifact always carries a Free fa-solid-900.woff2 (78 KB against Pro's
+        137 KB) and a Free fa-regular-400.woff2 (13 KB against Pro's 169 KB). Free
+        covers roughly 1,600 glyphs where Pro covers more than 16,000, so whenever
+        the artifact's copy wins, every Pro-only icon renders as an empty box.
+
+        Committing the Pro fonts instead is not available: this repository is a
+        public fork of SparkDevNetwork/Rock, and pushing licensed commercial font
+        binaries to it would breach the licence and could not be taken back.
+        """
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(r"\$ServerOwnedDirectories\s*=\s*@\(([^)]*)\)", text)
+        self.assertIsNotNone(match, "could not find the $ServerOwnedDirectories list")
+
+        paths = re.findall(r"'([^']+)'", match.group(1))
+        self.assertIn(
+            "Assets/Fonts/FontAwesome", paths,
+            f"the Font Awesome directory must be server-owned, got {paths}",
+        )
+
+    def test_server_owned_paths_are_restored_after_the_shared_asset_overlay(self):
+        """Order is the whole mechanism. Sync-SharedSiteAssets runs robocopy with
+        /XC /XN /XO, so it copies only files that are absent at the destination --
+        it fills gaps and can never replace. The files this second pass exists for
+        are precisely the ones the artifact already placed, so running it first
+        would leave nothing for it to do.
+
+        fa-light-300.woff2 is the case that shows the split: Free has no Light
+        weight, so nothing ships in the artifact, the gap is real, and the ordinary
+        overlay already handles it. Solid and Regular need the second pass.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        openers = [
+            index for index, line in enumerate(lines)
+            if line.strip() == "if ($Mode -eq 'DedicatedSite') {"
+        ]
+        self.assertTrue(openers, "no DedicatedSite branch found")
+
+        guarded = set()
+        for opener in openers:
+            start, end = _block_body(lines, opener)
+            guarded.update(range(start, end))
+
+        overlay = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Sync-SharedSiteAssets")
+        ]
+        restore = [
+            index for index, line in enumerate(lines)
+            if line.lstrip().startswith("Sync-ServerOwnedAssets")
+        ]
+        self.assertTrue(overlay, "no Sync-SharedSiteAssets call site found")
+        self.assertTrue(restore, "no Sync-ServerOwnedAssets call site found")
+
+        for index in restore:
+            self.assertIn(
+                index, guarded,
+                f"Sync-ServerOwnedAssets at line {index + 1} is not inside a DedicatedSite "
+                "branch, so it now runs on the InPlace production path where the artifact "
+                "is already excluded from these paths and there is nothing to restore",
+            )
+
+        self.assertGreater(
+            min(restore), max(overlay),
+            "Sync-ServerOwnedAssets must run after Sync-SharedSiteAssets. Before it, every "
+            "path it copies is overwritten again by the artifact-shipped file the overlay "
+            "leaves in place",
+        )
+
+    def test_server_owned_copy_is_allowed_to_overwrite(self):
+        """The one flag difference that makes this function do anything. Carrying
+        /XC /XN /XO across from Sync-SharedSiteAssets would make the second pass an
+        exact repeat of the first: same source, same destination, same skip.
+
+        /MIR and /PURGE stay out for the reason they stay out everywhere else here.
+        The base site is authoritative for the files it has, not for the absence of
+        files it does not have, so a weight the artifact ships and the box lacks
+        must survive.
+        """
+        text = DEPLOY_SCRIPT.read_text()
+
+        match = re.search(
+            r"function Sync-ServerOwnedAssets \{(.*?)\n\}\n", text, re.DOTALL,
+        )
+        self.assertIsNotNone(match, "could not find Sync-ServerOwnedAssets")
+        body = match.group(1)
+
+        copy = re.search(r"&\s*robocopy[^\r\n]*", body)
+        self.assertIsNotNone(copy, "Sync-ServerOwnedAssets does not call robocopy")
+        flags = copy.group(0)
+
+        for excluded in ("/XC", "/XN", "/XO"):
+            self.assertNotIn(
+                excluded, flags,
+                f"{excluded} makes this pass skip files that already exist, which is every "
+                f"file it exists to replace: {flags}",
+            )
+        for destructive in ("/MIR", "/PURGE"):
+            self.assertNotIn(
+                destructive, flags,
+                f"{destructive} would delete artifact-shipped files the base site lacks: {flags}",
+            )
+
+    def test_production_copy_leaves_server_owned_paths_alone(self):
+        """The InPlace branch gets the opposite mechanism to the DedicatedSite one.
+        There is no overlay on the production path, so the only way to keep the
+        server's copy is to keep the artifact away from it.
+
+        Production has never had an automated deploy -- its fa-solid-900.woff2 is
+        dated 2021-08-04 and its Rock theme _variables.less 2023-04-10 -- so the
+        v19 cutover is the first run that could overwrite these files, and plain
+        robocopy /E copies whenever source and destination differ in size. Without
+        this exclusion the cutover downgrades production to the Free fonts.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+
+        openers = [
+            index for index, line in enumerate(lines)
+            if line.strip() == "if ($Mode -eq 'DedicatedSite') {"
+        ]
+        self.assertTrue(openers, "no DedicatedSite branch found")
+
+        guarded = set()
+        for opener in openers:
+            start, end = _block_body(lines, opener)
+            guarded.update(range(start, end))
+
+        exclusions = [
+            index for index, line in enumerate(lines)
+            if "$copyExclusions += '/XD'" in line
+        ]
+        self.assertTrue(exclusions, "no /XD exclusions found on the InPlace copy")
+        for index in exclusions:
+            self.assertNotIn(
+                index, guarded,
+                "the /XD exclusion block moved into the DedicatedSite branch, where "
+                "$copyExclusions is never handed to a robocopy call",
+            )
+
+        text = "\n".join(lines)
+        loop = re.search(
+            r"foreach \(\$directory in \$ServerOwnedDirectories\) \{(.*?)\n\s*\}", text, re.DOTALL,
+        )
+        self.assertIsNotNone(
+            loop,
+            "$ServerOwnedDirectories is never turned into robocopy exclusions, so the "
+            "production copy will overwrite the server's Font Awesome Pro fonts",
+        )
+        self.assertIn("/XD", loop.group(1), "server-owned paths must be excluded as directories")
+        self.assertIn(
+            "$ExtractPath", loop.group(1),
+            "robocopy /XD matches against the source tree, so the exclusion has to be "
+            "built from $ExtractPath and not from $SitePath",
+        )
+
     def test_dedicated_site_grants_the_app_pool_write_access(self):
         """Rock compiles its legacy LESS themes to .css on a background thread at
         every application start, so the app pool identity needs write access to the

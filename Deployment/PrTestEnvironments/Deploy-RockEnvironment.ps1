@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Deploys a built RockWeb artifact to a named long-lived environment (staging, production).
 
@@ -262,6 +262,42 @@ $PreservedDirectories = @('Content', 'App_Data', 'Logs', 'Uploads')
 
 # Files that are per-server configuration, not build output.
 $PreservedFiles = @('web.ConnectionStrings.config')
+
+# Directories the server owns and the branch does not, even though the artifact
+# ships its own copy of them. The artifact's copy is the wrong one and must lose.
+#
+# Font Awesome is the case that forced this. Passion holds a Pro licence and the
+# Pro webfonts sit on both boxes, but upstream Rock ships the Free fonts under
+# the same filenames, so the artifact always carries a Free
+# fa-solid-900.woff2 (78 KB against Pro's 137 KB) and a Free fa-regular-400.woff2
+# (13 KB against Pro's 169 KB). Free covers about 1,600 glyphs where Pro covers
+# more than 16,000, so every Pro-only icon on a page falls back to an empty box.
+# The fonts cannot be committed instead: this repository is a public fork of
+# SparkDevNetwork/Rock, and publishing licensed commercial font binaries to it
+# would breach the licence and be unrecoverable once pushed.
+#
+# fa-light-300.woff2 is the tell that the plain overlay cannot solve this on its
+# own. Free has no Light weight, so no Light file rides in the artifact, the gap
+# is real, and Sync-SharedSiteAssets fills it -- Light matches production byte
+# for byte today. Solid and Regular are already present at the destination when
+# the overlay runs, and /XC /XN /XO means it skips anything already there. Only
+# an authoritative copy can replace them.
+#
+# Both deployment modes need this and they need opposite mechanisms, which is why
+# the list lives here rather than inside either branch:
+#
+#   DedicatedSite  Sync-ServerOwnedAssets copies these from the base site after
+#                  the gap-filling overlay, with no /XC /XN /XO, so the box wins.
+#   InPlace        the same paths become robocopy /XD exclusions, so the artifact
+#                  never reaches them and production keeps what it already has.
+#
+# Production has never had an automated deploy -- its fa-solid-900.woff2 is dated
+# 2021-08-04 and its _variables.less 2023-04-10 -- so the v19 cutover is the first
+# run that could overwrite these, and without the exclusion it would.
+#
+# Forward slashes: Join-Path handles them on Windows, and they read as paths
+# rather than as escapes.
+$ServerOwnedDirectories = @('Assets/Fonts/FontAwesome')
 
 $EnvironmentPath = Join-Path $EnvironmentRoot $EnvironmentName
 $ArtifactPath = Join-Path $EnvironmentPath "artifact.zip"
@@ -827,6 +863,64 @@ function Sync-SharedSiteAssets {
     }
 }
 
+function Sync-ServerOwnedAssets {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$RelativePaths
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SourceRoot) -or !(Test-Path $SourceRoot)) {
+        Write-Host "Server-owned asset source not found; skipping. SourceRoot=$SourceRoot"
+        return
+    }
+    if ((Resolve-Path $SourceRoot).Path -eq (Resolve-Path $DestinationRoot).Path) {
+        Write-Host "Server-owned asset source is the destination; skipping."
+        return
+    }
+
+    foreach ($relativePath in $RelativePaths) {
+        if ([string]::IsNullOrWhiteSpace($relativePath)) { continue }
+
+        # Nested paths are allowed here, unlike the shared-asset overlay, because
+        # this list names specific directories rather than top-level ones. What is
+        # still refused is anything that could climb out of the site: '..' in any
+        # segment, a rooted path, or a drive letter. This copy overwrites, so a
+        # path that escaped would overwrite outside the site.
+        if ($relativePath -match '(^|[\\/])\.\.([\\/]|$)' -or [System.IO.Path]::IsPathRooted($relativePath)) {
+            throw "Server-owned path must be relative to the site root and must not contain '..': $relativePath"
+        }
+
+        $sourcePath = Join-Path $SourceRoot $relativePath
+        $destinationPath = Join-Path $DestinationRoot $relativePath
+        if (!(Test-Path $sourcePath)) {
+            Write-DeployStep "Server-owned path $relativePath is absent from the base site; leaving the artifact's copy in place."
+            continue
+        }
+
+        Ensure-Directory -Path $destinationPath
+
+        # No /XC /XN /XO, which is the whole point: the shared-asset overlay ran
+        # first and skipped every one of these because the artifact had already
+        # put a file there. This pass replaces them. Still no /MIR and no /PURGE
+        # -- the base site is authoritative for the files it has, not for the
+        # absence of files it does not have, so a weight the artifact ships and
+        # the box lacks survives.
+        & robocopy $sourcePath $destinationPath /E /NFL /NDL /NJH /NJS /NP
+        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+        if ($exitCode -gt 7) {
+            throw "robocopy failed for server-owned path $relativePath with exit code $exitCode."
+        }
+
+        # Byte counts rather than file counts. The files are already present either
+        # way, so a count cannot show that the right ones arrived; the size can.
+        # Free and Pro Font Awesome share every filename and differ only in size.
+        $totalBytes = (Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue |
+            Measure-Object -Property Length -Sum).Sum
+        Write-DeployStep "Server-owned $relativePath restored from the base site ($totalBytes bytes on disk)."
+    }
+}
+
 function Set-ProductionCompilationSettings {
     <#
     .SYNOPSIS
@@ -1138,6 +1232,7 @@ try {
         Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
         Write-DeployStep "Would preserve directories: $($PreservedDirectories -join ', ')"
         Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
+        Write-DeployStep "Would leave server-owned paths untouched: $($ServerOwnedDirectories -join ', ')"
         Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
         Write-DeployStep "Would set compilation debug=false and executionTimeout=600 in the deployed web.config."
         Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
@@ -1250,6 +1345,15 @@ try {
             -DestinationRoot $SitePath `
             -DirectoryList $SharedAssetDirectories
 
+        # Second pass, and it has to be second: the overlay above skips anything
+        # the artifact already placed, which is exactly the set this pass exists
+        # to replace. See $ServerOwnedDirectories for why Font Awesome cannot be
+        # solved by the first pass or by committing the files.
+        Sync-ServerOwnedAssets `
+            -SourceRoot $sharedAssetSource `
+            -DestinationRoot $SitePath `
+            -RelativePaths $ServerOwnedDirectories
+
         # Again, after the overlay. The strip above ran on the extracted artifact;
         # the overlay has since backfilled Plugins from the base site and brought
         # that site's own bin/obj along with it.
@@ -1303,6 +1407,17 @@ try {
         foreach ($file in $PreservedFiles) {
             $copyExclusions += '/XF'
             $copyExclusions += (Join-Path $ExtractPath $file)
+        }
+
+        # Excluded from the copy but deliberately not from the backup above: if
+        # this exclusion is ever wrong, the backup is what puts the fonts back.
+        # Production's Pro webfonts predate this pipeline by five years and no
+        # deploy has ever run against them, so this exclusion is the only thing
+        # standing between the v19 cutover and every Pro-only icon on the site
+        # turning into an empty box.
+        foreach ($directory in $ServerOwnedDirectories) {
+            $copyExclusions += '/XD'
+            $copyExclusions += (Join-Path $ExtractPath $directory)
         }
         Write-DeployStep "Copying the artifact over $SitePath."
         & robocopy $ExtractPath $SitePath /E @copyExclusions /R:3 /W:5 /NFL /NDL /NP
