@@ -42,6 +42,9 @@ CATALOG_SURFACES = [
     REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
     REPO_ROOT / ".github" / "scripts" / "pr-test-status.js",
     REPO_ROOT / "Documentation" / "Making-A-Change-To-Rock.md",
+    # The domain model. It defines what "the shared catalog" means, so every
+    # other surface here is describing whatever this file says it is.
+    REPO_ROOT / "CONTEXT.md",
 ]
 
 # Files that talk about PR environments and are still not catalog surfaces. Each
@@ -124,21 +127,35 @@ class SharedCatalogClaimTests(harness.HarnessAssertions, unittest.TestCase):
         listed = {path.relative_to(REPO_ROOT).as_posix() for path in CATALOG_SURFACES}
         candidates, unaccounted = [], []
 
-        for directory in ("Documentation", ".github"):
-            for path in sorted((REPO_ROOT / directory).rglob("*")):
-                if not path.is_file() or path.suffix.lower() not in CANDIDATE_SUFFIXES:
-                    continue
-                relative = path.relative_to(REPO_ROOT).as_posix()
-                if not CANDIDATE_MENTION.search(path.read_text(encoding="utf-8", errors="ignore")):
-                    continue
-                candidates.append(relative)
-                if relative in listed:
-                    continue
-                if any(relative == skip or relative.startswith(skip + "/") for skip in NOT_A_SURFACE):
-                    continue
-                unaccounted.append(relative)
+        # The repository root is swept too, and not for completeness. CONTEXT.md
+        # sits there, it is where the term is defined, and it named a catalog that
+        # had been off the instance for days while every document downstream of it
+        # was checked. The definition was the only thing nothing read.
+        searched = sorted(
+            {
+                *(REPO_ROOT / "Documentation").rglob("*"),
+                *(REPO_ROOT / ".github").rglob("*"),
+                *REPO_ROOT.glob("*.md"),
+            }
+        )
 
-        self.assertNotVacuous(candidates, "nothing under Documentation/ or .github/ mentions the catalog")
+        for path in searched:
+            if not path.is_file() or path.suffix.lower() not in CANDIDATE_SUFFIXES:
+                continue
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            if not CANDIDATE_MENTION.search(path.read_text(encoding="utf-8", errors="ignore")):
+                continue
+            candidates.append(relative)
+            if relative in listed:
+                continue
+            if any(relative == skip or relative.startswith(skip + "/") for skip in NOT_A_SURFACE):
+                continue
+            unaccounted.append(relative)
+
+        self.assertNotVacuous(
+            candidates,
+            "nothing under Documentation/, .github/ or the repository root mentions the catalog",
+        )
         self.assertEqual(
             [],
             unaccounted,
@@ -146,6 +163,42 @@ class SharedCatalogClaimTests(harness.HarnessAssertions, unittest.TestCase):
             "surface nor excluded from being one -- add to CATALOG_SURFACES, or to "
             "NOT_A_SURFACE with the reason:\n  " + "\n  ".join(unaccounted),
         )
+
+    def test_the_domain_model_names_where_a_catalog_name_comes_from(self):
+        """CONTEXT.md defined the shared catalog as a literal name, and that name had
+        been off the instance for days before anyone noticed.
+
+        Nothing could notice. The name lives in `secrets.DB_NAME`, which is not in
+        this repository and not readable from a test, so a literal written here is a
+        copy of a value with no way back to the original. The runbooks had already
+        been corrected and this had not, which is the shape the drift always takes:
+        the document people edit when something changes is the operational one, and
+        the definition is the one they read.
+
+        So the rule is that the row names its source. `secrets.DB_NAME` and
+        `vars.STAGING_DB_NAME` are checkable claims, in a way that a catalog name is
+        not, and a reader who follows them lands on the current value rather than a
+        remembered one.
+        """
+        rows = {
+            "the shared catalog": "secrets.DB_NAME",
+            "the staging catalog": "vars.STAGING_DB_NAME",
+        }
+        context = (REPO_ROOT / "CONTEXT.md").read_text(encoding="utf-8")
+
+        for term, source in rows.items():
+            with self.subTest(term=term):
+                line = [
+                    candidate for candidate in context.splitlines()
+                    if candidate.startswith(f"| **{term}**")
+                ]
+                self.assertEqual(1, len(line), f"CONTEXT.md has no single row defining {term}")
+                self.assertIn(
+                    source,
+                    line[0],
+                    f"the {term} row defines itself with a name rather than pointing at "
+                    f"{source}, so nothing can tell when the name stops being true",
+                )
 
     def test_no_surface_calls_the_catalog_sanitized(self):
         offenders = []

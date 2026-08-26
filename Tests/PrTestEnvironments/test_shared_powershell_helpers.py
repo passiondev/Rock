@@ -1,39 +1,17 @@
 """Hold the copied PowerShell helpers identical across the deploy scripts.
 
-Card 03 of the 2026-08-21 architecture review counted twelve PowerShell scripts
-and no shared module, and proposed one `.psm1` beside them. The codebase had
-already considered and rejected that, in a comment repeated at the top of
-`Stop-PrEnvironment.ps1` and `Invoke-PrEnvironmentCleanup.ps1`:
+`Deployment/PrTestEnvironments/` holds twelve PowerShell scripts and no shared
+module. Several carry the same helper functions, copied rather than shared. That
+is on purpose, and ADR-0001 has the three reasons. The short form: the bootstrap
+publishes with a `*.ps1` glob that no `.psm1` matches, a half-applied publish would
+break every command on the VM rather than one, and the copy in the VM startup
+script runs before any module could reach the machine.
 
-    Duplicated ... rather than shared, deliberately: the bootstrap ships this
-    directory with `gsutil cp Deployment/PrTestEnvironments/*.ps1`, so a .psm1
-    would never reach the VM -- the same class of silent non-deployment this
-    function exists to fix.
+Two architecture reviews have proposed the module anyway. Both read the code, and
+neither had a way to reach the reasoning, which is why it is an ADR now.
 
-That reasoning still holds, and the bootstrap has since grown a second reason.
-`pr-test-bootstrap-command-queue.yml` discovers published scripts with
-`Where-Object { $_ -like '*.ps1' }`, which does not match `.psm1`, on top of a
-hand-typed floor list of ten names. On 2026-08-18 those two disagreed by one file
-and the agent failed a command on a bootstrap that had reported success. A module
-would add a fourth place to keep in step, in the one path where being out of step
-is silent.
-
-The card anticipated the shipping objection and answered that the copy step can be
-changed to carry a `.psm1`. It can, and that is not the difficulty. Widening one
-glob is a one-line edit; what it buys is a deploy that fails if the module is
-absent, on a queue agent that updates itself out of the same bucket it is being
-updated by. A half-applied publish -- scripts new, module missing -- breaks every
-command on the VM rather than one, and the bootstrap has already shipped a
-disagreement of exactly that kind once.
-
-There is a third reason the module cannot be complete even if it shipped.
-`Get-GcsAccessToken` and `Copy-GcsObjectToFile` are defined inline in the VM
-startup script, because they are what fetches everything else onto the box. The
-bootstrap copy can never import a module. It is the copy most likely to drift and
-the only one no refactor can remove.
-
-So the copies stay. What was missing is any check that they agree, which is what
-this module is. Bodies are compared after normalising whitespace, because the
+What the decision was missing is any check that the copies agree, which is what
+this module is. Bodies are compared after whitespace is normalised, because the
 bootstrap copy lives in a YAML here-string at a different indent with `$` escaped
 as a backtick-dollar.
 """

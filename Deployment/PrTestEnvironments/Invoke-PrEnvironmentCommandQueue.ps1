@@ -25,7 +25,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if ($QueueName -notmatch '^[a-z][a-z0-9-]{1,30}$') {
+# -cnotmatch, not -notmatch: PowerShell matches case-insensitively by default, so
+# this accepted 'Commands' and then polled a prefix GCS considers a different
+# directory from the one the producers write to. Every command would have timed
+# out against a VM that was running and healthy.
+if ($QueueName -cnotmatch '^[a-z][a-z0-9-]{1,30}$') {
     throw "QueueName must be lowercase letters, digits and hyphens, starting with a letter: '$QueueName'."
 }
 

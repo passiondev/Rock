@@ -28,6 +28,7 @@ ACTIONS_DIR = harness.REPO_ROOT / ".github" / "actions"
 
 AWAIT_ACTION = "./.github/actions/await-vm-command"
 AWAIT_ACTION_FILE = ACTIONS_DIR / "await-vm-command" / "action.yml"
+AWAIT_ACTION_SCRIPT = ACTIONS_DIR / "await-vm-command" / "Await-VmCommand.ps1"
 
 QUEUE_ACTION = "./.github/actions/queue-vm-command"
 QUEUE_ACTION_FILE = ACTIONS_DIR / "queue-vm-command" / "action.yml"
@@ -392,6 +393,12 @@ class DeclaredOutputTests(harness.HarnessAssertions, unittest.TestCase):
 class AwaitActionBehaviourTests(unittest.TestCase):
     """The wait's own behaviour, asserted once.
 
+    These read Await-VmCommand.ps1 rather than action.yml. The wait used to be 97
+    lines of PowerShell inlined into the YAML, where the only check available was
+    a parse. It is a script now, so Pester can run it -- see
+    Tests/PrTestEnvironments/Pester/AwaitCommand.Tests.ps1. What stays here is the
+    handful of strings whose value is that they exist at all.
+
     These assertions used to live in the producers' test files, one copy per
     workflow, and only ever matched the copy that happened to have the feature.
     The timeout message below is the clearest case: it was written after a real
@@ -404,7 +411,7 @@ class AwaitActionBehaviourTests(unittest.TestCase):
         the wrong prefix forever and reports a timeout, so the command looks hung
         rather than misaddressed -- the failure is silent in the direction that
         costs the most to diagnose."""
-        text = AWAIT_ACTION_FILE.read_text()
+        text = AWAIT_ACTION_SCRIPT.read_text()
 
         self.assertIn("/pr-environments/$($env:AWAIT_QUEUE)/results/", text)
         self.assertNotIn("/pr-environments/commands/results/", text)
@@ -412,14 +419,14 @@ class AwaitActionBehaviourTests(unittest.TestCase):
     def test_the_timeout_message_names_the_actual_cause(self):
         """A missing result object means the queue worker never ran. 'Timed out'
         alone sent three months of failures to the wrong place."""
-        text = AWAIT_ACTION_FILE.read_text()
+        text = AWAIT_ACTION_SCRIPT.read_text()
 
         self.assertIn("scheduled task is running on the target VM", text)
 
     def test_a_failure_is_annotated_rather_than_only_logged(self):
         """Without the annotation the reason sits somewhere in a poll loop's
         output and the run summary says only that a step exited non-zero."""
-        text = AWAIT_ACTION_FILE.read_text()
+        text = AWAIT_ACTION_SCRIPT.read_text()
 
         self.assertIn("::error::", text)
 
@@ -608,14 +615,89 @@ class QueueActionBehaviourTests(harness.HarnessAssertions, unittest.TestCase):
             "kebab-case to PascalCase mapping is the likely break.",
         )
 
-    def test_the_pending_path_follows_the_queue_the_caller_named(self):
-        """Two callers pass a queue other than `commands`. A hardcoded prefix puts
-        the command where no agent is looking, and the wait that follows reports a
-        timeout -- so it reads as a dead VM rather than a misaddressed command."""
+    def test_the_queue_name_is_checked_where_the_path_is_built(self):
+        """Three workflows carried a copy of this regex in a `run:` step and the
+        other three carried none, so half the producers could address a queue no
+        agent watches. The check belongs to whoever builds the path."""
         text = QUEUE_ACTION_SCRIPT.read_text()
 
-        self.assertIn("/pr-environments/$($env:VMQ_QUEUE)/pending/", text)
-        self.assertNotIn("/pr-environments/commands/pending/", text)
+        self.assertIn("Assert-ValidQueueName -QueueName $env:VMQ_QUEUE", text)
+
+        validate = text.index("Assert-ValidQueueName -QueueName $env:VMQ_QUEUE")
+        prefix = text.index('$queuePrefix = "gs://')
+        self.assertLess(validate, prefix, "the name is used to build a path before it is checked")
+
+    def test_no_workflow_keeps_its_own_copy_of_the_check(self):
+        """A leftover copy is how the two sides drift apart, and a copy is exactly
+        what hid the case-insensitivity defect: five places agreed, so the pattern
+        looked settled and nobody read the operator."""
+        copies = [
+            path.name
+            for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml"))
+            if "[a-z][a-z0-9-]{1,30}" in path.read_text()
+        ]
+
+        self.assertEqual(
+            [],
+            copies,
+            "these workflows still validate the queue name themselves; "
+            "queue-vm-command does it now: " + ", ".join(copies),
+        )
+
+    def test_the_producer_is_no_laxer_than_the_agent_that_reads_the_queue(self):
+        """Two checks, one on each side of the bucket, and they are different
+        claims: this one says the command was addressed correctly, the agent's says
+        this VM was asked for work meant for it. Neither replaces the other, and a
+        producer looser than its consumer queues commands that are accepted here
+        and ignored there -- which fails as a timeout, not an error.
+
+        Both use `-cnotmatch`. The default operator is case-insensitive, so a
+        lowercase-only pattern accepted 'Commands', and GCS does not fold case.
+        """
+        producer = QUEUE_ACTION_SCRIPT.read_text()
+        agent = (
+            harness.REPO_ROOT / "Deployment" / "PrTestEnvironments"
+            / "Invoke-PrEnvironmentCommandQueue.ps1"
+        ).read_text()
+
+        pattern = "-cnotmatch '^[a-z][a-z0-9-]{1,30}$'"
+        self.assertIn(pattern, producer, "the producer does not check the queue name case-sensitively")
+        self.assertIn(pattern, agent, "the agent does not check the queue name case-sensitively")
+
+    def test_the_stale_result_is_cleared_before_the_command_is_queued(self):
+        """Order is the whole of it. Clearing after the upload races the agent: the
+        VM can pick the command up, finish, and write its result in the gap, and the
+        clear then deletes the answer this run is waiting for. The wait would run to
+        its ceiling and report a timeout for work that had already succeeded."""
+        text = QUEUE_ACTION_SCRIPT.read_text()
+
+        clear = text.index("Clear-StaleResult -ResultUri")
+        upload = text.index("gsutil cp command.json")
+
+        self.assertLess(
+            clear,
+            upload,
+            "Write-VmCommand.ps1 clears the stale result after uploading the "
+            "command, which can delete a result the VM has already written",
+        )
+
+    def test_both_queue_paths_follow_the_queue_the_caller_named(self):
+        """Two callers pass a queue other than `commands`. A hardcoded prefix puts
+        the command where no agent is looking, and the wait that follows reports a
+        timeout -- so it reads as a dead VM rather than a misaddressed command.
+
+        Two paths hang off the queue now, pending and results, and clearing the
+        result of the wrong queue is worse than writing to it: it would delete a
+        live answer another run is waiting on. Both are built from one prefix, so
+        this asserts the prefix carries the caller's queue and that neither path
+        is spelled out again.
+        """
+        text = QUEUE_ACTION_SCRIPT.read_text()
+
+        self.assertIn('$queuePrefix = "gs://$($env:VMQ_BUCKET)/pr-environments/$($env:VMQ_QUEUE)"', text)
+        self.assertIn('"$queuePrefix/pending/$($env:VMQ_COMMAND_ID).json"', text)
+        self.assertIn('"$queuePrefix/results/$($env:VMQ_COMMAND_ID).json"', text)
+        self.assertNotIn("/pr-environments/commands/", text)
 
     def test_a_failed_upload_is_an_error_rather_than_a_silent_success(self):
         """gsutil failing leaves no command on the queue. Without this the step is
@@ -627,10 +709,20 @@ class QueueActionBehaviourTests(harness.HarnessAssertions, unittest.TestCase):
 
     def test_the_script_returns_before_uploading_when_it_is_only_being_loaded(self):
         """Pester dot-sources this file to reach the functions. Without the guard
-        the load would try to queue a command."""
+        the load would try to queue a command.
+
+        The guard reads VMQ_INVOKED, a literal action.yml sets, and not VMQ_BUCKET,
+        which the caller supplies. DotSourceGuardTests holds the general rule and
+        explains what guarding on an input costs. This pins the specific variable
+        so the two cannot drift."""
         text = QUEUE_ACTION_SCRIPT.read_text()
 
-        self.assertIn("IsNullOrWhiteSpace($env:VMQ_BUCKET)", text)
+        self.assertIn("IsNullOrWhiteSpace($env:VMQ_INVOKED)", text)
+        self.assertFalse(
+            "IsNullOrWhiteSpace($env:VMQ_BUCKET)" in text,
+            "the guard is back on an input the caller supplies. See "
+            "DotSourceGuardTests for why that exits 0 on a blank bucket.",
+        )
 
     def test_redaction_keys_on_the_shape_of_a_name_not_a_list_of_known_ones(self):
         """The defect this replaces was a literal `$key -eq 'connectionString'`.
@@ -640,6 +732,127 @@ class QueueActionBehaviourTests(harness.HarnessAssertions, unittest.TestCase):
 
         self.assertIn("connectionstring|password|secret|token|credential", text)
         self.assertNotIn("-eq 'connectionString'", text)
+
+
+class CommandIdTests(harness.HarnessAssertions, unittest.TestCase):
+    """A re-run must not read the previous attempt's answer.
+
+    `github.run_id` holds still across a re-run and `github.run_attempt` counts up,
+    so an id built from the run alone repeats. Nothing deletes a result object, and
+    await-vm-command acts on the first `results/<id>.json` it can copy. Those three
+    facts together mean a re-run of a producer whose id omits the attempt finds the
+    last attempt's result waiting on the first poll, reports it, and never notices
+    the VM did no work. A failed deploy re-run reports the same failure. A fixed one
+    reports success it did not earn.
+    """
+
+    def test_every_producer_puts_the_attempt_in_its_command_id(self):
+        without = {}
+        for name in QUEUE_PRODUCERS:
+            text = (harness.WORKFLOWS_DIR / name).read_text()
+            for line in text.splitlines():
+                if "COMMAND_ID:" not in line:
+                    continue
+                if "github.run_attempt" not in line:
+                    without.setdefault(name, []).append(line.strip())
+
+        self.assertEqual(
+            {},
+            without,
+            "a command id that omits github.run_attempt repeats on a re-run, and "
+            "the stale result from the previous attempt is what await-vm-command "
+            "reports:\n"
+            + "\n".join(
+                f"  {n}\n    " + "\n    ".join(lines) for n, lines in sorted(without.items())
+            ),
+        )
+
+    def test_every_producer_declares_a_command_id(self):
+        """The scan above passes trivially for a producer with no COMMAND_ID line at
+        all, so this holds the list honest as producers come and go."""
+        missing = [
+            name
+            for name in QUEUE_PRODUCERS
+            if "COMMAND_ID:" not in (harness.WORKFLOWS_DIR / name).read_text()
+        ]
+
+        self.assertEqual(
+            [],
+            missing,
+            "these are listed as queue producers and declare no COMMAND_ID, so the "
+            "attempt check above says nothing about them: " + ", ".join(missing),
+        )
+
+
+class DotSourceGuardTests(harness.HarnessAssertions, unittest.TestCase):
+    """A script the tests dot-source is inert on load, and never inert on a real call.
+
+    Both extracted scripts return early so that Pester can load their functions
+    without running the body. The variable that guard reads decides what happens
+    when a caller passes an input blank.
+
+    Guarding on `$env:AWAIT_BUCKET` reads a caller-supplied value as "this is a
+    test". A workflow that resolves `bucket` to an empty string then gets a step
+    that exits 0 without polling, which the job reads as the VM command having
+    succeeded. That is the silent-green failure this pipeline keeps paying for,
+    reached through the input the action declares `required: true`.
+
+    So the guard reads a marker the action sets to a literal, and a blank input
+    falls through to a real error. This test holds the two apart by checking that
+    the guard variable's value in action.yml contains no `inputs.` expression."""
+
+    SCRIPTS = (
+        ("await-vm-command", AWAIT_ACTION_SCRIPT),
+        ("queue-vm-command", QUEUE_ACTION_SCRIPT),
+    )
+
+    GUARD = re.compile(
+        r"if \(\[string\]::IsNullOrWhiteSpace\(\$env:(\w+)\)\)\s*\{\s*return\s*\}",
+        re.S,
+    )
+
+    def _step_env(self, action):
+        """The `env:` mapping of the step that runs the extracted script."""
+        for step in harness.action_steps(harness.composite_action(action)):
+            if ".ps1" in (step.get("run") or ""):
+                return step.get("env") or {}
+        self.fail(f"{action} has no step that runs a .ps1")
+
+    def test_every_extracted_script_has_a_guard(self):
+        for _, script in self.SCRIPTS:
+            with self.subTest(script=script.name):
+                found = self.GUARD.findall(script.read_text())
+                self.assertEqual(
+                    1,
+                    len(found),
+                    f"{script.name} needs exactly one early-return guard so Pester "
+                    "can dot-source it without running the body.",
+                )
+
+    def test_the_guard_does_not_read_an_input_the_caller_supplies(self):
+        for action, script in self.SCRIPTS:
+            with self.subTest(script=script.name):
+                variable = self.GUARD.findall(script.read_text())[0]
+                declared = self._step_env(action)
+
+                self.assertIn(
+                    variable,
+                    declared,
+                    f"{script.name} guards on $env:{variable}, which "
+                    f"{action}/action.yml never sets. The script is inert on every "
+                    "real invocation.",
+                )
+
+                self.assertNotIn(
+                    "inputs.",
+                    str(declared[variable]),
+                    f"{script.name} guards on $env:{variable}, and "
+                    f"{action}/action.yml fills it from an input: "
+                    f"{declared[variable]!r}. A caller who resolves that input to an "
+                    "empty string gets a step that exits 0 having done nothing, "
+                    "which the job reads as success. Guard on a literal marker and "
+                    "let the blank input fail on its own.",
+                )
 
 
 class SecretsContextTests(harness.HarnessAssertions, unittest.TestCase):

@@ -157,9 +157,95 @@ function Get-RedactedCommand {
     return $redacted
 }
 
-# Dot-sourcing this file to test the functions must not run the upload. The
-# action sets VMQ_BUCKET; a Pester run does not.
-if ([string]::IsNullOrWhiteSpace($env:VMQ_BUCKET)) {
+function Assert-ValidQueueName {
+    <#
+    .SYNOPSIS
+        Throws unless the queue name is one that can address a queue.
+    .DESCRIPTION
+        The name is concatenated into a GCS object path, so a name outside this
+        shape writes the command somewhere no agent is polling. That failure is
+        silent in the worst direction: the wait runs to its ceiling and reports a
+        timeout, which reads as a dead VM rather than a misaddressed command.
+
+        This check used to sit in a `run:` step in three workflows, one copy each,
+        and callers that did not think to add it had none. Whoever builds the path
+        should be the one to check it, and that is this script. The agent keeps its
+        own copy on the far side, which is a different claim: this one says the
+        command was addressed correctly, and that one says this VM was asked for
+        work meant for it. Neither substitutes for the other.
+
+        Deliberately the same pattern as the agent's. A producer laxer than the
+        consumer can queue a command that is accepted here and ignored there.
+
+        `-cnotmatch`, not `-notmatch`. PowerShell matches case-insensitively by
+        default, so every copy of this check that existed accepted 'Commands'.
+        GCS does not fold case: that command lands in `pr-environments/Commands/`
+        while the agent polls `pr-environments/commands/`, and the wait reports a
+        timeout for a VM that was healthy and never asked. A lowercase-only
+        pattern enforced case-insensitively is the check appearing to work.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$QueueName
+    )
+
+    if ($QueueName -cnotmatch '^[a-z][a-z0-9-]{1,30}$') {
+        throw "queue-name must be lowercase letters, digits and hyphens, starting with a letter: '$QueueName'."
+    }
+}
+
+function Clear-StaleResult {
+    <#
+    .SYNOPSIS
+        Removes a result left behind by an earlier command carrying this same id.
+    .DESCRIPTION
+        The command id is the whole of a command's identity. await-vm-command acts
+        on the first `results/<commandId>.json` it can copy, and it has no way to
+        tell this attempt's answer from one already sitting there. Nothing on the
+        VM prunes results either: the agent deletes the *command* object when it
+        picks the work up and leaves the result for the poller to find.
+
+        So an id that repeats reads as an instant success or an instant failure
+        that no VM produced. Every producer now puts github.run_attempt in the id,
+        which is what stops the repeat. This is the half that does not depend on
+        six workflows each remembering: clear the slot, then fill it.
+
+        A result found here means two commands shared an id, which should not
+        happen now. The caller says so in the log rather than passing over it.
+    .OUTPUTS
+        $true when a stale result was removed, $false when the slot was already
+        empty, which is the normal case.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)][string]$ResultUri
+    )
+
+    gsutil -q stat $ResultUri
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    gsutil -q rm $ResultUri
+    if ($LASTEXITCODE -ne 0) {
+        # Deliberately fatal. Carrying on would queue the command with the old
+        # answer still in place, and the wait would report that answer within
+        # seconds while the VM was still working.
+        throw "A result for this command id already exists at $ResultUri and could not be removed. The wait that follows would read it as this command's answer."
+    }
+
+    return $true
+}
+
+# Dot-sourcing this file to test the functions must not run the upload. action.yml
+# sets VMQ_INVOKED to a literal; a Pester run does not.
+#
+# Deliberately not VMQ_BUCKET. Guarding on an input the caller supplies means a
+# workflow that resolves `bucket` to an empty string gets a step that exits 0
+# having queued nothing, and the failure then surfaces as a wait that times out
+# somewhere else. With the marker, the upload below fails where it happened.
+if ([string]::IsNullOrWhiteSpace($env:VMQ_INVOKED)) {
     return
 }
 
@@ -185,7 +271,15 @@ $queuedCommand | ConvertTo-Json -Depth 10 | Out-File -FilePath command.json -Enc
 
 Get-RedactedCommand -Command $queuedCommand | ConvertTo-Json -Depth 10
 
-$destination = "gs://$($env:VMQ_BUCKET)/pr-environments/$($env:VMQ_QUEUE)/pending/$($env:VMQ_COMMAND_ID).json"
+Assert-ValidQueueName -QueueName $env:VMQ_QUEUE
+
+$queuePrefix = "gs://$($env:VMQ_BUCKET)/pr-environments/$($env:VMQ_QUEUE)"
+
+if (Clear-StaleResult -ResultUri "$queuePrefix/results/$($env:VMQ_COMMAND_ID).json") {
+    Write-Host "::warning::A result for command id $($env:VMQ_COMMAND_ID) was already in the queue and has been removed. Two commands have shared an id."
+}
+
+$destination = "$queuePrefix/pending/$($env:VMQ_COMMAND_ID).json"
 gsutil cp command.json $destination
 if ($LASTEXITCODE -ne 0) {
     throw "Could not upload the command to $destination. The queue never received it, so nothing will run and the wait that follows would report a timeout instead."

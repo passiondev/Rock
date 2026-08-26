@@ -76,6 +76,9 @@ runs:
         VMQ_PAYLOAD: ${{ inputs.payload }}
         VMQ_SECRET_FIELD: ${{ inputs.secret-field }}
         VMQ_SECRET_VALUE: ${{ inputs.secret-value }}
+        # A literal, and the only thing the script's early-return guard reads.
+        # See the sibling note in await-vm-command/action.yml.
+        VMQ_INVOKED: "1"
       # $env:GITHUB_ACTION_PATH, not ${{ github.action_path }}. The runner sets
       # both to the same directory, but an expression is pasted in as raw text:
       # unquoted here, so one space in the path and pwsh reads the first word as

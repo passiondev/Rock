@@ -17,7 +17,11 @@ remembered to add to it, and it cannot fail for a path nobody thought of.
 
 So this file derives the required set from the test sources instead. A new test that
 reads somewhere new fails here until the trigger is widened to match, whether or not
-anyone remembers this file exists. It replaces PipelineTestTriggerTests in
+anyone remembers this file exists. That only works while test files write their paths
+out in the literal `REPO_ROOT / "a" / "b"` form, which is ADR-0003 and is the reason
+pipeline_harness.py exports two directory constants rather than five.
+
+It replaces PipelineTestTriggerTests in
 test_environment_deploy.py, whose literal-membership assertion also had the inverse
 failure mode: it fired on a change that widened a glob to a parent directory and so
 strictly improved coverage.
@@ -74,7 +78,18 @@ def _covered(path, patterns):
     return None
 
 
-class TriggerCoversWhatTheSuiteReadsTests(unittest.TestCase):
+# A path the suite names precisely because the tree should not have it. Rock 19
+# deleted `Rock.Version/AssemblySharedInfo.cs` and moved the version into
+# `Directory.Build.props`; the staging catalog guard reads whichever of the two the
+# branch it is deploying actually has, and test_environment_deploy.py pins the order
+# it tries them in. Both name the historical path on a tree that no longer carries
+# it, and that is correct rather than stale.
+ABSENT_ON_PURPOSE = {
+    "Rock.Version/AssemblySharedInfo.cs",
+}
+
+
+class TriggerCoversWhatTheSuiteReadsTests(harness.HarnessAssertions, unittest.TestCase):
     def setUp(self):
         self.workflow = yaml.safe_load(CI_WORKFLOW.read_text())
         self.triggers = self.workflow.get("on") or self.workflow.get(True)
@@ -146,6 +161,50 @@ class TriggerCoversWhatTheSuiteReadsTests(unittest.TestCase):
             invisible,
             "these read repository files but name none of them as REPO_ROOT / \"...\", so "
             "the paths they depend on are outside this check entirely: " + ", ".join(invisible),
+        )
+
+    def test_every_path_the_suite_reads_exists(self):
+        """A path the suite names but the tree does not have fails as one
+        FileNotFoundError per reader, and never names the missing file.
+
+        Seven modules spell out `PR-Test-Environments-Operator-Runbook.md`, five the
+        developer runbook, four the training deck. That repetition is deliberate:
+        the scan above only sees a path written as `REPO_ROOT / "..."`, so an
+        accessor holding each name once would empty it, file by file. What was
+        missing is the other half of that bargain. If the literal is the record,
+        something has to check the record is true.
+
+        This does it once, naming the document and everyone who reads it, rather
+        than leaving a rename to be diagnosed from whichever test ran first.
+        """
+        missing = {
+            path: sorted(sources)
+            for path, sources in _read_paths().items()
+            if not (REPO_ROOT / path).exists() and path not in ABSENT_ON_PURPOSE
+        }
+
+        self.assertEqual(
+            {},
+            missing,
+            "the suite names these repository paths and the tree does not have "
+            "them, so every test that reads one fails without naming it:\n"
+            + "\n".join(f"  {p}  (read by {', '.join(s)})" for p, s in sorted(missing.items())),
+        )
+
+    def test_nothing_is_exempted_from_that_check_once_it_exists(self):
+        """An allowlist that keeps an entry after the file arrives is how the check
+        above turns into a blanket exemption. Each entry has to earn its place on
+        every run, so a path that comes back is a failure here rather than a line
+        nobody revisits."""
+        self.assertNotVacuous(ABSENT_ON_PURPOSE, "the allowlist is empty, so this guard checks nothing")
+
+        present = sorted(p for p in ABSENT_ON_PURPOSE if (REPO_ROOT / p).exists())
+
+        self.assertEqual(
+            [],
+            present,
+            "these are listed as absent on purpose and the tree now has them. Delete "
+            "the entry so the existence check covers them: " + ", ".join(present),
         )
 
     def test_the_pull_request_filter_matches_the_push_filter(self):
