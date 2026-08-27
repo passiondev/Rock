@@ -363,6 +363,53 @@ Describe 'Sync-ServerOwnedAssets byte reporting for a path that names a file' {
         $line | Should -Match '\(310 bytes on disk\)'
         $line | Should -Not -Match '9310'
     }
+
+    It 'does not warn when the base site''s own copy is empty' {
+        # The common case, and the reason this branch exists. Most themes on the
+        # box have never been opened in the Theme Styler, so Rock leaves their
+        # override pair at zero bytes. The first staging run restored 46 files and
+        # 14 were legitimately empty; warning on each would bury the one warning
+        # that means something.
+        $sourceStyles = Join-Path $script:Source 'Themes/Flat/Styles'
+        New-Item -ItemType Directory -Path $sourceStyles -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $sourceStyles '_css-overrides.less') -Force | Out-Null
+
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @('Themes/Flat/Styles/_css-overrides.less') -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $warnings | Should -BeNullOrEmpty
+
+        $line = $script:DeployMessages | Where-Object { $_ -match '_css-overrides\.less restored' }
+        $line | Should -Not -BeNullOrEmpty
+        $line | Should -Match 'empty on the base site'
+        $line | Should -Not -Match 'see warning above'
+    }
+
+    It 'warns when only part of the base site''s copy arrived' {
+        # A zero-check cannot see this one: bytes did arrive, just not all of them.
+        # Reported because the file it silently truncates is a stylesheet that
+        # still compiles, so nothing downstream would fail loudly.
+        $sourceStyles = Join-Path $script:Source 'Themes/Rock/Styles'
+        New-Item -ItemType Directory -Path $sourceStyles -Force | Out-Null
+        Set-Content -Path (Join-Path $sourceStyles '_css-overrides.less') -Value ('x' * 310) -NoNewline
+
+        # Copies a short read of the source rather than the whole of it.
+        function robocopy {
+            $to = $args[1]
+            $leaf = $args | Select-Object -Skip 2 | Where-Object { $_ -notmatch '^/' } | Select-Object -First 1
+            Set-Content -Path (Join-Path $to $leaf) -Value ('x' * 12) -NoNewline
+            $global:LASTEXITCODE = 1
+        }
+
+        Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+            -RelativePaths @('Themes/Rock/Styles/_css-overrides.less') -WarningVariable warnings -WarningAction SilentlyContinue
+
+        ($warnings -join ' ') | Should -Match 'copy is incomplete'
+        ($warnings -join ' ') | Should -Match '12 bytes against 310'
+
+        $line = $script:DeployMessages | Where-Object { $_ -match '_css-overrides\.less restored' }
+        $line | Should -Match '12 of 310 bytes'
+    }
 }
 
 Describe 'ConvertTo-NativePath' {

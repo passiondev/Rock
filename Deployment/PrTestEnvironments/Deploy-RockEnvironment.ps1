@@ -324,19 +324,27 @@ $ServerOwnedDirectories = @('Assets/Fonts/FontAwesome')
 # artifact, or every deploy silently reverts an administrator's work. Content and
 # Uploads are on the preserved list for the same reason.
 #
-# Measured against production on 2026-08-26: eight of these files across five
-# themes differ from what the artifact ships -- Rock, Stark, LandingPage,
+# Measured against production on 2026-08-26 by hand: eight of these files across
+# five themes differ from what the artifact ships -- Rock, Stark, LandingPage,
 # CheckinElectric and DashboardStark. They carry the brand palette
 # (@brand-color: #00b8e4, the link colours, @brand-critical), the Pro Font
 # Awesome wiring, and hand-written CSS fixes. Only Themes/Rock/Styles/
 # _variable-overrides.less matches the repository, because at some point someone
-# copied that one file into the fork. The other seven exist only on the box.
+# copied that one file into the fork.
+#
+# That hand count was low, and the gap is the argument for discovering these off
+# the box instead of listing them here. The first run against staging restored 46
+# files across 23 themes. Most of the extra are themes the fork has no folder for
+# at all -- PassionCityChurch, PassionTeam, CONNECT, Connect-V2, Agency,
+# CustomDefault, KioskStark and a family of Checkin-* variants -- and they are not
+# trivial: PassionCityChurch/_css-overrides.less alone is 10122 bytes. Anything
+# enumerated in this file would have missed every one of them.
 #
 # Both modes lost them, in opposite directions:
 #
 #   InPlace        robocopy /E copies whenever source and destination differ, and
 #                  nothing excluded these, so the v19 cutover would have replaced
-#                  all eight with upstream's empty pair.
+#                  them with upstream's empty pair.
 #   DedicatedSite  the overlay runs /XC /XN /XO and skips anything the artifact
 #                  already placed, so it never delivered them. That is why staging
 #                  renders in stock Rock blue, and why its Stark login page -- the
@@ -1151,14 +1159,37 @@ function Sync-ServerOwnedAssets {
             Measure-Object -Property Length -Sum).Sum
         $totalBytes = if ($null -eq $measured) { 0 } else { $measured }
 
-        # Zero is reported as a warning rather than as a restore. robocopy can
-        # return a success code having moved nothing -- pointing it at a file as
-        # though it were a directory does exactly that -- so "it did not throw" is
-        # not evidence the file arrived, and this is the only line that would say
-        # otherwise.
-        if ($totalBytes -eq 0) {
-            Write-Warning "Server-owned $relativePath copied 0 bytes. The base site has the path but nothing arrived at the destination; check this before trusting the deploy."
+        # The source measured the same way, because the destination count alone
+        # cannot tell a failed copy from a faithful one. Comparing the two answers
+        # the question the count is actually being asked -- did what the base site
+        # holds arrive -- and it catches a partial copy, which a zero-check never
+        # could.
+        $measuredSource = (Get-ChildItem -Path $sourcePath -Recurse -File -ErrorAction SilentlyContinue |
+            Measure-Object -Property Length -Sum).Sum
+        $sourceBytes = if ($null -eq $measuredSource) { 0 } else { $measuredSource }
+
+        # An empty source is the normal case, not a fault. Most themes on the box
+        # have never been through the Theme Styler, so Rock leaves their override
+        # pair at zero bytes; the first run of this against staging restored 46
+        # files and 14 of them were legitimately empty. Warning on those would put
+        # 14 false alarms in front of an operator on every deploy, and the warning
+        # below only works if it is rare enough to still be read. The file is
+        # copied and reported either way -- an empty override is what the theme is
+        # supposed to have.
+        if ($sourceBytes -eq 0) {
+            Write-DeployStep "Server-owned $relativePath restored from the base site (empty on the base site, so empty here)."
+        }
+        elseif ($totalBytes -eq 0) {
+            # robocopy can return a success code having moved nothing -- pointing
+            # it at a file as though it were a directory does exactly that -- so
+            # "it did not throw" is not evidence the file arrived, and this is the
+            # only line that would say otherwise.
+            Write-Warning "Server-owned $relativePath copied 0 bytes but the base site holds $sourceBytes. Nothing arrived at the destination; check this before trusting the deploy."
             Write-DeployStep "Server-owned $relativePath restored from the base site (0 bytes on disk -- see warning above)."
+        }
+        elseif ($totalBytes -ne $sourceBytes) {
+            Write-Warning "Server-owned $relativePath copied $totalBytes bytes against $sourceBytes on the base site. The copy is incomplete; check this before trusting the deploy."
+            Write-DeployStep "Server-owned $relativePath restored from the base site ($totalBytes of $sourceBytes bytes -- see warning above)."
         }
         else {
             Write-DeployStep "Server-owned $relativePath restored from the base site ($totalBytes bytes on disk)."

@@ -274,10 +274,23 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    has in these**, so nothing an administrator has ever set through Admin Tools is at risk
    at cutover. That is worth knowing precisely because it used to be: measured against
    production on 2026-08-26, eight of these files across five themes hold customization the
-   artifact does not carry, and before this was fixed the copy would have replaced all eight
+   artifact does not carry, and before this was fixed the copy would have replaced them
    with upstream's empty pair. `Themes/Rock/Styles/_variable-overrides.less` and the
    RockManager pair are the exception -- someone copied those into the fork, so they match
    either way.
+
+   Eight was a hand count against the themes the fork has folders for, and the real number
+   is larger. The deploy discovers these against the server rather than from a list, and its
+   first run on staging restored **46 files across 23 themes** -- including
+   `PassionCityChurch`, `PassionTeam`, `CONNECT`, `Connect-V2`, `Agency`, `CustomDefault`,
+   `KioskStark` and the `Checkin-*` variants, none of which exist in this repository.
+   `PassionCityChurch/_css-overrides.less` is 10122 bytes on its own. Expect the cutover to
+   report a similar count, and read a much smaller one as the signal that something is wrong.
+
+   Empty is normal in that list. Most themes have never been opened in the Theme Styler, so
+   Rock leaves their pair at zero bytes; the staging run reported 14 such files as `empty on
+   the base site, so empty here`. Those are not warnings. A warning appears only when the
+   server holds bytes and fewer than all of them arrive.
 
    `RockNextGen` gets none of that protection, and should not. The server has never had the
    theme, so there is nothing of its own to preserve and its files come from the artifact
