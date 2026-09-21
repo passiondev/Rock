@@ -1,14 +1,75 @@
+/-
+  WHAT:   Nav tabs on a Learn program page (Courses, Classes, Completions,
+          Semesters). A tab shows "active" on its own page or a page nested
+          under it, like a single course. Semesters only appears for
+          calendar-based programs — On-Demand programs hide it.
+  NEEDS:  Enabled Lava Commands must include: Sql
+  LAST MODIFIED: 2026-08-26 by BN
+-/
+
 <style>
   body.temp-is-edit .temp-page-nav {
     display: none;
   }
 </style>
+
+//- ===== SECTION 1: is this program On-Demand?  (advanced — the data query) =====
+{% assign programId = PageParameter['LearningProgramId'] | FromIdHash %}
+{% assign programIsOnDemand = false %}
+{% if programId != empty %}
+    {% sql programId:'{{ programId }}'%}
+        SELECT 1
+        FROM [LearningProgram]
+        WHERE [Id] = @programId
+            AND [ConfigurationMode] = 0 /* On-Demand */
+    {% endsql %}
+
+    {% if results != empty %}
+        {% assign programIsOnDemand = true %}
+    {% endif %}
+{% endif %}
+
+//- ===== SECTION 2: active-tab matching  (advanced — the sub-page rule per tab) =====
+/-
+  why not the obvious thing: childPage.Current only flags an EXACT page match.
+  A single course or semester is its OWN Rock page nested under Courses or
+  Semesters (confirmed in the page tree), not the tab's own page, so Current
+  alone misses it. The route parameter Rock hands that detail page —
+  LearningCourseId, LearningSemesterId — is only present while you're on (or
+  under) that tab, so it's a reliable stand-in for "current page route" here,
+  where Page is the nav's configured Root Page, not the page actually being
+  viewed.
+-/
+{% assign currentCourseId = 'LearningCourseId' | PageParameter %}
+{% assign currentSemesterId = 'LearningSemesterId' | PageParameter %}
+
+//- ===== SECTION 3: the nav tabs  (text and links — safe to edit) =====
 <div class="mb-3 temp-page-nav">
   <ul class="nav nav-tabs">
-    {% for childPage in Page.Pages %}
-        <li {% if childPage.Current %}class="active"{% endif %}>
-            <a href="{{ childPage.Url }}">{{ childPage.Title }}</a>
+    {% for kv in IncludePageList %}
+        <li>
+            <a href="{{ kv[1] }}">
+                <i class="{{ Page.IconCssClass }}"></i>
+                {{ kv[0] }}</a>
         </li>
+    {% endfor %}
+    {% for childPage in Page.Pages %}
+      {% if childPage.Title == 'Semesters' and programIsOnDemand == false %}{% continue %}{% endif %}
+            {% assign tabIsActive = childPage.Current %}
+            {% if childPage.Title == 'Courses' and currentCourseId != '' %}
+                {% assign tabIsActive = true %}
+            {% elsif childPage.Title == 'Semesters' and currentSemesterId != '' %}
+                {% assign tabIsActive = true %}
+            {% endif %}
+            <li{% if tabIsActive %} class="active"{% endif %}>
+                <a href="{{ childPage.Url }}">
+                {% if childPage.IconCssClass != '' %}
+                    <i class="{{ childPage.IconCssClass }}"></i>
+                {% else %}
+                    <i class="{{ Page.IconCssClass }}"></i>
+                {% endif %}
+                {{ childPage.Title }}</a>
+            </li>
     {% endfor %}
   </ul>
 </div>
