@@ -965,6 +965,141 @@ class ForkLocalChangesTests(unittest.TestCase):
         self.assertEqual(["Rock/Real.cs"], modified)
 
 
+def _listed_in_register(text):
+    """The paths the register lists as fork-local.
+
+    A listing is a bullet that opens with a backticked path. Until PR #21 this also
+    required one of five extensions, so the first Lava template to become fork-local
+    would have been listed and never checked. Paragraphs may mention any path they
+    like; a bullet that opens with inline code is read as a listing, and if it is not
+    one the stale check names it.
+
+    Both checks read the register through this, so "listed" means one thing to each.
+    """
+    return set(re.findall(r"^\s*[-*] `([^`]+)`", text, re.M))
+
+
+def _missing_from_register(modified, text):
+    """The fork-local paths in `modified` that the register `text` does not list."""
+    listed = _listed_in_register(text)
+    return [path for path in modified if path not in listed]
+
+
+def _unlisted_message(paths):
+    """What a contributor reads when their branch edits a Rock file the register lacks.
+
+    Written for someone who has never heard of the register, because that is who trips
+    it: it fires on any pull request that touches a file Rock also ships, a Lava
+    template as much as a migration. So it says where the register is, gives the exact
+    lines to paste, and says up front that the change itself is not what failed.
+    """
+    register = FORK_LOCAL_REGISTER.relative_to(REPO_ROOT).as_posix()
+    return (
+        f"{register} does not list these Rock files, which differ from upstream Rock:\n"
+        f"\n"
+        f"{_as_listings(paths)}\n"
+        f"\n"
+        f"This is not a check on whether the change works. Rock ships these files too, so "
+        f"the next Rock upgrade merge can quietly swap them back to upstream's copy, and "
+        f"the register is how whoever does that merge knows to keep yours. Add each line "
+        f"above to {register} under a heading that says what the edit does and why, "
+        f"following the entries already there."
+    )
+
+
+def _stale_message(paths):
+    """What whoever trips the stale check reads -- an upgrade that absorbed an edit, or a
+    branch that reverted one. The second is a contributor as unfamiliar with the
+    register as the one `_unlisted_message` is written for, and may not have meant it."""
+    register = FORK_LOCAL_REGISTER.relative_to(REPO_ROOT).as_posix()
+    return (
+        f"{register} lists these Rock files as fork-local, and they now match upstream "
+        f"Rock:\n"
+        f"\n"
+        f"{_as_listings(paths)}\n"
+        f"\n"
+        f"Either the Rock upgrade being merged has taken the edit or this branch has "
+        f"reverted it. If that was meant, remove each line above from {register}, and its "
+        f"section if nothing else is left in it. If it was not, the edit has been lost."
+    )
+
+
+def _as_listings(paths):
+    """`paths` as register bullets, at column 0 like the entries already there, so a copy
+    from the build log pastes as-is."""
+    return "\n".join(f"- `{path}`" for path in sorted(paths))
+
+
+class ReadingTheRegisterTests(unittest.TestCase):
+    """Which lines of the register count as listing a file, fed hand-written text so the
+    cases do not depend on what the register happens to hold today."""
+
+    def test_a_lava_template_is_a_listed_file(self):
+        """The first fork-local edit outside C#, TypeScript and stylesheets was a Lava
+        template -- `LMSPageListAsTabs.lava` in PR #21, already overwritten once by the v19
+        upgrade. Reading listings by extension would have let its entry sit in the
+        register unchecked, free to go stale without the reverse check ever seeing it."""
+        listed = _listed_in_register(
+            "## 5. The LMS program nav\n"
+            "\n"
+            "- `RockWeb/Themes/Rock/Assets/Lava/LMSPageListAsTabs.lava`\n"
+        )
+
+        self.assertEqual({"RockWeb/Themes/Rock/Assets/Lava/LMSPageListAsTabs.lava"}, listed)
+
+    def test_a_listing_with_a_note_after_it_is_still_a_listing(self):
+        """Erring the other way is silent. A listing the parser skips is one the stale
+        check never looks at again, while prose it misreads as a listing gets named in a
+        red build and reworded."""
+        listed = _listed_in_register(
+            "- `Rock.Blocks/WorkFlow/FormBuilder/FormBuilderDetail.cs` (the C# half)\n"
+        )
+
+        self.assertEqual({"Rock.Blocks/WorkFlow/FormBuilder/FormBuilderDetail.cs"}, listed)
+
+    def test_a_path_named_only_in_prose_is_not_listed(self):
+        """The forward check once asked only whether the path appeared anywhere in the
+        file. A path named in a "Not this entry" note then passed it while the stale
+        check, which reads bullets, could not see it -- listed to one check and unlisted
+        to the other."""
+        missing = _missing_from_register(
+            ["RockWeb/Themes/Rock/Styles/_variables.less"],
+            "`RockWeb/Themes/Rock/Styles/_variables.less` is *not* here and does not need to be.\n",
+        )
+
+        self.assertEqual(["RockWeb/Themes/Rock/Styles/_variables.less"], missing)
+
+
+class TheRegisterChecksSayWhatToDoTests(unittest.TestCase):
+    """Both register checks fail pull requests from people who have never heard of it.
+
+    PR #21 changed one Lava template and went red in "Deployment Pipeline Tests" with a
+    message that said "the register does not list them" -- not which file the register
+    is, and not what to put in it. Its author had no way from the log to the fix. A
+    branch that reverts a fork-local edit trips the stale check the same way."""
+
+    def test_an_unlisted_file_names_the_file_to_edit(self):
+        message = _unlisted_message(["RockWeb/Themes/Rock/Assets/Lava/LMSPageListAsTabs.lava"])
+
+        self.assertIn("Documentation/Fork-Local-Changes.md", message)
+
+    def test_the_line_it_suggests_is_one_the_register_reads_as_a_listing(self):
+        """Read back through `_listed_in_register` rather than matched as text, because
+        that is how both checks will read it once pasted. A suggestion they cannot parse
+        would fail the contributor a second time for following the instructions."""
+        message = _unlisted_message(["RockWeb/Themes/Rock/Assets/Lava/LMSPageListAsTabs.lava"])
+
+        self.assertEqual(
+            {"RockWeb/Themes/Rock/Assets/Lava/LMSPageListAsTabs.lava"},
+            _listed_in_register(message),
+        )
+
+    def test_a_stale_entry_names_the_file_to_edit(self):
+        message = _stale_message({"RockWeb/Themes/Rock/Assets/Lava/LMSPageListAsTabs.lava"})
+
+        self.assertIn("Documentation/Fork-Local-Changes.md", message)
+
+
 class ForkLocalRegisterTests(unittest.TestCase):
     """The register is prose because it has to say *why* each edit exists, which no diff
     can derive. What a diff can derive is the file list, so the suite carries that -- the
@@ -1022,15 +1157,12 @@ class ForkLocalRegisterTests(unittest.TestCase):
         for what happens when the upstream ref is missing."""
         modified = self._fork_local_changes()
 
-        missing = [path for path in modified if path not in self.text]
+        missing = _missing_from_register(modified, self.text)
 
-        self.assertEqual(
-            [],
-            missing,
-            "these files differ from upstream and the register does not list them, so a "
-            "trunk merge could drop them without anything noticing:\n  "
-            + "\n  ".join(missing),
-        )
+        # `fail` rather than `assertEqual`, whose list diff would print ahead of the
+        # explanation and read as the error itself.
+        if missing:
+            self.fail(_unlisted_message(missing))
 
     def test_it_lists_nothing_that_is_no_longer_fork_local(self):
         """A stale entry is worse than a missing one: it sends whoever is doing the merge
@@ -1038,15 +1170,13 @@ class ForkLocalRegisterTests(unittest.TestCase):
         approximate."""
         modified = set(self._fork_local_changes())
 
-        # Only lines that are listing a path, so the prose may mention anything it likes.
-        listed = set(re.findall(r"^\s*[-*] `([^`]+\.(?:cs|ts|obs|less|scss))`", self.text, re.M))
+        listed = _listed_in_register(self.text)
 
-        self.assertEqual(
-            set(),
-            listed - modified,
-            f"the register lists these as fork-local and they now match upstream: "
-            f"{sorted(listed - modified)}",
-        )
+        stale = listed - modified
+
+        # `fail` for the same reason as the forward check above.
+        if stale:
+            self.fail(_stale_message(stale))
 
 
 class TheRegisterDocumentsARealCommandTests(unittest.TestCase):
