@@ -500,7 +500,7 @@ class BothGuardsReadThroughItTests(unittest.TestCase):
         ),
         "staging-deploy.yml": (
             STAGING_WORKFLOW,
-            "Refuse a Rock minor change on the shared catalog",
+            "Refuse a Rock line change on the shared catalog",
         ),
     }
 

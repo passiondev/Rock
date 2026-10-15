@@ -195,7 +195,7 @@ jobs:
       # The log goes in the summary whole, not as a tail. The before-and-after lines
       # ARE the output, and they are what the approver on the next job is being
       # asked to approve.
-      - name: Wait for the VM to report the plan
+      - name: Queue the dry run and wait for the plan
         uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
@@ -280,7 +280,7 @@ jobs:
           "| Approved by | ${{ github.actor }} |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Rollback | the .sql the script writes on the VM, before the write |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Wait for the VM to report the write
+      - name: Queue the write and wait for the VM to report it
         uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}

@@ -148,8 +148,8 @@ function Get-StepLogPath {
         $DeployRoot so it lands beside the scripts rather than in a temp directory
         that a reboot clears before anybody reads it.
 
-        Named from the pending object's stem rather than from $CommandId. At the
-        point in the loop where this is needed, $CommandId is still the pending
+        Named from the pending object's stem rather than from $commandId. At the
+        point in the loop where this is needed, $commandId is still the pending
         object's file name and carries its .json extension -- it is only replaced by
         the command body's own id once the body parses. Taking the stem here is what
         keeps the timeline beside deploy-staging-1234-1.log instead of landing as
@@ -1190,7 +1190,7 @@ function Invoke-CommandJob {
         How long to wait before stopping the job.
 
     .OUTPUTS
-        Output, everything the job wrote as one string; TimedOut; and Failure, the
+        Output, everything the job wrote as one string; HasTimedOut; and Failure, the
         reason the job failed, or empty when it did not.
     #>
     [CmdletBinding()]
@@ -1243,11 +1243,11 @@ function Invoke-CommandJob {
             $output = "(could not read the command's output: $($_.Exception.Message))"
         }
 
-        $timedOut = $false
+        $hasTimedOut = $false
         $failure = ''
         if ($null -eq $finished) {
             Stop-Job -Job $job -ErrorAction SilentlyContinue
-            $timedOut = $true
+            $hasTimedOut = $true
         }
         elseif ($job.State -eq 'Failed') {
             $failure = "Command script reported failure."
@@ -1257,7 +1257,7 @@ function Invoke-CommandJob {
 
         return [pscustomobject]@{
             Output   = $output
-            TimedOut = $timedOut
+            HasTimedOut = $hasTimedOut
             Failure  = $failure
         }
     }
@@ -1307,7 +1307,7 @@ function Invoke-CommandQueuePass {
 
     .PARAMETER Runner
         Runs one contract script. Takes DeployRoot, ScriptName, Arguments and
-        TimeoutSeconds by name and returns Output, TimedOut and Failure. See
+        TimeoutSeconds by name and returns Output, HasTimedOut and Failure. See
         Invoke-CommandJob.
 
     .PARAMETER RefreshScripts
@@ -1364,7 +1364,7 @@ function Invoke-CommandQueuePass {
     foreach ($commandObject in $commands) {
         $fileName = Split-Path $commandObject -Leaf
         $resultObject = "$ResultsPrefix$fileName"
-        $CommandId = $fileName
+        $commandId = $fileName
         $result = $null
         $stepLogPath = Get-StepLogPath -DeployRoot $DeployRoot -CommandObjectName $commandObject
         $commandOutput = ''
@@ -1373,7 +1373,7 @@ function Invoke-CommandQueuePass {
         try {
             $commandJson = & $Transport.Read -ObjectName $commandObject
             $command = $commandJson | ConvertFrom-Json
-            $CommandId = $command.commandId
+            $commandId = $command.commandId
             Write-Host "Processing PR environment command ${CommandId}: $($command.command)"
 
             # Unknown verbs are refused here rather than inside the job, so the result
@@ -1397,7 +1397,7 @@ function Invoke-CommandQueuePass {
             $run = & $Runner -DeployRoot $DeployRoot -ScriptName $plan.Script -Arguments $plan.Arguments -TimeoutSeconds $timeoutSeconds
             $commandOutput = [string]$run.Output
 
-            if ($run.TimedOut) {
+            if ($run.HasTimedOut) {
                 throw "Command '$($command.command)' timed out after $timeoutSeconds seconds and was terminated."
             }
             if (-not [string]::IsNullOrWhiteSpace([string]$run.Failure)) {
@@ -1406,16 +1406,16 @@ function Invoke-CommandQueuePass {
 
             $prNumber = $null
             if ($command.PSObject.Properties.Name -contains 'prNumber') { $prNumber = $command.prNumber }
-            $result = [ordered]@{ commandId = $CommandId; prNumber = $prNumber; command = $command.command; status = "succeeded"; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
+            $result = [ordered]@{ commandId = $commandId; prNumber = $prNumber; command = $command.command; status = "succeeded"; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
         }
         catch {
-            $result = [ordered]@{ commandId = $CommandId; status = "failed"; error = $_.Exception.Message; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
+            $result = [ordered]@{ commandId = $commandId; status = "failed"; error = $_.Exception.Message; completedAtUtc = (Get-Date).ToUniversalTime().ToString("o") }
         }
         finally {
             # Upload the output before the result. The workflow stops polling the
             # moment the result object appears, so writing the result first would
             # race the log it is meant to point at.
-            $logObject = "$LogsPrefix$CommandId.log"
+            $logObject = "$LogsPrefix$commandId.log"
             try {
                 $mergedOutput = Get-CommandLogText -CaptureText $commandOutput -StepLogPath $stepLogPath
                 $redactedOutput = Get-RedactedText -Text $mergedOutput -Secrets $commandSecrets

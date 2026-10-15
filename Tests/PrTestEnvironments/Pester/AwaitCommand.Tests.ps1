@@ -29,7 +29,7 @@ Describe 'Read-CommandResult' {
     It 'reads a result from an agent older than the log upload as having no log' {
         $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"succeeded"}'
 
-        $outcome.Succeeded | Should -BeTrue
+        $outcome.HasSucceeded | Should -BeTrue
         $outcome.LogObject | Should -Be ''
         $outcome.Error | Should -Be ''
     }
@@ -38,13 +38,13 @@ Describe 'Read-CommandResult' {
         # The silent green: a step that exits 0 on a result that said nothing.
         $outcome = Read-CommandResult -Json '{"commandId":"abc"}'
 
-        $outcome.Succeeded | Should -BeFalse
+        $outcome.HasSucceeded | Should -BeFalse
     }
 
     It 'does not read any status but succeeded as a success' {
         $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"success"}'
 
-        $outcome.Succeeded | Should -BeFalse
+        $outcome.HasSucceeded | Should -BeFalse
     }
 
     It 'keeps the parsed result for printing' {

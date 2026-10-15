@@ -226,7 +226,7 @@ Describe 'A poll pass' {
         $script:Events = New-Object 'System.Collections.Generic.List[string]'
         $script:Runs = New-Object 'System.Collections.Generic.List[object]'
         $script:Warnings = @()
-        $script:NextOutcome = [pscustomobject]@{ Output = 'stopped site 1234'; TimedOut = $false; Failure = '' }
+        $script:NextOutcome = [pscustomobject]@{ Output = 'stopped site 1234'; HasTimedOut = $false; Failure = '' }
         $script:RunnerThrows = ''
         $script:RefreshFails = $false
         $script:FailingWritePrefix = ''
@@ -251,7 +251,7 @@ Describe 'A poll pass' {
             $script:Runs[0].DeployRoot | Should -Be $script:DeployRoot
 
             $outcome = Read-TestResult -CommandId 'stop-1234-1'
-            $outcome.Succeeded | Should -BeTrue -Because 'await-vm-command reads anything but an explicit success as a failure'
+            $outcome.HasSucceeded | Should -BeTrue -Because 'await-vm-command reads anything but an explicit success as a failure'
             $outcome.Result.commandId | Should -Be 'stop-1234-1'
             $outcome.Result.command | Should -Be 'stop'
             $outcome.Result.prNumber | Should -Be '1234'
@@ -316,8 +316,8 @@ Describe 'A poll pass' {
 
             $script:Runs.Count | Should -Be 2
             (@($script:Runs | ForEach-Object { $_.Arguments['PrNumber'] }) -join ',') | Should -Be '1234,5678'
-            (Read-TestResult -CommandId 'stop-1234-1').Succeeded | Should -BeTrue
-            (Read-TestResult -CommandId 'stop-5678-1').Succeeded | Should -BeTrue
+            (Read-TestResult -CommandId 'stop-1234-1').HasSucceeded | Should -BeTrue
+            (Read-TestResult -CommandId 'stop-5678-1').HasSucceeded | Should -BeTrue
 
             $leftover = @($script:Store.Keys | Where-Object { $_.StartsWith($script:PendingPrefix) })
             $leftover.Count | Should -Be 0
@@ -338,25 +338,25 @@ Describe 'A poll pass' {
 
         It 'reports a script that failed, and keeps what it printed on the way' {
             # The output of a failed deploy is the reason anybody opens the log.
-            $script:NextOutcome = [pscustomobject]@{ Output = "step 1 ok`nstep 2 ok"; TimedOut = $false; Failure = 'step 3 broke' }
+            $script:NextOutcome = [pscustomobject]@{ Output = "step 1 ok`nstep 2 ok"; HasTimedOut = $false; Failure = 'step 3 broke' }
             Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}' | Out-Null
 
             Invoke-TestPass
 
             $outcome = Read-TestResult -CommandId 'stop-1234-1'
-            $outcome.Succeeded | Should -BeFalse
+            $outcome.HasSucceeded | Should -BeFalse
             $outcome.Error | Should -Match 'failed: step 3 broke'
             Read-TestLog -Outcome $outcome | Should -Match 'step 2 ok'
         }
 
         It 'reports a script that ran out of time, with the time it was given' {
-            $script:NextOutcome = [pscustomobject]@{ Output = 'waiting on win-acme'; TimedOut = $true; Failure = '' }
+            $script:NextOutcome = [pscustomobject]@{ Output = 'waiting on win-acme'; HasTimedOut = $true; Failure = '' }
             Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}' | Out-Null
 
             Invoke-TestPass
 
             $outcome = Read-TestResult -CommandId 'stop-1234-1'
-            $outcome.Succeeded | Should -BeFalse
+            $outcome.HasSucceeded | Should -BeFalse
             $outcome.Error | Should -Match "timed out after $($script:StopContract.TimeoutSeconds) seconds"
             Read-TestLog -Outcome $outcome | Should -Match 'waiting on win-acme'
         }
@@ -368,7 +368,7 @@ Describe 'A poll pass' {
             Invoke-TestPass
 
             $outcome = Read-TestResult -CommandId 'stop-1234-1'
-            $outcome.Succeeded | Should -BeFalse
+            $outcome.HasSucceeded | Should -BeFalse
             $outcome.Error | Should -Match 'could not start the background job'
             $script:Store.Contains($pending) | Should -BeFalse
         }
@@ -382,7 +382,7 @@ Describe 'A poll pass' {
 
             $script:Runs.Count | Should -Be 0
             $outcome = Read-TestResult -CommandId 'reboot-1'
-            $outcome.Succeeded | Should -BeFalse
+            $outcome.HasSucceeded | Should -BeFalse
             $outcome.Error | Should -Match 'Unknown command'
             $script:Store.Contains($pending) | Should -BeFalse
         }
@@ -394,7 +394,7 @@ Describe 'A poll pass' {
 
             $script:Runs.Count | Should -Be 0
             $outcome = Read-TestResult -CommandId 'stop-1'
-            $outcome.Succeeded | Should -BeFalse
+            $outcome.HasSucceeded | Should -BeFalse
             $outcome.Error | Should -Match 'requires prNumber'
         }
 
@@ -407,7 +407,7 @@ Describe 'A poll pass' {
             $script:Runs.Count | Should -Be 0
             $script:Store.Contains($broken) | Should -BeFalse
             # Named after the object, because there was no command id to read.
-            (Read-CommandResult -Json $script:Store["$($script:ResultsPrefix)broken.json"].Text).Succeeded | Should -BeFalse
+            (Read-CommandResult -Json $script:Store["$($script:ResultsPrefix)broken.json"].Text).HasSucceeded | Should -BeFalse
         }
     }
 
@@ -436,7 +436,7 @@ Describe 'A poll pass' {
             Invoke-TestPass
 
             $script:Runs.Count | Should -Be 1
-            (Read-TestResult -CommandId 'stop-1234-1').Succeeded | Should -BeTrue
+            (Read-TestResult -CommandId 'stop-1234-1').HasSucceeded | Should -BeTrue
             ($script:Warnings -join ' ') | Should -Match 'refresh'
         }
     }
@@ -449,7 +449,7 @@ Describe 'A poll pass' {
             # secrets to the redaction does. This log is printed in a public
             # repository's Actions log.
             $connection = 'Server=sql.internal;User Id=rock;Password=hunter2-correct-horse'
-            $script:NextOutcome = [pscustomobject]@{ Output = "connected`nretrying with hunter2-correct-horse after a timeout"; TimedOut = $false; Failure = '' }
+            $script:NextOutcome = [pscustomobject]@{ Output = "connected`nretrying with hunter2-correct-horse after a timeout"; HasTimedOut = $false; Failure = '' }
             Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}' -SecretValue $connection | Out-Null
 
             Invoke-TestPass
@@ -461,7 +461,7 @@ Describe 'A poll pass' {
 
         It 'keeps the end of a log too long to upload whole' {
             # The failure, and the steps leading to it, are at the end.
-            $script:NextOutcome = [pscustomobject]@{ Output = ('x' * 250000) + "`nthe line that says why"; TimedOut = $false; Failure = '' }
+            $script:NextOutcome = [pscustomobject]@{ Output = ('x' * 250000) + "`nthe line that says why"; HasTimedOut = $false; Failure = '' }
             Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}' | Out-Null
 
             Invoke-TestPass
@@ -475,7 +475,7 @@ Describe 'A poll pass' {
         It 'appends the timeline the deploy wrote on the box' {
             # The job stream has been measured dropping twelve minutes of a deploy.
             # The pass hands the deploy a file to write and reads that same file back.
-            $script:NextOutcome = [pscustomobject]@{ Output = 'Stopping app pool'; TimedOut = $false; Failure = '' }
+            $script:NextOutcome = [pscustomobject]@{ Output = 'Stopping app pool'; HasTimedOut = $false; Failure = '' }
             $script:TimelineText = 'site replaced; health check passed'
             Add-QueuedCommand -CommandId 'deploy-staging-1' -Command 'deploy-environment' `
                 -Payload '{"environmentName":"staging","sha":"abc1234","artifactGcsPath":"gs://bucket/artifact.zip","hostName":"staging.example.org"}' | Out-Null
@@ -496,7 +496,7 @@ Describe 'A poll pass' {
             Invoke-TestPass
 
             $outcome = Read-TestResult -CommandId 'stop-1234-1'
-            $outcome.Succeeded | Should -BeTrue
+            $outcome.HasSucceeded | Should -BeTrue
             $outcome.LogObject | Should -Be '' -Because 'a result must not point at a log that was never written'
             ($script:Warnings -join ' ') | Should -Match 'Could not upload'
         }
@@ -555,7 +555,7 @@ Describe 'Invoke-CommandJob' -Skip:$script:IsJobHostMissing {
         $run = Invoke-TestJob -ScriptName $script:GreetingScript -Arguments @{ Name = 'queue' }
 
         $run.Output | Should -Be 'hello queue'
-        $run.TimedOut | Should -BeFalse
+        $run.HasTimedOut | Should -BeFalse
         $run.Failure | Should -BeNullOrEmpty
     }
 
@@ -564,12 +564,12 @@ Describe 'Invoke-CommandJob' -Skip:$script:IsJobHostMissing {
 
         $run.Failure | Should -Match 'step 3 broke'
         $run.Output | Should -Match 'step 2 ok'
-        $run.TimedOut | Should -BeFalse
+        $run.HasTimedOut | Should -BeFalse
     }
 
     It 'stops a script that outlives its timeout and says so' {
         $run = Invoke-TestJob -ScriptName $script:HangingScript -TimeoutSeconds 2
 
-        $run.TimedOut | Should -BeTrue
+        $run.HasTimedOut | Should -BeTrue
     }
 }

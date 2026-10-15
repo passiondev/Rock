@@ -34,8 +34,8 @@ name: Deploy Staging
 #
 # The fallback is therefore not a safe steady state but a migration path, and the
 # guard below refuses to walk back down it: with STAGING_DB_NAME unset, a deploy
-# carrying a different Rock minor than the pinned base branch fails rather than
-# migrating the fleet's catalog. Note that no restore is actually running --
+# carrying a different Rock line (19 of 19.4.4) than the pinned base branch fails
+# rather than migrating the fleet's catalog. Note that no restore is actually running --
 # measured 2026-08-17, the sandbox has had no data load since 2026-04-14 -- so the
 # fallback does not eat a Rock upgrade the way this comment used to claim. See open
 # item 7 in Documentation/Training/DevOps-Open-Items-Rock-CICD.md.
@@ -122,7 +122,7 @@ jobs:
       # trunk is what defines that -- pr-test-deploy.yml uses the same oracle for
       # the same reason. Reading the deployed ref's own copy would let a v19
       # branch that had already bumped its config authorise its own deploy.
-      - name: Read the fleet's pinned Rock minor
+      - name: Read the fleet's pinned Rock version
         id: pin
         uses: actions/github-script@v7
         with:
@@ -152,7 +152,7 @@ jobs:
       # Failing here rather than blanket-freezing staging: the way past this guard
       # is to give staging its own catalog, which is the documented migration path
       # off the shared one rather than a bypass.
-      - name: Refuse a Rock minor change on the shared catalog
+      - name: Refuse a Rock line change on the shared catalog
         shell: bash
         env:
           PINNED_BASE_BRANCH: ${{ steps.pin.outputs.base_branch }}
@@ -194,11 +194,11 @@ jobs:
           #
           # OPEN QUESTION for the team, recorded here and not answered: should the
           # shared catalog be guarded on the line, or on the minor as production
-          # is? This step's name still says "minor"; CONTEXT.md records the
-          # question. Answering
-          # "minor" is rock_line_of_version -> rock_minor_of_version on the two
-          # lines below (and _line -> _minor in their names), plus flipping
-          # test_a_minor_bump_within_the_pinned_line_is_allowed to a refusal.
+          # is? CONTEXT.md records the question. Answering "minor" is
+          # rock_line_of_version -> rock_minor_of_version on the two lines below,
+          # _line -> _minor in their names, "line" -> "minor" in this step's name,
+          # and flipping test_a_minor_bump_within_the_pinned_line_is_allowed to a
+          # refusal.
           artifact_line="$(rock_line_of_version "$artifact_version")" || exit 1
           pinned_line="$(rock_line_of_version "$pinned_version")" || exit 1
 

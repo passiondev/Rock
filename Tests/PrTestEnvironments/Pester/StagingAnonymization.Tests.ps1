@@ -33,7 +33,12 @@ BeforeAll {
             'Get-ResidualPiiProbe',
             'Get-PhoneShapedPredicate',
             'Get-ComputedColumnAssignment',
-            'Get-RowCount'
+            'Get-RowCount',
+            'Get-KeptDomainReport',
+            'Assert-NoComputedColumnAssignment',
+            'Invoke-AnonymizationTarget',
+            'Get-EmailDomainCensus',
+            'Get-ResidualPiiCount'
         ))
 
     function script:New-RecordingSqlAdapter {

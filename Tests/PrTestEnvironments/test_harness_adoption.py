@@ -210,9 +210,12 @@ class OneStepLookupTests(harness.HarnessAssertions, unittest.TestCase):
         self.assertEqual("curl", harness.step(action, "Probe")["run"])
 
     def test_no_test_file_looks_a_step_up_by_name_for_itself(self):
-        # `\w+\.get` and not a bare `.get`: a job's `environment:` block also has a
-        # name, and `job["environment"].get("name")` is not a step lookup.
-        pattern = re.compile(r"\b\w+\.get\(\s*[\"']name[\"']\s*\)\s*==")
+        # Both spellings of reading the key, with or without a default, on either
+        # side of the `==`. `\w+` before the read and not anything at all: a job's
+        # `environment:` block also has a name, and `job["environment"].get("name")`
+        # is not a step lookup.
+        name_read = r"\b\w+(?:\.get\(\s*[\"']name[\"']\s*(?:,[^)]*)?\)|\[\s*[\"']name[\"']\s*\])"
+        pattern = re.compile(rf"{name_read}\s*==|==\s*{name_read}")
         offenders = [
             f"{name}:{harness.line_of(text, match.start())}"
             for name, text in suite_sources()
@@ -280,7 +283,8 @@ class OneBashRunnerTests(harness.HarnessAssertions, unittest.TestCase):
         self.assertEqual("site.example.org", result.stdout.strip())
 
     def test_no_test_file_starts_bash_for_itself(self):
-        pattern = re.compile(r"\[\s*[\"']bash[\"']\s*,")
+        # The argv forms: bash by name, by path, or through env.
+        pattern = re.compile(r"\[\s*(?:[\"']env[\"']\s*,\s*)?[\"'](?:[\w/]*/)?bash[\"']\s*,")
         offenders = [
             f"{name}:{harness.line_of(text, match.start())}"
             for name, text in suite_sources()

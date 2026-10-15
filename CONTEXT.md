@@ -50,8 +50,7 @@ mismatch is not reversible. They do not compare the same part of it:
 
 So a trunk on 19.5 deploys to staging while the fleet is pinned to 19.4, and the
 same pair would stop at production. Whether staging should compare the minor as
-well is an open question for the team. Until somebody answers it, the staging
-step's name, which still says *minor*, is wrong about what it checks.
+well is an open question for the team, recorded beside the staging guard.
 
 Where the declared version is read from moves at a major upgrade -- an assembly
 attribute in `Rock.Version/AssemblySharedInfo.cs` through 18.x, `<Version>` in
@@ -151,7 +150,7 @@ work of another.
 
 | Term | Means | Labels |
 |---|---|---|
-| **state label** | What the PR environment is doing now. Only the pipeline sets one, and a PR carries at most one. `STATE_LABELS` in `.github/scripts/pr-test-status.js` is the list. | `rock:queued`, `rock:building`, `rock:deploying`, `rock:deployed`, `rock:failed`, `rock:stopped` |
+| **state label** | What the PR environment is doing now. Only the pipeline sets one. Each reconcile leaves at most one, but the deploy and lifecycle workflows run in separate concurrency groups, so two reconciles that overlap can briefly leave two. `STATE_LABELS` in `.github/scripts/pr-test-status.js` is the list. | `rock:queued`, `rock:building`, `rock:deploying`, `rock:deployed`, `rock:failed`, `rock:stopped` |
 | **command label** | A request from a person. The workflow that handles it removes it, so the next request fires a fresh `labeled` event. | `rock:start` (`pr-test-deploy.yml`), `rock:stop` and `rock:destroy` (`pr-test-lifecycle.yml`) |
 | **setting label** | A choice that stays on the PR until a person removes it. | `rock:auto` (redeploy on every push), `rock:full-build` (never repackage) |
 | **reconcile** | `reconcilePrTestLabels`: remove every state label, then add the one for the new status. `destroyed` adds none. | |

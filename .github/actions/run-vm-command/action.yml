@@ -87,6 +87,11 @@ outputs:
 # block. Here the action appends the run and the attempt to the caller's prefix,
 # once, for both halves.
 #
+# "Once" is one expression written three times: in the output above and in each
+# half's `with:`. A composite action has no env block that a `with:` can read, and
+# a step that composed the id would put a shell step in front of the queue for the
+# sake of one string. RunActionTests compares the three copies instead.
+#
 # The ids are byte-for-byte what each caller built before, because runbooks and
 # operators search for them. Every caller's id already had this shape, so the
 # prefix is all a caller still owns.

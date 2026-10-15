@@ -597,6 +597,18 @@ Describe 'Test-EnvironmentHealth' {
         @($script:PoolEvents).Count | Should -Be 0
     }
 
+    It 'forces TLS 1.2 before it polls' {
+        # PowerShell 5.1 can default to SSL3 or TLS 1.0, which a hardened IIS
+        # refuses. That surfaces as "the underlying connection was closed", which
+        # reads like the site is down rather than like the probe is broken.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SystemDefault
+        $script:ProbeAnswers = @($script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60 | Out-Null
+
+        [Net.ServicePointManager]::SecurityProtocol | Should -Be ([Net.SecurityProtocolType]::Tls12)
+    }
+
     It 'returns $false once the window closes, and warns with the last error' {
         # $false rather than a throw: the caller collects diagnostics and words
         # the rollback advice, and only it knows whether there is a backup.
@@ -610,5 +622,39 @@ Describe 'Test-EnvironmentHealth' {
         @($warnings).Count | Should -Be 1
         "$warnings" | Should -Match 'did not pass within 30 seconds'
         "$warnings" | Should -Match 'HTTP 500'
+    }
+}
+
+Describe 'Invoke-SiteProbe' {
+    <#
+        The probe the health check polls with, and the one the diagnostics path
+        calls on its own. Both reach HTTP through here, so the TLS version is
+        forced here as well as in the caller: the diagnostics path has no reason
+        to know it is needed.
+    #>
+
+    BeforeAll {
+        . (Import-ScriptFunction -Path $script:DeployScript -Name 'Invoke-SiteProbe')
+    }
+
+    BeforeEach {
+        $script:PreviousCertificateCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+        $script:PreviousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+    }
+
+    AfterEach {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $script:PreviousCertificateCallback
+        [Net.ServicePointManager]::SecurityProtocol = $script:PreviousSecurityProtocol
+    }
+
+    It 'forces TLS 1.2 before it connects' {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SystemDefault
+
+        # Port 1 on the loopback refuses at once, so the probe fails without
+        # leaving the machine. What it answers is not the question here.
+        $outcome = Invoke-SiteProbe -Url 'https://127.0.0.1:1/' -TimeoutSeconds 1
+
+        $outcome.Ok | Should -BeFalse
+        [Net.ServicePointManager]::SecurityProtocol | Should -Be ([Net.SecurityProtocolType]::Tls12)
     }
 }

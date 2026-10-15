@@ -38,7 +38,7 @@ BUILD_PROPS = REPO_ROOT / "Directory.Build.props"
 ASSEMBLY_INFO = REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs"
 LAYOUTS = ("props", "assemblyinfo")
 
-GUARD_STEP_NAME = "Refuse a Rock minor change on the shared catalog"
+GUARD_STEP_NAME = "Refuse a Rock line change on the shared catalog"
 
 
 def _guard_script():

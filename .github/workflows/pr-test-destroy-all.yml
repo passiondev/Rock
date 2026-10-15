@@ -202,7 +202,7 @@ jobs:
         with:
           credentials-json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Wait for the VM to report the result
+      - name: Queue the destroy and wait for the result
         uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.PR_TEST_GCS_BUCKET }}

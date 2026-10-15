@@ -306,7 +306,7 @@ jobs:
       # The connection string goes through secret-value rather than the payload:
       # this is the producer that holds the sandbox password, and it is the reason
       # the enqueue became an action. See queue-vm-command's header.
-      - name: Wait for the VM to report the result
+      - name: Queue the deploy and wait for the result
         uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.PR_TEST_GCS_BUCKET }}

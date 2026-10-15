@@ -49,7 +49,7 @@ $script:RecordName = 'pr-test-artifact.json'
 
 # Every field a record can carry, in the order New-ArtifactRecord writes them.
 # Read-ArtifactRecord returns each of these whether or not the file has it.
-$script:RecordField = @(
+$script:RecordFields = @(
     'prNumber', 'sha', 'shortSha', 'artifactName', 'artifactGcsPath', 'hostName', 'sha256',
     'builtFromSha', 'baseArtifactGcsPath'
 )
@@ -248,7 +248,7 @@ function Read-ArtifactRecord {
 
     $parsed = Get-Content -Raw -Path $Path | ConvertFrom-Json
     $record = [ordered]@{}
-    foreach ($name in $script:RecordField) {
+    foreach ($name in $script:RecordFields) {
         $field = $parsed.PSObject.Properties[$name]
         $isRecorded = $null -ne $field -and $null -ne $field.Value
         if ($isRecorded) {

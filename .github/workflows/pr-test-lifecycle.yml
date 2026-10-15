@@ -150,7 +150,7 @@ jobs:
       # error message -- the most degraded of the six copies of it. A lifecycle
       # command that ran past ten minutes was reported as a timeout here and as a
       # success by the identical command queued from another workflow.
-      - name: Wait for the VM to report the result
+      - name: Queue the command and wait for the result
         uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.PR_TEST_GCS_BUCKET }}

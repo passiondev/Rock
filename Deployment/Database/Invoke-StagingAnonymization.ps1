@@ -613,6 +613,252 @@ function Get-RowCount {
     return [int64]$value
 }
 
+function Get-KeptDomainReport {
+    <#
+        .SYNOPSIS
+            Prints how many people and logins each kept domain matches in the
+            catalog, and returns those counts for the summary.
+
+        .DESCRIPTION
+            Restated against the catalog rather than against the argument. "I
+            passed the domain" and "the domain matches somebody" are different
+            claims, and only the second one keeps a tester able to sign in. A
+            domain that matches nothing gets a line of its own, because that is a
+            misspelling and the run would otherwise report success.
+
+        .PARAMETER KeepDomain
+            Domains already through ConvertTo-KeepDomain, spliced into the LIKE
+            patterns as they stand.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary[]])]
+    param(
+        [Parameter(Mandatory = $true)][hashtable] $Sql,
+        [Parameter(Mandatory = $true)] $Connection,
+        [Parameter(Mandatory = $false)][string[]] $KeepDomain = @(),
+        [Parameter(Mandatory = $false)][int] $TimeoutSeconds = 600
+    )
+
+    $keptByDomain = @()
+    if ($KeepDomain.Count -eq 0) {
+        Write-Host "Keep:     nothing -- every address, number and login in this catalog will be anonymized."
+        return ,$keptByDomain
+    }
+
+    Write-Host "Keep:     $($KeepDomain -join ', ')"
+    foreach ($domain in $KeepDomain) {
+        $keptPeople = Get-RowCount -Sql $Sql -Connection $Connection -TimeoutSeconds $TimeoutSeconds `
+            -Query "SELECT COUNT(*) FROM dbo.Person WHERE Email LIKE '%@$domain'"
+        $keptLogins = Get-RowCount -Sql $Sql -Connection $Connection -TimeoutSeconds $TimeoutSeconds `
+            -Query "SELECT COUNT(*) FROM dbo.UserLogin WHERE UserName LIKE '%@$domain'"
+
+        Write-Host ("          {0,-40} {1,8:N0} person(s), {2,7:N0} login(s) kept" -f $domain, $keptPeople, $keptLogins)
+        if ($keptPeople -eq 0 -and $keptLogins -eq 0) {
+            Write-Host ("          {0,-40} >>> MATCHES NOTHING. Check the spelling before approving." -f "")
+        }
+
+        $keptByDomain += [ordered]@{ domain = $domain; people = $keptPeople; logins = $keptLogins }
+    }
+
+    # Leading comma for the same reason as ConvertTo-KeepDomain: an empty report
+    # comes back as an empty array rather than as nothing.
+    return ,$keptByDomain
+}
+
+function Assert-NoComputedColumnAssignment {
+    <#
+        .SYNOPSIS
+            Throws, naming every offender, if any target's SET clause writes a
+            computed column.
+
+        .DESCRIPTION
+            Bind-time check for every target before any of them runs. Whole-catalog,
+            and ahead of the first write, because the point is to fail while nothing
+            has been rewritten rather than between two targets. The caller runs it on
+            a dry run too: a plan that reports clean for a statement SQL Server will
+            reject is the failure.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][hashtable] $Sql,
+        [Parameter(Mandatory = $true)] $Connection,
+        [Parameter(Mandatory = $true)][hashtable[]] $Target,
+        [Parameter(Mandatory = $false)][int] $TimeoutSeconds = 600
+    )
+
+    $computedColumnFaults = @()
+    foreach ($candidate in $Target) {
+        $offenders = Get-ComputedColumnAssignment -Sql $Sql -Connection $Connection -TimeoutSeconds $TimeoutSeconds `
+            -Table $candidate.Table -SetClause $candidate.SetClause
+        foreach ($offender in $offenders) {
+            $computedColumnFaults += "$($candidate.Table).$offender"
+        }
+    }
+
+    if ($computedColumnFaults.Count -gt 0) {
+        throw ("Refusing to run: these are computed columns and SQL Server will reject any UPDATE that writes them -- " +
+            ($computedColumnFaults -join ', ') +
+            ". Remove them from the SetClause; rewriting the column they are computed from is what clears them.")
+    }
+}
+
+function Invoke-AnonymizationTarget {
+    <#
+        .SYNOPSIS
+            Counts the rows one target would rewrite and, with -Apply, rewrites
+            them in batches. Returns the target's entry for the summary.
+
+        .DESCRIPTION
+            A dry run stops at the count. An apply with nothing pending says so
+            instead of sending an UPDATE that would match no row.
+
+            The count and the UPDATE read the same predicate string, which is what
+            keeps the number the approver saw and the number of rows rewritten the
+            same number.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    param(
+        [Parameter(Mandatory = $true)][hashtable] $Sql,
+        [Parameter(Mandatory = $true)] $Connection,
+        [Parameter(Mandatory = $true)][hashtable] $Target,
+        [Parameter(Mandatory = $false)][switch] $Apply,
+        [Parameter(Mandatory = $false)][int] $BatchSize = 25000,
+        [Parameter(Mandatory = $false)][int] $TimeoutSeconds = 600
+    )
+
+    $pending = Get-RowCount -Sql $Sql -Connection $Connection -TimeoutSeconds $TimeoutSeconds `
+        -Query "SELECT COUNT(*) FROM $($Target.Table) WHERE $($Target.Predicate)"
+
+    $entry = [ordered]@{
+        name    = $Target.Name
+        pending = $pending
+        updated = 0
+    }
+
+    if (-not $Apply) {
+        Write-Host ("  {0,-58} {1,12:N0} row(s) would change" -f $Target.Name, $pending)
+        return $entry
+    }
+
+    if ($pending -eq 0) {
+        Write-Host ("  {0,-58} {1,12} " -f $Target.Name, "already clean")
+        return $entry
+    }
+
+    # TOP (n) with the same predicate the count used. Each pass removes rows
+    # from its own predicate, so the loop terminates without a marker column
+    # or a keyset to page through.
+    $totalUpdated = 0
+    do {
+        $affected = & $Sql.NonQuery -Connection $Connection -TimeoutSeconds $TimeoutSeconds -Query @"
+UPDATE TOP ($BatchSize) $($Target.Table)
+SET $($Target.SetClause)
+WHERE $($Target.Predicate);
+"@
+        $totalUpdated += $affected
+        if ($affected -gt 0) {
+            Write-Host ("    {0,-56} {1,12:N0} / {2:N0}" -f $Target.Name, $totalUpdated, $pending)
+        }
+    } while ($affected -gt 0)
+
+    $entry.updated = $totalUpdated
+
+    # An ordered dictionary is not unrolled on the way out, so no leading comma.
+    return $entry
+}
+
+function Get-EmailDomainCensus {
+    <#
+        .SYNOPSIS
+            Prints the 25 most common email domains in dbo.Person, marking the
+            kept ones, and returns them for the summary.
+
+        .DESCRIPTION
+            What the catalog actually holds, by domain. Printed so the allowlist can
+            be checked against reality instead of against memory.
+
+            A misspelled domain is the failure this catches, and it is a quiet one:
+            the allowlist matches nothing, every row is anonymized, the run reports
+            success, and the testers find out when they cannot sign in -- by which
+            point the rollback is a 119 GiB restore. Read before the apply it is a
+            spelling check; read after, it is the proof that only the allowlisted
+            domains survived.
+
+            Counts of domains, not addresses. Aggregate, so it is safe in a job
+            summary.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary[]])]
+    param(
+        [Parameter(Mandatory = $true)][hashtable] $Sql,
+        [Parameter(Mandatory = $true)] $Connection,
+        [Parameter(Mandatory = $false)][string[]] $KeepDomain = @(),
+        [Parameter(Mandatory = $false)][int] $TimeoutSeconds = 600
+    )
+
+    $domainCensusQuery = @"
+SELECT TOP 25
+    LOWER(LTRIM(RTRIM(SUBSTRING(Email, CHARINDEX('@', Email) + 1, 255)))) AS Domain,
+    COUNT(*) AS People
+FROM dbo.Person
+WHERE Email IS NOT NULL AND Email <> '' AND CHARINDEX('@', Email) > 0
+GROUP BY LOWER(LTRIM(RTRIM(SUBSTRING(Email, CHARINDEX('@', Email) + 1, 255))))
+ORDER BY COUNT(*) DESC;
+"@
+
+    Write-Host "Email domains in dbo.Person, top 25 by count:"
+    $emailDomains = @()
+    $census = & $Sql.Rows -Connection $Connection -TimeoutSeconds $TimeoutSeconds -Query $domainCensusQuery
+    foreach ($censusRow in $census) {
+        $marker = ""
+        if ($KeepDomain -contains $censusRow.Domain) {
+            $marker = "<- kept"
+        }
+        Write-Host ("  {0,-50} {1,12:N0}  {2}" -f $censusRow.Domain, $censusRow.People, $marker)
+        $emailDomains += [ordered]@{ domain = $censusRow.Domain; people = $censusRow.People }
+    }
+
+    return ,$emailDomains
+}
+
+function Get-ResidualPiiCount {
+    <#
+        .SYNOPSIS
+            Prints and returns the row count of every Get-ResidualPiiProbe probe:
+            contact data the run reports and does not rewrite.
+
+        .DESCRIPTION
+            A probe whose table is missing reports as "unavailable" with a null
+            count rather than failing the run. Plugin tables come and go between
+            Rock versions, and the probe list is deliberately broader than any one
+            schema.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary[]])]
+    param(
+        [Parameter(Mandatory = $true)][hashtable] $Sql,
+        [Parameter(Mandatory = $true)] $Connection,
+        [Parameter(Mandatory = $false)][int] $TimeoutSeconds = 600
+    )
+
+    Write-Host "Residual PII (reported, not rewritten -- see .NOTES):"
+    $residualPii = @()
+    foreach ($probe in (Get-ResidualPiiProbe)) {
+        try {
+            $count = Get-RowCount -Sql $Sql -Connection $Connection -TimeoutSeconds $TimeoutSeconds -Query $probe.Query
+            Write-Host ("  {0,-58} {1,12:N0} row(s)" -f $probe.Name, $count)
+            $residualPii += [ordered]@{ name = $probe.Name; rows = $count }
+        }
+        catch {
+            Write-Host ("  {0,-58} {1,12}" -f $probe.Name, "unavailable")
+            $residualPii += [ordered]@{ name = $probe.Name; rows = $null }
+        }
+    }
+
+    return ,$residualPii
+}
+
 function Invoke-StagingAnonymization {
     <#
         .SYNOPSIS
@@ -717,27 +963,6 @@ function Invoke-StagingAnonymization {
     $keepDomains = ConvertTo-KeepDomain -Domain $KeepEmailDomains
 
     $targets = Get-AnonymizationTarget -KeepDomain $keepDomains
-    $probes = Get-ResidualPiiProbe
-
-    # What the catalog actually holds, by domain. Printed so the allowlist can be
-    # checked against reality instead of against memory.
-    #
-    # A misspelled domain is the failure this catches, and it is a quiet one: the
-    # allowlist matches nothing, every row is anonymized, the run reports success, and
-    # the testers find out when they cannot sign in -- by which point the rollback is a
-    # 119 GiB restore. Read before the apply it is a spelling check; read after, it is
-    # the proof that only the allowlisted domains survived.
-    #
-    # Counts of domains, not addresses. Aggregate, so it is safe in a job summary.
-    $domainCensusQuery = @"
-SELECT TOP 25
-    LOWER(LTRIM(RTRIM(SUBSTRING(Email, CHARINDEX('@', Email) + 1, 255)))) AS Domain,
-    COUNT(*) AS People
-FROM dbo.Person
-WHERE Email IS NOT NULL AND Email <> '' AND CHARINDEX('@', Email) > 0
-GROUP BY LOWER(LTRIM(RTRIM(SUBSTRING(Email, CHARINDEX('@', Email) + 1, 255))))
-ORDER BY COUNT(*) DESC;
-"@
 
     $summary = [ordered]@{
         catalog        = ""
@@ -770,118 +995,25 @@ ORDER BY COUNT(*) DESC;
         Write-Host "Instance: $dataSourceHost"
         Write-Host "Mode:     $($summary.mode)"
 
-        # Restated against the catalog rather than against the argument. "I passed the
-        # domain" and "the domain matches somebody" are different claims, and only the
-        # second one keeps a tester able to sign in.
-        if ($keepDomains.Count -eq 0) {
-            Write-Host "Keep:     nothing -- every address, number and login in this catalog will be anonymized."
-        }
-        else {
-            Write-Host "Keep:     $($keepDomains -join ', ')"
-            foreach ($keepDomain in $keepDomains) {
-                $keptPeople = Get-RowCount -Sql $Sql -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
-                    -Query "SELECT COUNT(*) FROM dbo.Person WHERE Email LIKE '%@$keepDomain'"
-                $keptLogins = Get-RowCount -Sql $Sql -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
-                    -Query "SELECT COUNT(*) FROM dbo.UserLogin WHERE UserName LIKE '%@$keepDomain'"
-
-                Write-Host ("          {0,-40} {1,8:N0} person(s), {2,7:N0} login(s) kept" -f $keepDomain, $keptPeople, $keptLogins)
-                if ($keptPeople -eq 0 -and $keptLogins -eq 0) {
-                    Write-Host ("          {0,-40} >>> MATCHES NOTHING. Check the spelling before approving." -f "")
-                }
-
-                $summary.keptByDomain += [ordered]@{ domain = $keepDomain; people = $keptPeople; logins = $keptLogins }
-            }
-        }
+        $summary.keptByDomain = Get-KeptDomainReport -Sql $Sql -Connection $connection -KeepDomain $keepDomains `
+            -TimeoutSeconds $CommandTimeoutSeconds
         Write-Host ""
 
-        # Bind-time check for every target before any of them runs. Whole-catalog, and
-        # ahead of the first write, because the point is to fail while nothing has been
-        # rewritten rather than between two targets. It runs on a dry run too: a plan
-        # that reports clean for a statement SQL Server will reject is the failure.
-        $computedColumnFaults = @()
-        foreach ($target in $targets) {
-            $offenders = Get-ComputedColumnAssignment -Sql $Sql -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
-                -Table $target.Table -SetClause $target.SetClause
-            foreach ($offender in $offenders) {
-                $computedColumnFaults += "$($target.Table).$offender"
-            }
-        }
-
-        if ($computedColumnFaults.Count -gt 0) {
-            throw ("Refusing to run: these are computed columns and SQL Server will reject any UPDATE that writes them -- " +
-                ($computedColumnFaults -join ', ') +
-                ". Remove them from the SetClause; rewriting the column they are computed from is what clears them.")
-        }
+        # Third gate, and the last before anything is written.
+        Assert-NoComputedColumnAssignment -Sql $Sql -Connection $connection -Target $targets `
+            -TimeoutSeconds $CommandTimeoutSeconds
 
         foreach ($target in $targets) {
-            $pending = Get-RowCount -Sql $Sql -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds `
-                -Query "SELECT COUNT(*) FROM $($target.Table) WHERE $($target.Predicate)"
-
-            $entry = [ordered]@{
-                name    = $target.Name
-                pending = $pending
-                updated = 0
-            }
-
-            if (-not $Apply) {
-                Write-Host ("  {0,-58} {1,12:N0} row(s) would change" -f $target.Name, $pending)
-                $summary.targets += $entry
-                continue
-            }
-
-            if ($pending -eq 0) {
-                Write-Host ("  {0,-58} {1,12} " -f $target.Name, "already clean")
-                $summary.targets += $entry
-                continue
-            }
-
-            # TOP (n) with the same predicate the count used. Each pass removes rows
-            # from its own predicate, so the loop terminates without a marker column
-            # or a keyset to page through.
-            $totalUpdated = 0
-            do {
-                $affected = & $Sql.NonQuery -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds -Query @"
-UPDATE TOP ($BatchSize) $($target.Table)
-SET $($target.SetClause)
-WHERE $($target.Predicate);
-"@
-                $totalUpdated += $affected
-                if ($affected -gt 0) {
-                    Write-Host ("    {0,-56} {1,12:N0} / {2:N0}" -f $target.Name, $totalUpdated, $pending)
-                }
-            } while ($affected -gt 0)
-
-            $entry.updated = $totalUpdated
-            $summary.targets += $entry
+            $summary.targets += Invoke-AnonymizationTarget -Sql $Sql -Connection $connection -Target $target `
+                -Apply:$Apply -BatchSize $BatchSize -TimeoutSeconds $CommandTimeoutSeconds
         }
 
         Write-Host ""
-        Write-Host "Email domains in dbo.Person, top 25 by count:"
-        $census = & $Sql.Rows -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds -Query $domainCensusQuery
-        foreach ($censusRow in $census) {
-            $marker = ""
-            if ($keepDomains -contains $censusRow.Domain) {
-                $marker = "<- kept"
-            }
-            Write-Host ("  {0,-50} {1,12:N0}  {2}" -f $censusRow.Domain, $censusRow.People, $marker)
-            $summary.emailDomains += [ordered]@{ domain = $censusRow.Domain; people = $censusRow.People }
-        }
+        $summary.emailDomains = Get-EmailDomainCensus -Sql $Sql -Connection $connection -KeepDomain $keepDomains `
+            -TimeoutSeconds $CommandTimeoutSeconds
 
         Write-Host ""
-        Write-Host "Residual PII (reported, not rewritten -- see .NOTES):"
-        foreach ($probe in $probes) {
-            # A missing table is not a failure. Plugin tables come and go between Rock
-            # versions and the probe list is deliberately broader than any one schema.
-            try {
-                $count = Get-RowCount -Sql $Sql -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds -Query $probe.Query
-                Write-Host ("  {0,-58} {1,12:N0} row(s)" -f $probe.Name, $count)
-                $summary.residualPii += [ordered]@{ name = $probe.Name; rows = $count }
-            }
-            catch {
-                Write-Host ("  {0,-58} {1,12}" -f $probe.Name, "unavailable")
-                $summary.residualPii += [ordered]@{ name = $probe.Name; rows = $null }
-            }
-        }
+        $summary.residualPii = Get-ResidualPiiCount -Sql $Sql -Connection $connection -TimeoutSeconds $CommandTimeoutSeconds
 
         Write-Host ""
         if ($Apply) {

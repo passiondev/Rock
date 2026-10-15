@@ -161,7 +161,7 @@ Describe 'Get-StepLogPath' {
     }
 
     It 'drops the pending object''s .json extension rather than burying it mid-name' {
-        # $CommandId is still the pending object's file name at the point this is
+        # $commandId is still the pending object's file name at the point this is
         # called, so naming from it directly produced the extension mid-name:
         # deploy-staging-1234-1.json-steps.log.
         $path = Get-StepLogPath -DeployRoot $script:DeployRoot -CommandObjectName 'deploy-staging-1234-1.json'

@@ -148,7 +148,7 @@ function Read-CommandResult {
     .PARAMETER Json
         The text of results/<commandId>.json.
     .OUTPUTS
-        Succeeded; Error and LogObject as strings, empty when absent; and Result,
+        HasSucceeded; Error and LogObject as strings, empty when absent; and Result,
         the parsed object, for printing.
     #>
     [CmdletBinding()]
@@ -176,7 +176,7 @@ function Read-CommandResult {
     }
 
     return [pscustomobject]@{
-        Succeeded = ($status -eq 'succeeded')
+        HasSucceeded = ($status -eq 'succeeded')
         Error     = $errorText
         LogObject = $logObject
         Result    = $parsed
@@ -209,7 +209,7 @@ for ($i = 0; $i -lt $attempts; $i++) {
         $outcome = Read-CommandResult -Json (Get-Content result.json -Raw)
         $outcome.Result | ConvertTo-Json -Depth 10
 
-        if ($outcome.Succeeded) {
+        if ($outcome.HasSucceeded) {
             $logPath = Show-CommandLog -Bucket $bucket -LogObject $outcome.LogObject
             "log-path=$logPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 0
