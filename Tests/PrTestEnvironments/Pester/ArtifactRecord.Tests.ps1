@@ -15,6 +15,13 @@
 
     The package script runs for real here, in $TestDrive, against a two-file
     RockWeb.
+
+    The module also holds the artifact store the workflow runs on,
+    New-GsutilArtifactStore. The plan and the repackage are tested against
+    stores of their suites' own; what is checked here is that the gsutil one
+    keeps the two promises those suites take for granted: an empty bucket lists
+    nothing rather than failing, and a failure throws rather than listing
+    nothing.
 #>
 
 BeforeAll {
@@ -292,5 +299,99 @@ Describe 'packaging a built RockWeb' {
         $record.prNumber | Should -BeExactly ''
         $record.hostName | Should -BeExactly ''
         Get-Content -Path $script:OutputPath | Should -Contain 'pr_number='
+    }
+}
+
+Describe 'New-GsutilArtifactStore' {
+    BeforeAll {
+        # gsutil is stood in for by a function of the same name: PowerShell
+        # resolves a function before an application, which is how
+        # DeployBranch.Tests.ps1 stands in for robocopy. Global, because the
+        # call is made from inside ArtifactRecord.psm1, and a module sees the
+        # global scope but not this file's. Mock cannot do it: Pester mocks
+        # only a command that exists, and not every runner has gsutil.
+        $script:Gsutil = @{
+            Calls = New-Object System.Collections.Generic.List[object]
+            Output = @()
+            ExitCode = 0
+        }
+        $fake = $script:Gsutil
+        Set-Item -Path 'function:global:gsutil' -Value {
+            $fake.Calls.Add(@($args))
+            $fake.Output
+            $global:LASTEXITCODE = $fake.ExitCode
+        }.GetNewClosure()
+    }
+
+    AfterAll {
+        Remove-Item -Path 'function:global:gsutil' -ErrorAction SilentlyContinue
+    }
+
+    BeforeEach {
+        $script:Gsutil.Calls.Clear()
+        $script:Gsutil.Output = @()
+        $script:Gsutil.ExitCode = 0
+        $script:Store = New-GsutilArtifactStore -Bucket 'rock-pr-env'
+    }
+
+    It 'lists the artifacts under its own bucket''s artifact prefix' {
+        $sha = 'a' * 40
+        $script:Gsutil.Output = @(
+            "  412345678  2026-10-14T18:02:11Z  gs://rock-pr-env/pr-environments/staging/$sha/RockWeb-staging-aaaaaaa.zip"
+            "        312  2026-10-14T18:02:12Z  gs://rock-pr-env/pr-environments/staging/$sha/pr-test-artifact.json"
+            'TOTAL: 2 objects, 412345990 bytes (393.24 MiB)'
+        )
+
+        $listed = @(& $script:Store.List)
+
+        $listed.Count | Should -Be 1
+        $listed[0].ObjectPath | Should -BeExactly "pr-environments/staging/$sha/RockWeb-staging-aaaaaaa.zip"
+        # A long listing, because the plan orders candidates by when each was
+        # uploaded, and only the long form says.
+        $script:Gsutil.Calls.Count | Should -Be 1
+        $script:Gsutil.Calls[0] -join ' ' | Should -BeExactly 'ls -l gs://rock-pr-env/pr-environments/**'
+    }
+
+    It 'lists nothing for an empty bucket, which is a first build rather than a failure' {
+        # gsutil exits 1 when a wildcard matches nothing, the same code it uses
+        # for a bucket it cannot read.
+        $script:Gsutil.Output = @('CommandException: One or more URLs matched no objects.')
+        $script:Gsutil.ExitCode = 1
+
+        $listed = @(& $script:Store.List)
+
+        $script:Gsutil.Calls.Count | Should -Be 1
+        $listed.Count | Should -Be 0
+    }
+
+    It 'throws when the bucket cannot be listed, rather than listing nothing' {
+        # An empty answer would plan a build and say none of 0 candidates
+        # qualified -- true, and no help to whoever is wondering why every run
+        # builds. Thrown, the plan builds anyway and says the search failed.
+        $script:Gsutil.Output = @('AccessDeniedException: 403 runner does not have storage.objects.list access.')
+        $script:Gsutil.ExitCode = 1
+
+        { & $script:Store.List } | Should -Throw '*gsutil ls failed (exit 1)*AccessDeniedException*'
+    }
+
+    It 'downloads an object of its own bucket to the file it is given' {
+        $destination = Join-Path $TestDrive 'record.json'
+
+        & $script:Store.Download -ObjectPath 'pr-environments/staging/x/pr-test-artifact.json' -Destination $destination
+
+        $script:Gsutil.Calls.Count | Should -Be 1
+        $call = $script:Gsutil.Calls[0]
+        $call | Should -Contain 'cp'
+        $call | Should -Contain 'gs://rock-pr-env/pr-environments/staging/x/pr-test-artifact.json'
+        $call | Should -Contain $destination
+    }
+
+    It 'throws when a download fails, saying only how gsutil exited' {
+        # The repackage words the sentence around this -- "Could not download
+        # the base artifact ... (exit 1)" -- as it did when it ran gsutil itself.
+        $script:Gsutil.ExitCode = 1
+
+        { & $script:Store.Download -ObjectPath 'pr-environments/staging/x/pr-test-artifact.json' -Destination (Join-Path $TestDrive 'record.json') } |
+            Should -Throw -ExpectedMessage 'exit 1'
     }
 }

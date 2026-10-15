@@ -7,9 +7,11 @@ from this commit in such files alone; when one does, the repackage job swaps the
 changed files into a copy of it instead of building.
 
 What the two scripts decide is tested in Pester -- ArtifactPlan.Tests.ps1 and
-ArtifactRepackage.Tests.ps1 -- and where every artifact goes and what its record
-says is ArtifactRecord.psm1, tested in ArtifactRecord.Tests.ps1, which both
-packaging jobs write through. What is tested here is the wiring, because every
+ArtifactRepackage.Tests.ps1 run each one whole, against an artifact store held
+in memory instead of the bucket -- and where every artifact goes and what its
+record says is ArtifactRecord.psm1, tested in ArtifactRecord.Tests.ps1, which
+both packaging jobs write through, along with the gsutil store the scripts are
+handed in the workflow. What is tested here is the wiring, because every
 piece of it fails quietly: a gate that lets both jobs run uploads two zips to one
 folder, an output only one job sets leaves every deploy after a repackage with an
 empty object path, and a label nothing reads looks exactly like a build that

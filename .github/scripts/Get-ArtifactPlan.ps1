@@ -6,7 +6,9 @@
 .DESCRIPTION
     Beside the workflow rather than inline in it, so the Pester suite can run the
     decision -- see Tests/PrTestEnvironments/Pester/ArtifactPlan.Tests.ps1. The
-    judgement lives in functions; the script body gathers inputs and reports.
+    whole of it is Invoke-ArtifactPlan, which is handed the bucket, GitHub and
+    git rather than calling them; the script body builds the real ones and
+    reports what it decided.
 
     A full build is about half an hour on a Windows runner, and most changes to
     this site are Lava, markup and theme assets the build copies into the artifact
@@ -196,89 +198,141 @@ function Write-ArtifactPlan {
     $Summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 }
 
+function Invoke-ArtifactPlan {
+    <#
+        .SYNOPSIS
+        Makes the plan: build, or repackage which artifact, and the summary that says why.
+
+        .DESCRIPTION
+        Everything the plan asks of the world is a parameter, so the Pester
+        suite can run the whole of it -- an empty bucket, a listing that fails,
+        a GitHub that will not answer -- with none of them there. The script
+        body hands in the real ones.
+
+        Store is an artifact store (see New-GsutilArtifactStore in
+        ArtifactRecord.psm1); only its List is used here. GetRelatedPulls is
+        called with the target commit and returns the numbers of the pull
+        requests it came from, throwing when it cannot say. GetChange is called
+        with a candidate's commit and returns the name-status lines between it
+        and the target. GetGeneratedThemeName returns the generated theme names
+        in the target's tree. RuleSetPath is artifact-paths.json.
+
+        Returns Plan -- mode, base_sha and base_object_path, as
+        Write-ArtifactPlan writes them -- and Summary, the lines of the step
+        summary. It does not throw. A plan it cannot make is a build, and the
+        summary says why: a half-hour build is the worst that a wrong answer
+        here is allowed to cost.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetSha,
+        [Parameter(Mandatory = $true)][string]$ArtifactSlug,
+        [Parameter(Mandatory = $true)][hashtable]$Store,
+        [Parameter(Mandatory = $true)][scriptblock]$GetRelatedPulls,
+        [Parameter(Mandatory = $true)][scriptblock]$GetChange,
+        [Parameter(Mandatory = $true)][scriptblock]$GetGeneratedThemeName,
+        [Parameter(Mandatory = $true)][string]$RuleSetPath,
+        [switch]$ForceBuild
+    )
+
+    # What a forced run reports, and the fallback: a plan this cannot make
+    # costs a build, never a failed deploy.
+    $buildPlan = [ordered]@{ mode = 'build'; base_sha = ''; base_object_path = '' }
+    $summary = New-Object System.Collections.Generic.List[string]
+    $summary.Add('### Artifact plan')
+    $summary.Add('')
+
+    if ($ForceBuild) {
+        $summary.Add('Full build requested (`force_build`, or the `rock:full-build` label).')
+        return [pscustomobject]@{ Plan = $buildPlan; Summary = $summary.ToArray() }
+    }
+
+    $plan = $buildPlan
+    try {
+        $ruleSet = Get-Content -Raw -Path $RuleSetPath | ConvertFrom-Json
+        $themes = @(& $GetGeneratedThemeName)
+
+        # An empty bucket lists nothing, and is a first build. A bucket that
+        # cannot be listed throws, and is caught below as a search that failed.
+        $artifact = @(& $Store.List)
+
+        # A merge to the trunk carries the code its pull request was last
+        # deployed with, so that pull request's artifact is the natural base.
+        # Not knowing costs only that tier, so a failed lookup is not worth a
+        # build.
+        $related = @()
+        try {
+            $related = @(& $GetRelatedPulls $TargetSha)
+        }
+        catch {
+            Write-Host "::notice::Could not ask GitHub which pull requests $TargetSha came from; searching without them."
+        }
+        $relatedSlug = @($related | Where-Object { $_ } | ForEach-Object { "pr-$_" })
+
+        $candidate = @(Get-ArtifactBaseCandidate -Artifact $artifact -TargetSha $TargetSha -ArtifactSlug $ArtifactSlug -RelatedSlug $relatedSlug)
+        $selection = Select-ArtifactBase -Candidate $candidate -RuleSet $ruleSet -GeneratedThemeName $themes -GetChange $GetChange
+
+        foreach ($rejection in $selection.Rejected) {
+            $summary.Add("- Passed over ``$($rejection.Candidate.ObjectPath)``: $($rejection.Reason)")
+        }
+
+        if ($null -eq $selection.Base) {
+            $summary.Add("Building: none of $($candidate.Count) candidate artifact(s) differs from $TargetSha in files alone.")
+        }
+        else {
+            $plan = [ordered]@{
+                mode = 'repackage'
+                base_sha = $selection.Base.Sha
+                base_object_path = $selection.Base.ObjectPath
+            }
+
+            $patched = @($selection.Change | Where-Object { $_.Class -eq 'patch' })
+            $summary.Add("Repackaging ``$($selection.Base.ObjectPath)`` with $($patched.Count) changed file(s); no build.")
+            $summary.Add('')
+            foreach ($item in $patched) {
+                $summary.Add("- ``$($item.Status)`` ``$($item.Path)``")
+            }
+        }
+
+        # Whichever way this run goes: a build ships the file as surely as a
+        # patch does, and the deploy keeps the server's copy either way. What it
+        # then does with it is Deploy-RockEnvironment.ps1's call.
+        foreach ($item in @($selection.Change | Where-Object { $_.IsServerOwned })) {
+            $message = "$($item.Path) changed, but the deploy treats it as server-owned, so the server's copy may win. See the server-owned lists in Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1."
+            Write-Host "::warning::$message"
+            $summary.Add("- :warning: $message")
+        }
+    }
+    catch {
+        $plan = $buildPlan
+        Write-Host "::warning::Could not look for an artifact to repackage, so this run builds: $($_.Exception.Message)"
+        $summary.Add("Building: the search for a base artifact failed -- $($_.Exception.Message)")
+    }
+
+    return [pscustomobject]@{ Plan = $plan; Summary = $summary.ToArray() }
+}
+
 Import-Module (Join-Path $PSScriptRoot 'ArtifactPaths.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ArtifactRecord.psm1') -Force
 
-# What a forced run reports, and the fallback: a plan this cannot make costs a
-# build, never a failed deploy.
-$buildPlan = [ordered]@{ mode = 'build'; base_sha = ''; base_object_path = '' }
-$summary = New-Object System.Collections.Generic.List[string]
-$summary.Add('### Artifact plan')
-$summary.Add('')
-
-if ($ForceBuild) {
-    $summary.Add('Full build requested (`force_build`, or the `rock:full-build` label).')
-    Write-ArtifactPlan -Plan $buildPlan -Summary $summary
-    return
-}
-
-$plan = $buildPlan
-try {
-    $ruleSet = Get-Content -Raw -Path (Join-Path $PSScriptRoot 'artifact-paths.json') | ConvertFrom-Json
-    $themes = @(Get-GeneratedThemeName -Sha $TargetSha)
-
-    # Every object under the prefix; ConvertFrom-ArtifactListing keeps the zips.
-    # An empty bucket is not an error, it is a first build.
-    $listing = @(gsutil ls -l "gs://$Bucket/pr-environments/**" 2>&1 | ForEach-Object { "$_" })
-    $listingExitCode = $LASTEXITCODE
-    $isBucketEmpty = @($listing -match 'matched no objects').Count -gt 0
-    $isListingFailed = $listingExitCode -ne 0 -and -not $isBucketEmpty
-    if ($isListingFailed) {
-        throw "gsutil ls failed (exit $listingExitCode): $($listing -join ' ')"
-    }
-    $artifact = @(ConvertFrom-ArtifactListing -Line $listing)
-
-    # A merge to the trunk carries the code its pull request was last deployed
-    # with, so that pull request's artifact is the natural base. Not knowing
-    # costs only that tier, so a failed lookup is not worth a build.
-    $related = @(gh api "repos/$Repository/commits/$TargetSha/pulls" --jq '.[].number' 2>$null)
+# Which pull requests GitHub says the target came from. A nonzero exit is
+# thrown, so the plan can tell a lookup that failed from a commit that came
+# from none. Reads $Repository when called, from this script's scope.
+$getRelatedPulls = {
+    param($Sha)
+    $numbers = @(gh api "repos/$Repository/commits/$Sha/pulls" --jq '.[].number' 2>$null)
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "::notice::Could not ask GitHub which pull requests $TargetSha came from; searching without them."
-        $related = @()
+        throw "gh api exited $LASTEXITCODE"
     }
-    $relatedSlug = @($related | Where-Object { $_ } | ForEach-Object { "pr-$_" })
-
-    $candidate = @(Get-ArtifactBaseCandidate -Artifact $artifact -TargetSha $TargetSha -ArtifactSlug $ArtifactSlug -RelatedSlug $relatedSlug)
-    $selection = Select-ArtifactBase -Candidate $candidate -RuleSet $ruleSet -GeneratedThemeName $themes -GetChange {
-        param($sha)
-        Get-ArtifactTreeChange -BaseSha $sha -TargetSha $TargetSha
-    }
-
-    foreach ($rejection in $selection.Rejected) {
-        $summary.Add("- Passed over ``$($rejection.Candidate.ObjectPath)``: $($rejection.Reason)")
-    }
-
-    if ($null -eq $selection.Base) {
-        $summary.Add("Building: none of $($candidate.Count) candidate artifact(s) differs from $TargetSha in files alone.")
-    }
-    else {
-        $plan = [ordered]@{
-            mode = 'repackage'
-            base_sha = $selection.Base.Sha
-            base_object_path = $selection.Base.ObjectPath
-        }
-
-        $patched = @($selection.Change | Where-Object { $_.Class -eq 'patch' })
-        $summary.Add("Repackaging ``$($selection.Base.ObjectPath)`` with $($patched.Count) changed file(s); no build.")
-        $summary.Add('')
-        foreach ($item in $patched) {
-            $summary.Add("- ``$($item.Status)`` ``$($item.Path)``")
-        }
-    }
-
-    # Whichever way this run goes: a build ships the file as surely as a patch
-    # does, and the deploy keeps the server's copy either way. What it then
-    # does with it is Deploy-RockEnvironment.ps1's call.
-    foreach ($item in @($selection.Change | Where-Object { $_.IsServerOwned })) {
-        $message = "$($item.Path) changed, but the deploy treats it as server-owned, so the server's copy may win. See the server-owned lists in Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1."
-        Write-Host "::warning::$message"
-        $summary.Add("- :warning: $message")
-    }
-}
-catch {
-    $plan = $buildPlan
-    Write-Host "::warning::Could not look for an artifact to repackage, so this run builds: $($_.Exception.Message)"
-    $summary.Add("Building: the search for a base artifact failed -- $($_.Exception.Message)")
+    return $numbers
 }
 
-Write-ArtifactPlan -Plan $plan -Summary $summary
+$result = Invoke-ArtifactPlan -TargetSha $TargetSha -ArtifactSlug $ArtifactSlug -ForceBuild:$ForceBuild `
+    -Store (New-GsutilArtifactStore -Bucket $Bucket) `
+    -GetRelatedPulls $getRelatedPulls `
+    -GetChange { param($Sha) Get-ArtifactTreeChange -BaseSha $Sha -TargetSha $TargetSha } `
+    -GetGeneratedThemeName { Get-GeneratedThemeName -Sha $TargetSha } `
+    -RuleSetPath (Join-Path $PSScriptRoot 'artifact-paths.json')
+
+Write-ArtifactPlan -Plan $result.Plan -Summary $result.Summary

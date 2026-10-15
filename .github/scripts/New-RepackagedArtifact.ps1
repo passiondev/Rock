@@ -4,8 +4,10 @@
     changed since, without compiling anything.
 
 .DESCRIPTION
-    Beside the workflow rather than inline in it, so the Pester suite can run the
-    archive edit -- see Tests/PrTestEnvironments/Pester/ArtifactRepackage.Tests.ps1.
+    Beside the workflow rather than inline in it, so the Pester suite can run it
+    -- see Tests/PrTestEnvironments/Pester/ArtifactRepackage.Tests.ps1. The whole
+    of it is Invoke-ArtifactRepackage, which is handed the bucket and git rather
+    than calling them; the script body builds the real ones and hands them over.
 
     The repackage job of pr-test-artifact.yml runs this when Get-ArtifactPlan.ps1
     found a base: an artifact whose commit differs from this one only in files the
@@ -162,73 +164,145 @@ function New-PatchedArtifactArchive {
     }
 }
 
+function Invoke-ArtifactRepackage {
+    <#
+        .SYNOPSIS
+        Makes the repackaged zip, its record and its outputs from a base artifact in the store.
+
+        .DESCRIPTION
+        Everything the repackage asks of the world is a parameter, so the
+        Pester suite can run the whole of it -- a base that was itself
+        repackaged, a base whose hash is wrong, a base with no record beside
+        it -- against a store held in memory. The script body hands in the
+        bucket and git.
+
+        Store is an artifact store (see New-GsutilArtifactStore in
+        ArtifactRecord.psm1); only its Download is used here. GetChange is
+        called with the base commit and returns the name-status lines between
+        it and the target. GetGeneratedThemeName returns the generated theme
+        names in the target's tree. RuleSetPath is artifact-paths.json.
+
+        CheckoutPath is the checkout of the target commit. The changed files
+        are read from it, and the zip and its record are written into it,
+        where the upload step looks for them. It must be absolute: the archive
+        is opened through .NET, which resolves a relative path against the
+        process's directory rather than PowerShell's. WorkPath is a directory
+        for the base's download. OutputPath and SummaryPath are GITHUB_OUTPUT
+        and GITHUB_STEP_SUMMARY.
+
+        Any failure throws. There is no fallback to a build from here: a
+        repackage that cannot be trusted fails the run, and the message says
+        to rerun with force_build.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseSha,
+        [Parameter(Mandatory = $true)][string]$BaseObjectPath,
+        [Parameter(Mandatory = $true)][string]$TargetSha,
+        [Parameter(Mandatory = $true)][string]$Bucket,
+        [Parameter(Mandatory = $true)][string]$ArtifactSlug,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PrNumber,
+        [Parameter(Mandatory = $true)][string]$HostName,
+        [Parameter(Mandatory = $true)][hashtable]$Store,
+        [Parameter(Mandatory = $true)][scriptblock]$GetChange,
+        [Parameter(Mandatory = $true)][scriptblock]$GetGeneratedThemeName,
+        [Parameter(Mandatory = $true)][string]$RuleSetPath,
+        [Parameter(Mandatory = $true)][string]$CheckoutPath,
+        [Parameter(Mandatory = $true)][string]$WorkPath,
+        [Parameter(Mandatory = $true)][string]$OutputPath,
+        [Parameter(Mandatory = $true)][string]$SummaryPath
+    )
+
+    # The plan names the base by its zip. Its record sits beside it, at the
+    # address that path decodes to -- and a path that decodes to none is not
+    # a zip any packaging job wrote, so there is nothing trustworthy to start
+    # from.
+    $baseAddress = ConvertFrom-ArtifactObjectPath -ObjectPath $BaseObjectPath
+    if ($null -eq $baseAddress) {
+        throw "$BaseObjectPath is not where a packaging job puts an artifact. Rerun with force_build to build instead."
+    }
+
+    $ruleSet = Get-Content -Raw -Path $RuleSetPath | ConvertFrom-Json
+    $themes = @(& $GetGeneratedThemeName)
+    $nameStatus = @(& $GetChange $BaseSha)
+    $change = @(Get-ArtifactChangeClass -NameStatus $nameStatus -RuleSet $ruleSet -GeneratedThemeName $themes)
+
+    New-Item -ItemType Directory -Path $WorkPath -Force | Out-Null
+    $basePath = Join-Path $WorkPath 'base.zip'
+    $baseRecordPath = Join-Path $WorkPath $baseAddress.RecordName
+
+    try {
+        $null = & $Store.Download -ObjectPath $BaseObjectPath -Destination $basePath
+    }
+    catch {
+        throw "Could not download the base artifact gs://$Bucket/$BaseObjectPath ($($_.Exception.Message)). Rerun with force_build to build instead."
+    }
+
+    # The base's own record says which commit's compiled output it holds: a
+    # base that was itself repackaged carries an older build than its
+    # folder's commit. The build has always written this file beside its zip,
+    # so its absence is tolerated -- the folder's commit is then the best
+    # answer there is. Only the download is forgiven; a record that arrives
+    # and disagrees with the zip is not.
+    $builtFromSha = $BaseSha
+    $isRecordFetched = $true
+    try {
+        $null = & $Store.Download -ObjectPath $baseAddress.RecordPath -Destination $baseRecordPath
+    }
+    catch {
+        $isRecordFetched = $false
+    }
+
+    if ($isRecordFetched) {
+        $baseRecord = Read-ArtifactRecord -Path $baseRecordPath
+        if ($baseRecord.builtFromSha) {
+            $builtFromSha = $baseRecord.builtFromSha
+        }
+
+        # A zip cut short on upload still opens, minus whatever was cut.
+        $recordedHash = $baseRecord.sha256
+        $actualHash = (Get-FileHash -Path $basePath -Algorithm SHA256).Hash
+        $isHashMismatched = $recordedHash -and $recordedHash -ne $actualHash
+        if ($isHashMismatched) {
+            throw "The base artifact's SHA-256 is $actualHash but its metadata says $recordedHash. Rerun with force_build to build instead."
+        }
+    }
+    else {
+        Write-Host "::warning::No pr-test-artifact.json beside $BaseObjectPath; recording $BaseSha as the build this artifact carries."
+    }
+
+    $address = Get-ArtifactAddress -Slug $ArtifactSlug -Sha $TargetSha
+    $artifactPath = Join-Path $CheckoutPath $address.Name
+    New-PatchedArtifactArchive -BasePath $basePath -DestinationPath $artifactPath -SourceRoot $CheckoutPath -Change $change
+
+    # The record and outputs a build writes, from the same module the build
+    # uses, plus the two fields only a repackage has.
+    $record = New-ArtifactRecord -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName `
+        -Sha256 (Get-FileHash -Path $artifactPath -Algorithm SHA256).Hash -BuiltFromSha $builtFromSha -BaseObjectPath $BaseObjectPath
+    Write-ArtifactRecord -Record $record -Path (Join-Path $CheckoutPath $address.RecordName)
+    Write-ArtifactOutput -Address $address -PrNumber $PrNumber -HostName $HostName -Path $OutputPath
+
+    $patched = @($change | Where-Object { $_.Class -eq 'patch' })
+    @(
+        '### Repackaged artifact',
+        '',
+        "``$($address.Name)`` is ``$BaseObjectPath`` with $($patched.Count) file(s) swapped in. Its compiled output was built from ``$builtFromSha``."
+    ) -join "`n" | Out-File -FilePath $SummaryPath -Append
+}
+
 Import-Module (Join-Path $PSScriptRoot 'ArtifactPaths.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ArtifactRecord.psm1') -Force
 
-# The plan names the base by its zip. Its record sits beside it, at the address
-# that path decodes to -- and a path that decodes to none is not a zip any
-# packaging job wrote, so there is nothing trustworthy to start from.
-$baseAddress = ConvertFrom-ArtifactObjectPath -ObjectPath $BaseObjectPath
-if ($null -eq $baseAddress) {
-    throw "$BaseObjectPath is not where a packaging job puts an artifact. Rerun with force_build to build instead."
-}
-
-$ruleSet = Get-Content -Raw -Path (Join-Path $PSScriptRoot 'artifact-paths.json') | ConvertFrom-Json
-$themes = @(Get-GeneratedThemeName -Sha $TargetSha)
-$nameStatus = @(Get-ArtifactTreeChange -BaseSha $BaseSha -TargetSha $TargetSha)
-$change = @(Get-ArtifactChangeClass -NameStatus $nameStatus -RuleSet $ruleSet -GeneratedThemeName $themes)
-
-$work = Join-Path ([System.IO.Path]::GetTempPath()) "rockweb-base-$BaseSha"
-New-Item -ItemType Directory -Path $work -Force | Out-Null
-$basePath = Join-Path $work 'base.zip'
-$baseRecordPath = Join-Path $work $baseAddress.RecordName
-
-gsutil -q cp "gs://$Bucket/$BaseObjectPath" $basePath
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not download the base artifact gs://$Bucket/$BaseObjectPath (exit $LASTEXITCODE). Rerun with force_build to build instead."
-}
-
-# The base's own record says which commit's compiled output it holds: a base
-# that was itself repackaged carries an older build than its folder's commit.
-# The build has always written this file beside its zip, so its absence is
-# tolerated -- the folder's commit is then the best answer there is.
-$builtFromSha = $BaseSha
-gsutil -q cp "gs://$Bucket/$($baseAddress.RecordPath)" $baseRecordPath
-if ($LASTEXITCODE -eq 0) {
-    $baseRecord = Read-ArtifactRecord -Path $baseRecordPath
-    if ($baseRecord.builtFromSha) {
-        $builtFromSha = $baseRecord.builtFromSha
-    }
-
-    # A zip cut short on upload still opens, minus whatever was cut.
-    $recordedHash = $baseRecord.sha256
-    $actualHash = (Get-FileHash -Path $basePath -Algorithm SHA256).Hash
-    $isHashMismatched = $recordedHash -and $recordedHash -ne $actualHash
-    if ($isHashMismatched) {
-        throw "The base artifact's SHA-256 is $actualHash but its metadata says $recordedHash. Rerun with force_build to build instead."
-    }
-}
-else {
-    Write-Host "::warning::No pr-test-artifact.json beside $BaseObjectPath; recording $BaseSha as the build this artifact carries."
-}
-
-$address = Get-ArtifactAddress -Slug $ArtifactSlug -Sha $TargetSha
-
-# Absolute, because the archive is opened through .NET, which resolves a
-# relative path against the process's directory rather than PowerShell's.
-$artifactPath = Join-Path (Get-Location).Path $address.Name
-New-PatchedArtifactArchive -BasePath $basePath -DestinationPath $artifactPath -SourceRoot (Get-Location).Path -Change $change
-
-# The record and outputs a build writes, from the same module the build uses,
-# plus the two fields only a repackage has.
-$record = New-ArtifactRecord -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName `
-    -Sha256 (Get-FileHash -Path $artifactPath -Algorithm SHA256).Hash -BuiltFromSha $builtFromSha -BaseObjectPath $BaseObjectPath
-Write-ArtifactRecord -Record $record -Path $address.RecordName
-Write-ArtifactOutput -Address $address -PrNumber $PrNumber -HostName $HostName -Path $env:GITHUB_OUTPUT
-
-$patched = @($change | Where-Object { $_.Class -eq 'patch' })
-@(
-    '### Repackaged artifact',
-    '',
-    "``$($address.Name)`` is ``$BaseObjectPath`` with $($patched.Count) file(s) swapped in. Its compiled output was built from ``$builtFromSha``."
-) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+# The real store and the real git. The working directory is the checkout of
+# the target, and the base is downloaded beside other runs' in the temp
+# directory, where it always has been.
+Invoke-ArtifactRepackage -BaseSha $BaseSha -BaseObjectPath $BaseObjectPath -TargetSha $TargetSha `
+    -Bucket $Bucket -ArtifactSlug $ArtifactSlug -PrNumber $PrNumber -HostName $HostName `
+    -Store (New-GsutilArtifactStore -Bucket $Bucket) `
+    -GetChange { param($Sha) Get-ArtifactTreeChange -BaseSha $Sha -TargetSha $TargetSha } `
+    -GetGeneratedThemeName { Get-GeneratedThemeName -Sha $TargetSha } `
+    -RuleSetPath (Join-Path $PSScriptRoot 'artifact-paths.json') `
+    -CheckoutPath (Get-Location).Path `
+    -WorkPath (Join-Path ([System.IO.Path]::GetTempPath()) "rockweb-base-$BaseSha") `
+    -OutputPath $env:GITHUB_OUTPUT `
+    -SummaryPath $env:GITHUB_STEP_SUMMARY

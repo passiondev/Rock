@@ -25,6 +25,13 @@
     fixes its fields and their order; Read-ArtifactRecord reads one back,
     tolerating the fields an older writer never wrote.
 
+    The bucket itself is reached through an artifact store: a hashtable of two
+    scriptblocks, List and Download, that the plan and the repackage are handed
+    rather than calling gsutil themselves. New-GsutilArtifactStore is the one
+    the workflow uses. The Pester suites hand in stores of their own, so an
+    empty bucket, a listing that fails and a base with a bad hash can each be
+    run without a bucket.
+
     ADR-0001 keeps shared modules out of Deployment/PrTestEnvironments, because
     the bootstrap copies only *.ps1 to the VM. It does not govern this: these
     scripts never leave a GitHub runner, which checks the module out beside them.
@@ -285,4 +292,110 @@ function Write-ArtifactOutput {
     ) | Out-File -FilePath $Path -Append
 }
 
-Export-ModuleMember -Function Get-ArtifactAddress, ConvertFrom-ArtifactObjectPath, ConvertFrom-ArtifactListing, New-ArtifactRecord, Write-ArtifactRecord, Read-ArtifactRecord, Write-ArtifactOutput
+function Get-GsutilArtifactListing {
+    <#
+        .SYNOPSIS
+        Every artifact in a bucket, as ConvertFrom-ArtifactListing reads them, by asking gsutil.
+
+        .DESCRIPTION
+        Lists every object under the prefix and lets ConvertFrom-ArtifactListing
+        keep the zips. An empty bucket is not an error, it is a first build:
+        gsutil exits 1 and says the wildcard "matched no objects", and that
+        returns nothing. Any other failure throws, because a listing that could
+        not be read is not a listing that found nothing, and the plan should say
+        which it was.
+
+        Not exported. New-GsutilArtifactStore hands it out as the store's List.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Bucket
+    )
+
+    $listing = @(gsutil ls -l "gs://$Bucket/$script:ArtifactRoot/**" 2>&1 | ForEach-Object { "$_" })
+    $listingExitCode = $LASTEXITCODE
+    $isBucketEmpty = @($listing -match 'matched no objects').Count -gt 0
+    $isListingFailed = $listingExitCode -ne 0 -and -not $isBucketEmpty
+    if ($isListingFailed) {
+        throw "gsutil ls failed (exit $listingExitCode): $($listing -join ' ')"
+    }
+
+    ConvertFrom-ArtifactListing -Line $listing
+}
+
+function Copy-GsutilArtifactObject {
+    <#
+        .SYNOPSIS
+        Downloads one object from a bucket to a local file, by asking gsutil.
+
+        .DESCRIPTION
+        Throws when gsutil fails, with only the exit code as the message: the
+        caller knows what it was fetching and why it mattered, and words the
+        sentence. The repackage's "Could not download the base artifact ...
+        (exit 1)" reads exactly as it did when gsutil was called inline.
+
+        Not exported. New-GsutilArtifactStore hands it out as the store's Download.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Bucket,
+        [Parameter(Mandatory = $true)][string]$ObjectPath,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    gsutil -q cp "gs://$Bucket/$ObjectPath" $Destination
+    if ($LASTEXITCODE -ne 0) {
+        throw "exit $LASTEXITCODE"
+    }
+}
+
+function New-GsutilArtifactStore {
+    <#
+        .SYNOPSIS
+        The artifact store the workflow uses: one bucket, reached through gsutil.
+
+        .DESCRIPTION
+        An artifact store is a hashtable of two scriptblocks:
+
+          List      takes nothing and returns every artifact in the store as
+                    ConvertFrom-ArtifactListing returns them: Slug, Sha,
+                    ObjectPath and Updated. Nothing for an empty store; it
+                    throws when it cannot say.
+          Download  takes -ObjectPath (relative to the bucket) and
+                    -Destination (a local file) and copies the one to the
+                    other. It throws when it cannot.
+
+        Get-ArtifactPlan.ps1 takes a store and uses List; New-RepackagedArtifact.ps1
+        takes one and uses Download. The Pester suites build their own, so each
+        script's handling of an empty bucket, a failed listing or a base whose
+        hash is wrong runs without gsutil or a bucket.
+
+        Each scriptblock is a closure over the bucket. A closure runs in a
+        dynamic module of its own, which cannot see this module's unexported
+        functions by name, so it carries the two gsutil functions as
+        scriptblocks and invokes those; each still runs here, in this module.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)][string]$Bucket
+    )
+
+    $listArtifacts = ${function:Get-GsutilArtifactListing}
+    $copyObject = ${function:Copy-GsutilArtifactObject}
+
+    return @{
+        List = {
+            & $listArtifacts -Bucket $Bucket
+        }.GetNewClosure()
+        Download = {
+            param(
+                [Parameter(Mandatory = $true)][string]$ObjectPath,
+                [Parameter(Mandatory = $true)][string]$Destination
+            )
+            & $copyObject -Bucket $Bucket -ObjectPath $ObjectPath -Destination $Destination
+        }.GetNewClosure()
+    }
+}
+
+Export-ModuleMember -Function Get-ArtifactAddress, ConvertFrom-ArtifactObjectPath, ConvertFrom-ArtifactListing, New-ArtifactRecord, Write-ArtifactRecord, Read-ArtifactRecord, Write-ArtifactOutput, New-GsutilArtifactStore

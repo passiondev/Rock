@@ -18,6 +18,13 @@
     rules come from the real artifact-paths.json, because the rules *are* the
     behaviour: a test against a hand-written rule list would pass while the shipped
     list classed a compiled path as patchable.
+
+    Invoke-ArtifactPlan is the whole script short of writing its outputs, and it
+    is handed the bucket, GitHub and git rather than calling them. Its cases hand
+    it an artifact store that is a listing held in memory, and stand-ins for the
+    other two that answer, or fail, as the case needs. That is how an empty
+    bucket, a bucket that cannot be listed and a GitHub that will not answer are
+    each shown to cost a build or a tier of the search, and never the run.
 #>
 
 BeforeAll {
@@ -33,7 +40,8 @@ BeforeAll {
     Import-Module (Get-RepositoryPath '.github/scripts/ArtifactRecord.psm1') -Force
     . (Import-ScriptFunction -Path $script:PlanScript -Name @(
         'Get-ArtifactBaseCandidate',
-        'Select-ArtifactBase'))
+        'Select-ArtifactBase',
+        'Invoke-ArtifactPlan'))
 
     $script:Rules = Get-Content -Raw -Path $script:RulePath | ConvertFrom-Json
     $script:GeneratedThemes = @('RockNextGen', 'RockManagerNextGen', 'NextGenCheckin')
@@ -59,6 +67,14 @@ BeforeAll {
     function Get-Class {
         param([Parameter(Mandatory = $true)][string]$Line)
         return Get-ArtifactChangeClass -NameStatus @($Line) -RuleSet $script:Rules -GeneratedThemeName $script:GeneratedThemes
+    }
+
+    # Stands in for `git diff --name-status --no-renames <candidate> <target>`.
+    # The real one needs a fetch per candidate; what is under test is what the
+    # plan does with the answer.
+    function New-ChangeSource {
+        param([Parameter(Mandatory = $true)][hashtable]$DiffBySha)
+        return { param($Sha) $DiffBySha[$Sha] }.GetNewClosure()
     }
 }
 
@@ -244,14 +260,6 @@ Describe 'Get-ArtifactBaseCandidate' {
 
 Describe 'Select-ArtifactBase' {
     BeforeAll {
-        # Stands in for `git diff --name-status --no-renames <candidate> <target>`.
-        # The real one needs a fetch per candidate; what is under test is what the
-        # plan does with the answer.
-        function New-ChangeSource {
-            param([Parameter(Mandatory = $true)][hashtable]$DiffBySha)
-            return { param($Sha) $DiffBySha[$Sha] }.GetNewClosure()
-        }
-
         function Select-Base {
             param(
                 [Parameter(Mandatory = $true)][object[]]$Candidate,
@@ -346,6 +354,162 @@ Describe 'Select-ArtifactBase' {
 
         $selection.Base.Sha | Should -Be ('2' * 40)
         $selection.Rejected[0].Reason | Should -BeLike '*not our ref*'
+    }
+}
+
+Describe 'Invoke-ArtifactPlan' {
+    # The plan's own promise is that it never fails the run: whatever it cannot
+    # find out costs a build, or one tier of the search. These hand it a world
+    # that fails in each way the real one can, and read the plan and the summary
+    # it would write.
+
+    BeforeAll {
+        # The commit every case plans for. No artifact here is of it, so the
+        # exact-commit tier never fires.
+        $script:Target = '9' * 40
+
+        # An artifact store holding a listing and nothing else, which is all the
+        # plan asks of one.
+        function New-ListingStore {
+            param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Artifact)
+            return @{ List = { $Artifact }.GetNewClosure() }
+        }
+
+        # The plan for the target on staging, against the shipped rules. GitHub
+        # names no pull request and nothing may be diffed, unless a case says
+        # otherwise: a diff nobody expected lands in the summary as a candidate
+        # that could not be diffed, and fails the exact comparison.
+        function Invoke-Plan {
+            param(
+                [Parameter(Mandatory = $true)][hashtable]$Store,
+                [scriptblock]$GetChange = { param($Sha) throw "nothing was meant to be diffed, but $Sha was" },
+                [scriptblock]$GetRelatedPulls = { },
+                [switch]$ForceBuild
+            )
+            $themes = $script:GeneratedThemes
+            $getThemes = { $themes }.GetNewClosure()
+            return Invoke-ArtifactPlan -TargetSha $script:Target -ArtifactSlug 'staging' -Store $Store `
+                -GetRelatedPulls $GetRelatedPulls -GetChange $GetChange `
+                -GetGeneratedThemeName $getThemes `
+                -RuleSetPath $script:RulePath -ForceBuild:$ForceBuild
+        }
+    }
+
+    It 'builds when the bucket holds no artifact yet' {
+        # A first deploy. gsutil says so with exit 1 and "matched no objects",
+        # which the gsutil store turns into an empty listing
+        # (ArtifactRecord.Tests.ps1); that is a first build, not a failure.
+        $result = Invoke-Plan -Store (New-ListingStore -Artifact @())
+
+        # The three outputs the repackage and package jobs branch on, in the
+        # order Write-ArtifactPlan writes them.
+        @($result.Plan.Keys) | Should -Be @('mode', 'base_sha', 'base_object_path')
+        $result.Plan.mode | Should -Be 'build'
+        $result.Plan.base_sha | Should -Be ''
+        $result.Plan.base_object_path | Should -Be ''
+        $result.Summary | Should -Be @(
+            '### Artifact plan'
+            ''
+            'Building: none of 0 candidate artifact(s) differs from 9999999999999999999999999999999999999999 in files alone.'
+        )
+    }
+
+    It 'repackages an artifact that differs in files alone, and lists what it patches' {
+        # The control for the cases below: the same plan, with a world that
+        # answers.
+        $store = New-ListingStore -Artifact @(New-Artifact -Slug 'staging' -Digit '1' -DaysAgo 0)
+        $source = New-ChangeSource @{ ('1' * 40) = @("M`tRockWeb/Themes/Rock/Assets/Lava/PageNav.lava") }
+
+        $result = Invoke-Plan -Store $store -GetChange $source
+
+        $result.Plan.mode | Should -Be 'repackage'
+        $result.Plan.base_sha | Should -Be '1111111111111111111111111111111111111111'
+        $result.Plan.base_object_path | Should -Be 'pr-environments/staging/1111111111111111111111111111111111111111/RockWeb-staging-1111111.zip'
+        $result.Summary | Should -Be @(
+            '### Artifact plan'
+            ''
+            'Repackaging `pr-environments/staging/1111111111111111111111111111111111111111/RockWeb-staging-1111111.zip` with 1 changed file(s); no build.'
+            ''
+            '- `M` `RockWeb/Themes/Rock/Assets/Lava/PageNav.lava`'
+        )
+    }
+
+    It 'builds, rather than failing the run, when the bucket cannot be listed' {
+        # A credential that has lost storage.objects.list, say. The plan cannot
+        # know what is there, and a build is what not knowing costs.
+        $store = @{ List = { throw 'gsutil ls failed (exit 1): AccessDeniedException: 403 Access denied.' } }
+
+        $result = Invoke-Plan -Store $store
+
+        $result.Plan.mode | Should -Be 'build'
+        $result.Plan.base_object_path | Should -Be ''
+        $result.Summary | Should -Be @(
+            '### Artifact plan'
+            ''
+            'Building: the search for a base artifact failed -- gsutil ls failed (exit 1): AccessDeniedException: 403 Access denied.'
+        )
+    }
+
+    Context 'when the base is the pull request the commit came from' {
+        BeforeAll {
+            # Staging's newest artifact needs a build; the pull request the
+            # target was merged from has one that does not. Only the related
+            # tier finds it.
+            $script:MergeStore = New-ListingStore -Artifact @(
+                New-Artifact -Slug 'staging' -Digit '1' -DaysAgo 1
+                New-Artifact -Slug 'pr-12' -Digit '2' -DaysAgo 0
+            )
+            $script:MergeSource = New-ChangeSource @{
+                ('1' * 40) = @("M`tRock/Model/Core/Person/Person.cs")
+                ('2' * 40) = @("M`tRockWeb/Themes/Rock/Assets/Lava/PageNav.lava")
+            }
+        }
+
+        It 'repackages that pull request''s artifact when GitHub says which it was' {
+            # The control: what a GitHub that will not answer gives up.
+            $result = Invoke-Plan -Store $script:MergeStore -GetChange $script:MergeSource -GetRelatedPulls {
+                param($Sha)
+                if ($Sha -eq '9999999999999999999999999999999999999999') {
+                    12
+                }
+            }
+
+            $result.Plan.mode | Should -Be 'repackage'
+            $result.Plan.base_sha | Should -Be '2222222222222222222222222222222222222222'
+        }
+
+        It 'searches without it, rather than failing the run, when GitHub cannot say' {
+            # gh not signed in, rate-limited or down. That costs the related
+            # tier and nothing else: the rest of the search still runs.
+            $result = Invoke-Plan -Store $script:MergeStore -GetChange $script:MergeSource -GetRelatedPulls {
+                param($Sha)
+                throw "gh api exited 1 asking about $Sha"
+            }
+
+            $result.Plan.mode | Should -Be 'build'
+            $result.Summary | Should -Be @(
+                '### Artifact plan'
+                ''
+                '- Passed over `pr-environments/staging/1111111111111111111111111111111111111111/RockWeb-staging-1111111.zip`: 1 path(s) need a build: Rock/Model/Core/Person/Person.cs'
+                'Building: none of 1 candidate artifact(s) differs from 9999999999999999999999999999999999999999 in files alone.'
+            )
+        }
+    }
+
+    It 'builds without looking when a full build is asked for' {
+        # force_build, or the rock:full-build label. The store throws if it is
+        # read, and a throw would put a failed search in the summary, so the
+        # exact summary is what shows the bucket was never listed.
+        $store = @{ List = { throw 'the bucket was listed' } }
+
+        $result = Invoke-Plan -Store $store -ForceBuild
+
+        $result.Plan.mode | Should -Be 'build'
+        $result.Summary | Should -Be @(
+            '### Artifact plan'
+            ''
+            'Full build requested (`force_build`, or the `rock:full-build` label).'
+        )
     }
 }
 
