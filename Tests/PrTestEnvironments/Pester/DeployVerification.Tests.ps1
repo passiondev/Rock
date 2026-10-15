@@ -23,6 +23,18 @@
         alone leaves old binaries against a new schema -- a worse state than the
         one being rolled back from. The rollback advice had no way to know that
         and said "roll back from $backupPath" either way.
+
+    And one that exists because of the same mistake made the other way round:
+    believing a deploy failed on evidence that does not say so.
+
+    Test-EnvironmentHealth
+        ASP.NET caches an Application_Start failure for the life of the app
+        domain, so a site whose first start faulted goes on answering every probe
+        with that fault after its cause has cleared. On 2026-08-10 staging was
+        reported unhealthy three times over and was serving Rock normally minutes
+        after each. Polling again only rereads the cached failure; recycling the
+        pool is what discards it, so when it recycles is tested here against a
+        clock the tests control.
 #>
 
 BeforeAll {
@@ -32,11 +44,11 @@ BeforeAll {
     . (Import-ScriptFunction -Path $script:DeployScript -Name `
             'Write-DeployStep', 'Ensure-Directory', 'Get-MigrationFingerprint', `
             'Assert-DeployedCoreVersion', 'Invoke-DeploySmokeCheck', 'Write-DeployScriptProvenance', `
-            'Save-UnhealthyDiagnostics' `
+            'Save-UnhealthyDiagnostics', 'Test-EnvironmentHealth' `
         -Supplied `
             'DeployStartedUtc', 'DeployStepLogPath', 'Invoke-SiteContentProbe', 'Invoke-SiteProbe', `
             'Write-GcsObjectFromFile', 'EnvironmentName', 'Sha', 'HostName', 'Mode', `
-            'AppPoolName', 'SiteName', 'ArtifactGcsPath')
+            'AppPoolName', 'SiteName', 'ArtifactGcsPath', 'Stop-EnvironmentAppPool')
 
     $script:DeployStartedUtc = (Get-Date).ToUniversalTime()
     $script:DeployStepLogPath = ''
@@ -394,5 +406,209 @@ Describe 'Save-UnhealthyDiagnostics' {
         $body = Get-ScriptFunctionText -Path $script:DeployScript -Name 'Save-UnhealthyDiagnostics'
 
         $body | Should -Match 'Write-DeployStep "Collected diagnostics'
+    }
+}
+
+Describe 'Test-EnvironmentHealth' {
+    <#
+        Every decision this function makes is about time: how long to keep
+        polling, when a failing site has failed long enough to recycle, and when
+        the window is too nearly closed for a recycle to be worth it. So the
+        clock is the stand-in that matters. Get-Date answers from $script:Now and
+        Start-Sleep moves it forward instead of waiting, which lets a 400-second
+        window run in milliseconds and puts every recycle at a time the test can
+        state.
+    #>
+
+    BeforeAll {
+        # The probe is the seam, for the reason Invoke-DeploySmokeCheck's is: these
+        # tests are about what the function does with an answer, not about HTTP.
+        # Each call takes the next answer, and the last one repeats, so a list of
+        # one is a site that never changes.
+        function Invoke-SiteProbe {
+            param($Url, $HostHeader, $TimeoutSeconds)
+            $script:Probes += @{ Url = $Url; HostHeader = $HostHeader }
+            $answers = @($script:ProbeAnswers)
+            return $answers[[Math]::Min(@($script:Probes).Count, $answers.Count) - 1]
+        }
+
+        # The two halves of a recycle, recorded in the order they happen and
+        # stamped with the fake clock, because when and in what order is the
+        # whole of what is being asked of them.
+        function Stop-EnvironmentAppPool {
+            param([Parameter(Mandatory = $true)][string]$Name)
+            $script:PoolEvents += "stop:$Name"
+            $script:Recycles += $script:Now
+        }
+
+        # Advanced, because the call passes -ErrorAction. The WebAdministration
+        # cmdlet this stands in for does not exist off Windows.
+        function Start-WebAppPool {
+            [CmdletBinding()]
+            param([Parameter(Mandatory = $true)][string]$Name)
+            $script:PoolEvents += "start:$Name"
+        }
+
+        Mock Get-Date { $script:Now }
+        Mock Start-Sleep { $script:Now = $script:Now.AddSeconds($Seconds) }
+
+        # Write-DeployStep runs for real and writes every line to the step log as
+        # well, which is what these tests read. A 400-second window is forty
+        # attempts, and forty timestamped lines on the console say nothing the
+        # file does not.
+        Mock Write-Host { }
+
+        $script:Healthy = @{ Ok = $true; StatusCode = 200; Error = '' }
+        $script:Failing = @{ Ok = $false; StatusCode = 500; Error = 'internal server error' }
+        $script:Refused = @{ Ok = $false; StatusCode = 0; Error = 'connection refused' }
+        $script:PublicUrl = 'https://staging.connect.passion.team/'
+    }
+
+    BeforeEach {
+        $script:Now = [datetime]'2026-10-15T00:00:00'
+        $script:Start = $script:Now
+        $script:Probes = @()
+        $script:ProbeAnswers = @($script:Failing)
+        $script:PoolEvents = @()
+        $script:Recycles = @()
+
+        $script:DeployStepLogPath = Join-Path $TestDrive ('health-' + [guid]::NewGuid().ToString('n') + '.log')
+
+        # The function sets both of these process-wide, and every other suite in
+        # this run shares the process.
+        $script:PreviousCertificateCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+        $script:PreviousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+    }
+
+    AfterEach {
+        $script:DeployStepLogPath = ''
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $script:PreviousCertificateCallback
+        [Net.ServicePointManager]::SecurityProtocol = $script:PreviousSecurityProtocol
+    }
+
+    It 'returns $true on the first healthy answer, and records what the site returned' {
+        # A pass returns before the bottom of the loop, where every failed
+        # attempt reports. A pass that said nothing would leave a production
+        # deploy with no record of what the site answered, which is the detail
+        # the next argument about that deploy turns on.
+        $script:ProbeAnswers = @($script:Healthy)
+
+        $result = Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60
+
+        @($result).Count | Should -Be 1 -Because 'the deploy body tests this as one boolean, and an array of anything is truthy'
+        $result | Should -BeOfType [bool]
+        $result | Should -BeTrue
+        @($script:Probes).Count | Should -Be 1
+        (Get-Content -Raw -Path $script:DeployStepLogPath) | Should -Match 'Health check passed.*200'
+    }
+
+    It 'probes the loopback, carrying the public host name as the Host header' {
+        # This VM cannot reliably reach its own public address. On 2026-08-11 the
+        # probe to the public name failed for 900 seconds while the same URL
+        # answered 302 from off the box, and the deploy went red on a site that
+        # was serving. The loopback is the same IIS site and the same app domain.
+        $script:ProbeAnswers = @($script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60 -HostHeader 'staging.connect.passion.team' | Out-Null
+
+        $script:Probes[0].Url | Should -BeExactly 'https://127.0.0.1/'
+        $script:Probes[0].HostHeader | Should -BeExactly 'staging.connect.passion.team'
+    }
+
+    It 'probes the URL it was given when there is no host name to carry' {
+        $script:ProbeAnswers = @($script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60 | Out-Null
+
+        $script:Probes[0].Url | Should -BeExactly $script:PublicUrl
+        $script:Probes[0].HostHeader | Should -BeExactly ''
+    }
+
+    It 'keeps polling through a 500 and a refused connection until the site answers' {
+        # Rock runs its migrations on the first request after a deploy, so a
+        # site that is still starting fails in both of these ways before it
+        # comes up. Either one is a reason to wait, not a verdict.
+        $script:ProbeAnswers = @($script:Failing, $script:Refused, $script:Healthy)
+
+        $result = Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 300
+
+        $result | Should -BeTrue
+        @($script:Probes).Count | Should -Be 3
+
+        # Each failure says what it was, so a timeline that ends in a pass still
+        # shows what the site did on the way there.
+        $log = Get-Content -Raw -Path $script:DeployStepLogPath
+        $log | Should -Match 'HTTP 500'
+        $log | Should -Match 'connection refused'
+    }
+
+    It 'leaves a site alone that recovers before RecycleAfterSeconds' {
+        # Still starting is not the same as poisoned. A recycle here would
+        # restart the migrations the site was most of the way through.
+        $script:ProbeAnswers = @($script:Failing, $script:Failing, $script:Failing, $script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 300 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 |
+            Should -BeTrue
+
+        @($script:PoolEvents).Count | Should -Be 0
+    }
+
+    It 'recycles a site that stays unhealthy, every RecycleAfterSeconds and not only once' {
+        # The 2026-08-10 failure. Retrying alone rereads one cached exception
+        # until the window closes; a recycle discards the app domain holding it,
+        # and recycling again turns a second bad start into one lost interval
+        # rather than a lost deploy.
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 430 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        $recycles = @($script:Recycles)
+        $recycles.Count | Should -BeGreaterOrEqual 2 -Because 'a second bad start is as likely as the first'
+        ($recycles[0] - $script:Start).TotalSeconds | Should -BeGreaterOrEqual 120 -Because 'the first recycle waits out one whole interval of failure'
+        for ($i = 1; $i -lt $recycles.Count; $i++) {
+            ($recycles[$i] - $recycles[$i - 1]).TotalSeconds | Should -BeGreaterOrEqual 120 -Because 'each later one waits out an interval after the last'
+        }
+    }
+
+    It 'stops the pool and then starts the same pool' {
+        # Stopped and never started is a site that is down until somebody
+        # notices, and the health check would spend the rest of its window
+        # probing a pool it had switched off.
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 200 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        ($script:PoolEvents -join ',') | Should -BeExactly 'stop:RockStagingPool,start:RockStagingPool'
+    }
+
+    It 'does not recycle in the last minute of the window' {
+        # A pool restarted with less than a minute left is still starting when
+        # the window closes, so the recycle could only ensure the last probes
+        # fail. With 150 seconds and a 120-second interval, the one recycle the
+        # interval allows would come 30 seconds before the end.
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 150 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        @($script:PoolEvents).Count | Should -Be 0
+    }
+
+    It 'never recycles when it was given no app pool' {
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 430 -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        @($script:PoolEvents).Count | Should -Be 0
+    }
+
+    It 'returns $false once the window closes, and warns with the last error' {
+        # $false rather than a throw: the caller collects diagnostics and words
+        # the rollback advice, and only it knows whether there is a backup.
+        $result = Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 30 `
+            -WarningVariable warnings -WarningAction SilentlyContinue
+
+        @($result).Count | Should -Be 1
+        $result | Should -BeOfType [bool]
+        $result | Should -BeFalse
+        @($script:Probes).Count | Should -Be 3 -Because 'a 30-second window polled every 10 seconds is three attempts'
+        @($warnings).Count | Should -Be 1
+        "$warnings" | Should -Match 'did not pass within 30 seconds'
+        "$warnings" | Should -Match 'HTTP 500'
     }
 }

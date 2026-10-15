@@ -116,56 +116,6 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         directories = [entry.strip() for entry in match.group(1).split(",")]
         self.assertIn("bin", directories, f"overlay default must backfill bin, got {directories}")
 
-    def test_shared_asset_overlay_never_runs_against_production(self):
-        """This is what makes adding Plugins to the overlay default safe to ship
-        without a production window: the overlay is reachable only from the
-        DedicatedSite branch, and production deploys InPlace. An InPlace deploy
-        copies over a live site that already has its own Plugins tree, maintained
-        outside git -- backfilling it from another site is exactly the wrong thing
-        to do there.
-
-        Asked of the function, not of the branch condition. The first version did
-        `text.index("if ($Mode -eq 'DedicatedSite') {")`, which matches an unrelated
-        app-pool naming block near the top of the script rather than the deploy
-        branch; it passed even when the overlay was hoisted out of the branch and
-        onto the production path, which is the one thing it existed to catch. Brace
-        nesting fixed the false match and left the weak anchor: that line still
-        appears twice, and a branch can be renamed out from under it. The ordering
-        now lives in Invoke-DedicatedSiteReplace, which has a name to ask for and
-        raises when it is gone.
-        """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
-
-        start, end = harness.powershell_function_lines(
-            "\n".join(lines), "Invoke-DedicatedSiteReplace"
-        )
-        guarded = set(range(start, end))
-
-        in_place_only = [
-            index for index, line in enumerate(lines)
-            if line.lstrip().startswith("$backupPath = Join-Path")
-        ]
-        self.assertTrue(in_place_only, "could not find the InPlace backup line to calibrate against")
-        for index in in_place_only:
-            self.assertNotIn(
-                index, guarded,
-                "the slice is wrong: it put the InPlace-only backup line inside "
-                "Invoke-DedicatedSiteReplace, so the rest of this test proves nothing",
-            )
-
-        overlay = [
-            index for index, line in enumerate(lines)
-            if line.lstrip().startswith("Sync-SharedSiteAssets")
-        ]
-        self.assertTrue(overlay, "no Sync-SharedSiteAssets call site found")
-        for index in overlay:
-            self.assertIn(
-                index, guarded,
-                f"Sync-SharedSiteAssets at line {index + 1} is outside "
-                "Invoke-DedicatedSiteReplace, so the shared-asset overlay now runs on the "
-                "InPlace production path",
-            )
-
     def test_font_awesome_is_a_server_owned_path(self):
         """Passion holds a Font Awesome Pro licence and the Pro webfonts sit on the
         servers. Upstream Rock ships the Free fonts under the same filenames, so the
@@ -189,51 +139,6 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
             f"the Font Awesome directory must be server-owned, got {paths}",
         )
 
-    def test_server_owned_paths_are_restored_after_the_shared_asset_overlay(self):
-        """Order is the whole mechanism. Sync-SharedSiteAssets runs robocopy with
-        /XC /XN /XO, so it copies only files that are absent at the destination --
-        it fills gaps and can never replace. The files this second pass exists for
-        are precisely the ones the artifact already placed, so running it first
-        would leave nothing for it to do.
-
-        fa-light-300.woff2 is the case that shows the split: Free has no Light
-        weight, so nothing ships in the artifact, the gap is real, and the ordinary
-        overlay already handles it. Solid and Regular need the second pass.
-        """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
-
-        start, end = harness.powershell_function_lines(
-            "\n".join(lines), "Invoke-DedicatedSiteReplace"
-        )
-        guarded = set(range(start, end))
-
-        overlay = [
-            index for index, line in enumerate(lines)
-            if line.lstrip().startswith("Sync-SharedSiteAssets")
-        ]
-        restore = [
-            index for index, line in enumerate(lines)
-            if line.lstrip().startswith("Sync-ServerOwnedAssets")
-        ]
-        self.assertTrue(overlay, "no Sync-SharedSiteAssets call site found")
-        self.assertTrue(restore, "no Sync-ServerOwnedAssets call site found")
-
-        for index in restore:
-            self.assertIn(
-                index, guarded,
-                f"Sync-ServerOwnedAssets at line {index + 1} is outside "
-                "Invoke-DedicatedSiteReplace, so it now runs on the InPlace production path "
-                "where the artifact is already excluded from these paths and there is "
-                "nothing to restore",
-            )
-
-        self.assertGreater(
-            min(restore), max(overlay),
-            "Sync-ServerOwnedAssets must run after Sync-SharedSiteAssets. Before it, every "
-            "path it copies is overwritten again by the artifact-shipped file the overlay "
-            "leaves in place",
-        )
-
     def test_server_owned_copy_is_allowed_to_overwrite(self):
         """The one flag difference that makes this function do anything. Carrying
         /XC /XN /XO across from Sync-SharedSiteAssets would make the second pass an
@@ -244,13 +149,7 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         files it does not have, so a weight the artifact ships and the box lacks
         must survive.
         """
-        text = DEPLOY_SCRIPT.read_text()
-
-        match = re.search(
-            r"function Sync-ServerOwnedAssets \{(.*?)\n\}\n", text, re.DOTALL,
-        )
-        self.assertIsNotNone(match, "could not find Sync-ServerOwnedAssets")
-        body = match.group(1)
+        body = harness.powershell_function(DEPLOY_SCRIPT.read_text(), "Sync-ServerOwnedAssets")
 
         copy = re.search(r"&\s*robocopy[^\r\n]*", body)
         self.assertIsNotNone(copy, "Sync-ServerOwnedAssets does not call robocopy")
@@ -267,143 +166,6 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                 destructive, flags,
                 f"{destructive} would delete artifact-shipped files the base site lacks: {flags}",
             )
-
-    def test_production_copy_leaves_server_owned_paths_alone(self):
-        """The InPlace branch gets the opposite mechanism to the DedicatedSite one.
-        There is no overlay on the production path, so the only way to keep the
-        server's copy is to keep the artifact away from it.
-
-        Production has never had an automated deploy -- its fa-solid-900.woff2 is
-        dated 2021-08-04 and its Rock theme _variables.less 2023-04-10 -- so the
-        v19 cutover is the first run that could overwrite these files, and plain
-        robocopy /E copies whenever source and destination differ in size. Without
-        this exclusion the cutover downgrades production to the Free fonts.
-        """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
-
-        start, end = harness.powershell_function_lines(
-            "\n".join(lines), "Invoke-DedicatedSiteReplace"
-        )
-        guarded = set(range(start, end))
-
-        exclusions = [
-            index for index, line in enumerate(lines)
-            if "$copyExclusions += '/XD'" in line
-        ]
-        self.assertTrue(exclusions, "no /XD exclusions found on the InPlace copy")
-        for index in exclusions:
-            self.assertNotIn(
-                index, guarded,
-                "the /XD exclusion block moved into Invoke-DedicatedSiteReplace, where "
-                "$copyExclusions is never handed to a robocopy call",
-            )
-
-        text = "\n".join(lines)
-        loop = re.search(
-            r"foreach \(\$directory in \$ServerOwnedDirectories\) \{(.*?)\n\s*\}", text, re.DOTALL,
-        )
-        self.assertIsNotNone(
-            loop,
-            "$ServerOwnedDirectories is never turned into robocopy exclusions, so the "
-            "production copy will overwrite the server's Font Awesome Pro fonts",
-        )
-        self.assertIn("/XD", loop.group(1), "server-owned paths must be excluded as directories")
-        self.assertIn(
-            "$ExtractPath", loop.group(1),
-            "robocopy /XD matches against the source tree, so the exclusion has to be "
-            "built from $ExtractPath and not from $SitePath",
-        )
-
-    def test_dedicated_site_grants_the_app_pool_write_access(self):
-        """Rock compiles its legacy LESS themes to .css on a background thread at
-        every application start, so the app pool identity needs write access to the
-        site directory. A DedicatedSite deploy expands a fresh tree, which inherits
-        only the parent's ACLs and leaves that identity read-only; InPlace copies
-        over a directory that already has the right ACEs, which is the only reason
-        production was never affected.
-
-        Losing the grant fails almost silently, which is why it went unnoticed from
-        January to August 2026. RockTheme.Compile dies on the first file with
-        UnauthorizedAccessException and abandons the theme's whole loop before
-        reaching theme.css; the exception reaches ExceptionLog and nowhere else, and
-        the stale .css keeps being served with a 200. Every health check passes while
-        every theme silently rots -- so no other test in this suite can catch it, and
-        nothing on the deploy path will either. That is what this one is for.
-        """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
-
-        start, end = harness.powershell_function_lines(
-            "\n".join(lines), "Invoke-DedicatedSiteReplace"
-        )
-        guarded = set(range(start, end))
-
-        grants = [
-            index for index, line in enumerate(lines)
-            if "icacls" in line and "/grant" in line
-        ]
-        self.assertTrue(
-            grants,
-            "the DedicatedSite deploy no longer grants the app pool modify rights on the "
-            "site directory, so Rock cannot compile its themes and will serve stale .css "
-            "while every health check passes",
-        )
-        for index in grants:
-            self.assertIn(
-                index, guarded,
-                f"the icacls grant at line {index + 1} is outside "
-                "Invoke-DedicatedSiteReplace; it must not run on the InPlace production path",
-            )
-            grant = lines[index]
-            # (OI)(CI) so NTFS propagates to existing children and to whatever the
-            # preserved-file restore and the shared-asset overlay write afterwards;
-            # (M) because compiling a theme rewrites files rather than only adding them.
-            self.assertIn("(OI)(CI)(M)", grant)
-            self.assertIn("$SitePath", grant)
-
-            # The identity is assembled a line or two above rather than inlined, so
-            # widen to the surrounding lines instead of matching the grant alone.
-            window = "\n".join(lines[max(0, index - 4):index + 6])
-            self.assertIn(
-                "IIS AppPool", window,
-                "the grant no longer names the app pool identity, so whatever it grants "
-                "rights to is not the account Rock compiles its themes under",
-            )
-            # A grant that fails and says nothing is the same outcome as no grant at all.
-            self.assertIn("$LASTEXITCODE", window)
-            self.assertIn("throw", window)
-
-    def test_plugin_build_artifacts_are_stripped_after_the_overlay(self):
-        """The strip runs on the freshly extracted artifact, which was sufficient
-        while the overlay could not carry Plugins. Now that it does, the base
-        site's Plugins/*/bin and Plugins/*/obj arrive after the strip has already
-        run, so a second strip has to follow the overlay.
-
-        The argument is asserted, not just the ordering. A later strip aimed at
-        $ExtractPath would satisfy any ordering check while doing nothing at all,
-        because Move-Item has already consumed that directory by then.
-        """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
-
-        overlay = [
-            index for index, line in enumerate(lines)
-            if line.lstrip().startswith("Sync-SharedSiteAssets")
-        ]
-        self.assertTrue(overlay, "no Sync-SharedSiteAssets call site found")
-
-        strips = [
-            index for index, line in enumerate(lines)
-            if re.match(r"Remove-PluginBuildArtifacts\s+-(?:Site)?Path\s+\$SitePath\b", line.strip())
-        ]
-        self.assertTrue(
-            strips,
-            "no Remove-PluginBuildArtifacts call targets $SitePath; stripping $ExtractPath "
-            "is a no-op once Move-Item has consumed that directory",
-        )
-        self.assertTrue(
-            any(index > max(overlay) for index in strips),
-            f"a $SitePath strip must follow the overlay at line {max(overlay) + 1}; "
-            f"found strips at {[index + 1 for index in strips]}",
-        )
 
     def test_theme_override_files_are_kept_by_both_modes(self):
         """Everything this organisation has changed about a legacy LESS theme is in
@@ -442,96 +204,6 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                 "artifact has that name and the exclusion protects nothing",
             )
 
-    def test_theme_overrides_are_excluded_as_files_not_as_directories(self):
-        """/XD against a file name excludes nothing, so the copy would proceed and
-        overwrite production's brand with upstream's empty pair while the deploy log
-        reported the exclusion as applied."""
-        text = DEPLOY_SCRIPT.read_text()
-
-        loop = re.search(
-            r"foreach \(\$file in \$themeOverrides\) \{(.*?)\n\s*\}", text, re.DOTALL,
-        )
-        self.assertIsNotNone(
-            loop,
-            "$themeOverrides is never turned into robocopy exclusions, so the production "
-            "copy overwrites this site's theme customization",
-        )
-        self.assertIn("/XF", loop.group(1), "a single file is excluded with /XF, not /XD")
-        self.assertNotIn("/XD", loop.group(1))
-        self.assertIn(
-            "$ExtractPath", loop.group(1),
-            "robocopy matches exclusions against the source tree, so the path has to be "
-            "built from $ExtractPath and not from $SitePath",
-        )
-
-    def test_each_mode_discovers_theme_overrides_against_the_site_that_has_them(self):
-        """The argument is the whole correctness of this, and both wrong answers are
-        silent.
-
-        InPlace asks $SitePath, because the question is which files production has
-        that the artifact must not overwrite. Asking $ExtractPath instead would answer
-        "all of them" -- every theme in the artifact ships the pair -- and exclude the
-        file from themes v19 adds and the box has never had. theme.less imports it
-        unconditionally, so those themes would stop compiling.
-
-        DedicatedSite asks the base site, because the question is which files there
-        are worth copying onto the new one. Asking $SitePath instead would find the
-        artifact's stock copies and restore them onto themselves, logging a successful
-        restore that changed nothing.
-        """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
-
-        # A comment and the definition also carry the name, and neither is a call.
-        calls = [
-            index for index, line in enumerate(lines)
-            if "Get-ServerOwnedThemeFilePaths" in line
-            and not line.lstrip().startswith("#")
-            and not line.lstrip().startswith("function ")
-        ]
-        self.assertTrue(calls, "nothing calls Get-ServerOwnedThemeFilePaths")
-
-        start, end = harness.powershell_function_lines(
-            "\n".join(lines), "Invoke-DedicatedSiteReplace"
-        )
-        dedicated = set(range(start, end))
-
-        # The -SiteRoot argument may sit on the call line or on a continued one.
-        deploying = []
-        for index in calls:
-            window = "\n".join(lines[index:index + 4])
-            root = re.search(r"-SiteRoot\s+(\S+)", window)
-            self.assertIsNotNone(
-                root, f"the call at line {index + 1} passes no -SiteRoot"
-            )
-            deploying.append((index, root.group(1)))
-
-        # The dry run reports a plan for whichever mode it was invoked in, so it
-        # legitimately reads both roots off one variable. Only the two real call
-        # sites are asserted here; the plan's own correctness is a separate test.
-        real = [
-            (index, root) for index, root in deploying
-            if not root.startswith("$(") and root != "$plannedSource"
-        ]
-        self.assertEqual(
-            len(real), 2,
-            f"expected one discovery call per mode, found {len(real)}: {real}",
-        )
-
-        for index, root in real:
-            if index in dedicated:
-                self.assertEqual(
-                    root, "$sharedAssetSource",
-                    f"the DedicatedSite call at line {index + 1} discovers against {root}, so it "
-                    "restores the artifact's stock files onto themselves",
-                )
-            else:
-                self.assertEqual(
-                    root, "$SitePath",
-                    f"the InPlace call at line {index + 1} discovers against {root}; it must ask "
-                    "the live site which files it has, or it excludes files the artifact "
-                    "needs to deliver",
-                )
-
     def test_in_place_deploy_is_a_dry_run_unless_apply_is_passed(self):
         """A production overwrite should never be one mistyped argument away. The
         script reports its plan and returns unless -Apply is explicitly given."""
@@ -539,17 +211,6 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         self.assertIn("$Apply", text)
         self.assertIn("if ($Mode -eq 'InPlace' -and -not $Apply)", text)
         self.assertIn("DRY RUN", text)
-
-    def test_in_place_deploy_backs_up_before_touching_the_live_site(self):
-        text = DEPLOY_SCRIPT.read_text()
-        self.assertIn("$BackupRoot", text)
-        self.assertIn("refusing to deploy", text)
-        # The backup must happen before the copy that overwrites the site.
-        self.assertLess(
-            text.index("Backing up $SitePath"),
-            text.index("Deploy copy failed"),
-            "backup must run before the artifact is copied over the live site",
-        )
 
     def test_in_place_deploy_never_purges_server_owned_data(self):
         """robocopy /MIR or /PURGE against a live Rock webroot deletes uploaded
@@ -733,26 +394,55 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
     def test_deploy_waits_for_the_site_to_answer_before_reporting_success(self):
         """Rock runs EF and plugin migrations on the first request after a deploy,
         so a deploy that only checks 'did the files copy' reports success on a site
-        that is about to throw a yellow screen."""
-        text = DEPLOY_SCRIPT.read_text()
-        self.assertIn("Test-EnvironmentHealth", text)
-        self.assertIn("$HealthCheckTimeoutSeconds", text)
-        self.assertIn("did not become healthy", text)
+        that is about to throw a yellow screen.
 
-    def test_health_check_recycles_the_app_pool_instead_of_only_retrying(self):
-        """ASP.NET caches an Application_Start failure for the lifetime of the app
-        domain, so a site that faults its first start after a replace serves that
-        same cached exception to every later probe. Retrying alone therefore reads a
-        stale failure until the window closes -- which is how the 2026-08-10 staging
-        deploy reported unhealthy three times over while serving Rock normally
-        minutes later. The probe has to be able to discard the bad domain."""
-        text = DEPLOY_SCRIPT.read_text()
-        self.assertIn("$RecycleAfterSeconds", text)
-        self.assertIn("-AppPoolName $AppPoolName", text)
-        health = text.split("function Test-EnvironmentHealth", 1)[1]
-        health = health.split("\nfunction ", 1)[0]
-        self.assertIn("Stop-EnvironmentAppPool", health)
-        self.assertIn("Start-WebAppPool", health)
+        What Test-EnvironmentHealth does with a sick site -- poll, recycle the
+        pool, give up -- is Pester/DeployVerification.Tests.ps1's job, and it
+        runs the function to find out. What is left here is the wiring, which no
+        Pester suite reaches because it is the script body: the deploy hands the
+        check the window, the host and the pool it was configured with, and a
+        failed check ends in a throw instead of a warning the run carries on
+        past. This used to be three `assertIn`s against the whole script, which
+        a comment naming all three tokens would have satisfied.
+        """
+        lines = harness.strip_powershell_comments(DEPLOY_SCRIPT.read_text()).splitlines()
+
+        calls = [index for index, line in enumerate(lines) if re.search(r"Test-EnvironmentHealth\s+-", line)]
+        self.assertEqual(
+            1, len(calls),
+            f"expected the deploy to call Test-EnvironmentHealth once, found it on lines "
+            f"{[index + 1 for index in calls]}",
+        )
+        call = calls[0]
+
+        # Each one is a value the operator can set on the run. A call that
+        # dropped one would fall back to the function's default and quietly
+        # ignore what the workflow asked for.
+        for argument in (
+            "-TimeoutSeconds $HealthCheckTimeoutSeconds",
+            "-HostHeader $HostName",
+            "-AppPoolName $AppPoolName",
+        ):
+            self.assertIn(argument, lines[call], f"the health check call no longer passes {argument}")
+
+        throws = [
+            index for index, line in enumerate(lines)
+            if "throw" in line and "did not become healthy" in line
+        ]
+        self.assertTrue(throws, "nothing throws 'did not become healthy', so a failed check cannot fail the deploy")
+
+        # Walked block by block rather than read as "below the call", because a
+        # throw that is merely further down the script runs whether or not the
+        # check failed.
+        for throw in throws:
+            opener = _enclosing_opener(lines, throw)
+            while opener is not None and opener != call:
+                opener = _enclosing_opener(lines, opener)
+            self.assertEqual(
+                call, opener,
+                f"the throw on line {throw + 1} is not inside the block the health check "
+                f"on line {call + 1} opens, so it does not depend on the check failing",
+            )
 
     def test_health_check_window_outlasts_rock_running_its_migrations(self):
         """First request after a deploy runs EF and plugin migrations; the demo
@@ -803,33 +493,13 @@ class CertificateSelectionTests(unittest.TestCase):
     """The deploy script rebinds an SSL certificate on every run, so its choice of
     certificate silently decides whether renewal is durable or pointless."""
 
-    def test_deploy_prefers_a_ca_issued_certificate_over_the_self_signed_placeholder(self):
-        """This was a real, long-lived outage of trust. The placeholder is minted for
-        two years and a Let's Encrypt certificate lasts ninety days, so ranking
-        candidates by NotAfter alone made the placeholder win forever: renewal would
-        bind a real certificate and the very next deploy would quietly rebind the
-        self-signed one. Measured 2026-08-10 -- pr-4 served a real certificate at
-        16:57 UTC and was self-signed again after its 19:44 redeploy. A self-signed
-        certificate is its own issuer, which is what the ranking keys on."""
-        text = DEPLOY_SCRIPT.read_text()
-        selector = text.split("function Get-EnvironmentCertificateThumbprint", 1)[1]
-        selector = selector.split("\nfunction ", 1)[0]
-
-        self.assertIn("$_.Issuer -eq $_.Subject", selector)
-
-        issuer_rank = selector.index("$_.Issuer -eq $_.Subject")
-        not_after_rank = selector.index("$_.NotAfter }; Descending")
-        self.assertLess(
-            issuer_rank,
-            not_after_rank,
-            "issuer trust must be the primary sort key, expiry only the tie-breaker",
-        )
-
-    def test_deploy_never_binds_an_already_expired_certificate(self):
-        text = DEPLOY_SCRIPT.read_text()
-        selector = text.split("function Get-EnvironmentCertificateThumbprint", 1)[1]
-        selector = selector.split("\nfunction ", 1)[0]
-        self.assertIn("$_.NotAfter -gt (Get-Date)", selector)
+    # Which certificate the deploy binds used to be asserted here, as string
+    # matches on the sort and filter lines of the selector. The selector is a
+    # lifted function, and Pester/CertificateSelection.Tests.ps1 runs it
+    # against a fake store -- "prefers a CA-issued certificate over the
+    # longer-lived self-signed placeholder" and "ignores a certificate that has
+    # already expired". Reading the line proved it was written. Running it
+    # proves it is true.
 
     # Renewal walking C:\RockBackups used to be required here, by string match,
     # from when staging was deployed InPlace and kept its manifest there. Staging
@@ -1480,23 +1150,30 @@ class DeployAuditTrailTests(unittest.TestCase):
     def setUp(self):
         self.text = DEPLOY_SCRIPT.read_text()
         self.lines = self.text.splitlines()
+        # The reporter's own help names it, and so do notes beside its callers.
+        # The tests that look for the reporter read the code without them.
+        self.code = harness.strip_powershell_comments(self.text)
+        self.code_lines = self.code.splitlines()
 
     def test_the_script_has_a_timestamped_step_reporter(self):
         """Plain Write-Host lines cannot be placed in time. Two deploys, one of
         which spent nine minutes in robocopy, are indistinguishable without a
         clock on each line."""
-        self.assertIn(
-            "function Write-DeployStep",
-            self.text,
-            "the deploy has no timestamped step reporter, so its log cannot be "
-            "read as a timeline",
-        )
+        # The harness raises on a missing or doubled declaration; caught here only
+        # so the failure says what the reporter is for.
+        try:
+            harness.powershell_function_lines(self.code, "Write-DeployStep")
+        except AssertionError as error:
+            self.fail(
+                f"the deploy has no single timestamped step reporter, so its log "
+                f"cannot be read as a timeline ({error})"
+            )
 
     def test_the_step_reporter_stamps_utc_iso_8601(self):
         """The runner, the VM and whoever is reading are rarely in one timezone,
         and a log correlated against a Cloud SQL restore point has to be UTC."""
-        start = self.text.index("function Write-DeployStep")
-        body = self.text[start : self.text.index("\n}", start)]
+        start, end = harness.powershell_function_lines(self.code, "Write-DeployStep")
+        body = "\n".join(self.code_lines[start:end])
 
         self.assertIn(
             "ToUniversalTime()",
@@ -1514,17 +1191,23 @@ class DeployAuditTrailTests(unittest.TestCase):
         """test_function_definition_order.py holds the general rule. This one is
         specific: a reporter defined after its first call takes down every deploy,
         which is a worse failure than the missing log it was added to fix."""
-        definition = self.text.index("function Write-DeployStep")
+        start, end = harness.powershell_function_lines(self.code, "Write-DeployStep")
+        # The body starts on the line after the opening brace, and that brace sits
+        # on the declaration line.
+        definition = start - 1
+
+        # Indexes, not `text.index(line)`: two calls with the same text would both
+        # report the first one's position. Comments are already gone, so a note
+        # that names the reporter above its definition is not mistaken for a call.
         calls = [
-            self.text.index(line)
-            for line in self.lines
-            if "Write-DeployStep" in line and "function" not in line
+            index for index, line in enumerate(self.code_lines)
+            if "Write-DeployStep" in line and not definition <= index <= end
         ]
         self.assertTrue(calls, "Write-DeployStep is defined but never called")
         self.assertLess(
             definition,
             min(calls),
-            "Write-DeployStep is called before it is defined",
+            f"Write-DeployStep is called on line {min(calls) + 1} but defined on line {definition + 1}",
         )
 
     def test_the_in_place_copy_reports_what_it_moved(self):
@@ -1594,37 +1277,6 @@ class DeployAuditTrailTests(unittest.TestCase):
             reported,
             "a successful deploy never repeats where the backup went, so a rollback "
             "starts by scrolling",
-        )
-
-    def test_the_health_check_reports_through_the_step_reporter(self):
-        """Every line Test-EnvironmentHealth emits has to carry a timestamp, and
-        that includes the line for a pass. A production health check that says
-        nothing on success leaves no record of what the site returned, which is
-        the one detail worth having when the next deploy is argued about."""
-        # Inside the function, not merely somewhere after it. Every call in the
-        # deploy body sits after this definition, so a search from here to the end
-        # of the file finds them whether or not the health check reports anything.
-        start = self.text.index("function Test-EnvironmentHealth")
-        # To the closing brace at column 0. This is the last function in the file,
-        # so slicing to the next `function` keyword runs off the end.
-        body = self.text[start : self.text.index("\n}\n", start)]
-
-        self.assertIn(
-            "Write-DeployStep",
-            body,
-            "the health check does not report through the step reporter, so its "
-            "timings are missing from the timeline",
-        )
-        # The pass branch specifically, not just the function as a whole. Every
-        # failed attempt reports from the bottom of the loop; a first-attempt pass
-        # returns before reaching any of that, so success is the path that would
-        # silently stop reporting without anything else in this test noticing.
-        pass_branch = body[body.index("if ($probe.Ok)") : body.index("return $true")]
-        self.assertIn(
-            "Write-DeployStep",
-            pass_branch,
-            "the health check returns success without reporting it, so a deploy "
-            "that passed first time records nothing about what the site returned",
         )
 
 

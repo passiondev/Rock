@@ -345,9 +345,17 @@ Describe 'Invoke-DedicatedSiteReplace' {
         Script:IndexOf 'icacls' | Should -BeGreaterThan -1 -Because 'without the grant Rock cannot compile its themes and serves stale .css behind a passing health check'
         Script:IndexOf 'icacls' | Should -BeLessThan (Script:IndexOf 'Sync-SharedSiteAssets') -Because 'the ACE is inheritable, so it has to exist before the overlay writes the files it should cover'
 
-        $grant = (Script:DetailOf -Name 'icacls').Arguments
+        $grant = @((Script:DetailOf -Name 'icacls').Arguments)
         $grant | Should -Contain '/grant'
         ($grant -join ' ') | Should -Match 'IIS AppPool\\pr-1234-pool:\(OI\)\(CI\)\(M\)'
+
+        # On the site directory itself. Rock compiles its LESS themes under this
+        # identity at every application start, and a grant on any other path --
+        # the extract directory Move-Item has just consumed, or a parent the
+        # identity has no business writing to -- leaves that compile failing
+        # into ExceptionLog while the stale .css is served with a 200. That is
+        # how it went unnoticed from January to August 2026.
+        $grant[0] | Should -BeExactly $script:SitePath
     }
 
     It 'stops the deploy when the grant fails' {
@@ -479,11 +487,21 @@ Describe 'Invoke-InPlaceOverlay' {
     }
 
     It 'backs the site up before it copies the artifact over it' {
-        & $script:Overlay | Out-Null
+        # Both calls are robocopy, so which one came first is only visible in
+        # what each was pointed at. The first has to read the live site into the
+        # backup the record names; only the second may write to the live site.
+        $result = & $script:Overlay
 
         @($script:Calls | Where-Object { $_ -eq 'robocopy' }).Count |
             Should -Be 2 -Because 'the backup copy and the deploy copy'
-        $script:Calls[(Script:IndexOf 'robocopy')] | Should -Be 'robocopy'
+
+        $backup = @((Script:DetailOf -Name 'robocopy' -Index 0).Arguments)
+        $backup[0] | Should -BeExactly $script:SitePath
+        $backup[1] | Should -BeExactly $result.BackupPath -Because 'the rollback advice names this path, so it has to be where the copy went'
+
+        $copy = @((Script:DetailOf -Name 'robocopy' -Index 1).Arguments)
+        $copy[0] | Should -BeExactly $script:ExtractPath
+        $copy[1] | Should -BeExactly $script:SitePath
     }
 
     It 'refuses to deploy when the backup fails' {
@@ -492,6 +510,10 @@ Describe 'Invoke-InPlaceOverlay' {
         $script:RobocopyExit = 8
 
         { & $script:Overlay } | Should -Throw '*Backup failed*'
+
+        # A refusal that comes after the copy has refused nothing.
+        @($script:Calls | Where-Object { $_ -eq 'robocopy' }).Count |
+            Should -Be 1 -Because 'the artifact must not be copied over the live site once its backup has failed'
     }
 
     It 'excludes the preserved directories from the backup' {
@@ -505,14 +527,24 @@ Describe 'Invoke-InPlaceOverlay' {
     It 'builds the copy exclusions from all four lists, against the artifact tree' {
         # robocopy matches /XD and /XF against the source, so an exclusion spelled
         # from $SitePath excludes nothing and reads as if it excluded something.
+        # The flag is held as well as the path, for the same reason: /XD against
+        # a file name also excludes nothing, and robocopy reports success either
+        # way -- production's brand would be overwritten by upstream's empty
+        # override files under a log saying the exclusion was applied.
         $script:DiscoveredThemeFiles = @('Themes/Rock/Styles/_variables.less')
 
         & $script:Overlay | Out-Null
 
-        $copy = ((Script:DetailOf -Name 'robocopy' -Index 1).Arguments -join ' ')
-        foreach ($excluded in @('Content', 'web.ConnectionStrings.config', 'Assets/Fonts/FontAwesome', 'Themes/Rock/Styles/_variables.less')) {
-            $native = ConvertTo-NativePath -Path (Join-Path $script:ExtractPath $excluded)
-            $copy | Should -Match ([regex]::Escape($native)) -Because "$excluded must be kept away from the artifact's copy"
+        $copy = @((Script:ExclusionsOf -Index 1) -split "`n")
+        $expected = [ordered]@{
+            'Content'                            = '/XD'
+            'web.ConnectionStrings.config'       = '/XF'
+            'Assets/Fonts/FontAwesome'           = '/XD'
+            'Themes/Rock/Styles/_variables.less' = '/XF'
+        }
+        foreach ($excluded in $expected.Keys) {
+            $pair = "$($expected[$excluded]) $(ConvertTo-NativePath -Path (Join-Path $script:ExtractPath $excluded))"
+            ($copy -ccontains $pair) | Should -BeTrue -Because "$excluded must be kept away from the artifact's copy as '$pair'; robocopy was given:`n$($copy -join "`n")"
         }
     }
 

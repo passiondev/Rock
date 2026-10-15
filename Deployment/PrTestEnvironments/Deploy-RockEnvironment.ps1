@@ -2672,6 +2672,28 @@ function Invoke-InPlaceOverlay {
 }
 
 function Test-EnvironmentHealth {
+    <#
+        .SYNOPSIS
+        Waits for the deployed site to answer, recycling its app pool while it
+        does not.
+
+        .DESCRIPTION
+        Returns $true on the first probe that comes back healthy and $false once
+        TimeoutSeconds pass without one. The caller turns $false into the
+        "did not become healthy" error; this function only decides.
+
+        The probe goes to the loopback carrying HostHeader when one is given, and
+        to Url otherwise. With an AppPoolName, the pool is stopped and started
+        every RecycleAfterSeconds of failure, but never in the last minute of the
+        window, where a recycle could only end the wait on a site still starting.
+        The reasons for each of these are in the body, beside the code they
+        explain.
+
+        .OUTPUTS
+        System.Boolean
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
