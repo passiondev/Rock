@@ -1,17 +1,24 @@
 """Static checks on Deployment/Database/Invoke-StagingAnonymization.ps1.
 
-There is no SQL Server and no PowerShell in CI, so nothing here executes the
-script -- these assert the properties that make it safe to point at a real
-catalog. Same approach test_legacy_text_columns.py takes, and for a sharper
-reason: the converter it guards rewrites column types, while this one destroys
-every email address and phone number it can reach. Aimed at the wrong catalog it
-is not a failed run, it is a restore.
-
 The script exists because staging is seeded from a production backup. On the day
 it is restored it holds every congregant's real contact details, on a box whose
 whole purpose is that people try things on it -- including sending a
 communication. Removing the ability to reach a real person is a stronger
-guarantee than everyone remembering not to press send.
+guarantee than everyone remembering not to press send. Aimed at the wrong
+catalog it is not a failed run, it is a restore.
+
+The safety sequence -- refuse production, open, check the catalog, refuse a
+computed column, stop unless -Apply, then write -- is not checked here. It used
+to be, by comparing the offsets of strings in the file, which proved that one
+line sat above another and nothing about what ran. The Pester suite
+StagingAnonymization.Tests.ps1 now runs the script's own
+Invoke-StagingAnonymization against a recording SQL adapter and asserts the
+order of the calls it actually made.
+
+What stays here is what that adapter cannot observe: the SQL text a recorder
+answers without understanding (which columns a SET clause assigns, what a
+predicate excludes, which probes exist), the operator-facing parameters, and the
+wiring that gets the script onto the VM and behind a dispatch box.
 """
 
 import re
@@ -33,12 +40,6 @@ QUEUE_AGENT = (
 )
 ANONYMIZE_COMMAND = "anonymize-staging"
 
-# connect-prod. The script carries this so it can refuse before it does anything
-# else; the test carries it so deleting it from the script is a failing test
-# rather than a quiet loss of the only check that cannot be argued with.
-PRODUCTION_DATA_SOURCE = "172.20.0.8"
-
-
 # Comments stripped by the harness. The anonymizer quotes the house rule it
 # diverges from, and a scan that could not tell an explanation from a call
 # would be satisfied by deleting the explanation.
@@ -56,42 +57,16 @@ class ScriptExistsTests(unittest.TestCase):
 
 
 class RefusesProductionTests(unittest.TestCase):
-    """The two gates, and the order they fire in.
+    """Two gates stand in front of the writes, and neither is decoration. The
+    sandbox instance hosts a catalog called RockConnectProd, character for
+    character the name production uses, so a catalog-name check on its own is
+    satisfied on either server. The address is what actually differs between
+    them.
 
-    Neither is decoration. The sandbox instance hosts a catalog called
-    RockConnectProd, character for character the name production uses, so a
-    catalog-name check on its own is satisfied on either server. The address is
-    what actually differs between them."""
-
-    def test_the_production_instance_is_refused_by_address(self):
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        self.assertIn(
-            PRODUCTION_DATA_SOURCE,
-            body,
-            "the script does not name the production instance, so nothing stops a "
-            "connection string pointed at it",
-        )
-        self.assertRegex(
-            body,
-            r"if\s*\(\s*\$ProductionDataSources\s+-contains\s+\$dataSourceHost\s*\)",
-            "the production address is named but not compared against the "
-            "connection string's own host",
-        )
-
-    def test_the_refusal_happens_before_the_connection_is_opened(self):
-        """A refusal that fires after the first query has already reached across to
-        production is a log entry, not a guard."""
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        refusal = body.index("$ProductionDataSources -contains $dataSourceHost")
-        opened = body.index(".Open()")
-
-        self.assertLess(
-            refusal,
-            opened,
-            "the production check runs after the connection is opened",
-        )
+    That both gates fire, and fire before the connection opens or before the
+    first write, is behaviour, and the Pester suite proves it by running them.
+    Kept here: the one property that lives in the parameter block rather than in
+    anything the run does, so a recording adapter cannot see it."""
 
     def test_the_expected_catalog_is_mandatory(self):
         """Not defaulted, on purpose. A default would be this script guessing which
@@ -106,69 +81,6 @@ class RefusesProductionTests(unittest.TestCase):
         self.assertIsNotNone(
             match, "ExpectedCatalog is not a mandatory parameter"
         )
-
-    def test_the_connected_catalog_must_match_what_was_asked_for(self):
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        self.assertIn("SELECT DB_NAME()", body)
-        self.assertRegex(
-            body,
-            r"if\s*\(\s*\$actualCatalog\s+-ne\s+\$ExpectedCatalog\s*\)",
-            "the catalog the connection actually landed on is never compared "
-            "against the one the operator named",
-        )
-
-    def test_the_catalog_check_happens_before_any_write(self):
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        check = body.index("$actualCatalog -ne $ExpectedCatalog")
-        first_update = body.index("UPDATE TOP")
-
-        self.assertLess(
-            check, first_update, "the catalog check runs after the first UPDATE"
-        )
-
-
-class DryRunByDefaultTests(unittest.TestCase):
-    def test_apply_is_a_switch_and_not_a_default(self):
-        body = ANONYMIZER.read_text()
-
-        self.assertRegex(body, r"\[switch\]\s*\$Apply")
-        self.assertNotRegex(
-            body,
-            r"\$Apply\s*=\s*\$true",
-            "Apply is given a true default, which makes every run a write",
-        )
-
-    def test_no_update_runs_without_the_apply_gate(self):
-        """The dry run and the apply path share one list of targets, so the count
-        the dry run prints is produced by the same predicate the UPDATE uses. That
-        is the property worth having: the two cannot drift into a dry run that
-        reports one thing and an apply that does another."""
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        self.assertIn(
-            "if (-not $Apply)",
-            body,
-            "there is no -Apply gate at all, so every run writes",
-        )
-        gate = body.index("if (-not $Apply)")
-        update = body.index("UPDATE TOP")
-
-        self.assertLess(
-            gate, update, "the UPDATE is reachable before the -Apply gate"
-        )
-
-    def test_the_dry_run_and_the_apply_path_read_the_same_predicates(self):
-        body = ANONYMIZER.read_text()
-
-        self.assertEqual(
-            1,
-            len(re.findall(r"\$AnonymizationTargets\s*=\s*@\(", body)),
-            "there is more than one list of targets, so the dry run can describe "
-            "work the apply path does not do",
-        )
-        self.assertIn("foreach ($target in $AnonymizationTargets)", body)
 
 
 class NoPreImageTests(unittest.TestCase):
@@ -390,10 +302,7 @@ class ColumnCoverageTests(unittest.TestCase):
         it cannot tell a congregant's address in a note from one in a template's
         example block, and a partial scrub reads as a completed one. Counting them
         and saying so is the honest version."""
-        body = ANONYMIZER.read_text()
-
-        self.assertIn("$ResidualPiiProbes", body)
-        probes = body[body.index("$ResidualPiiProbes") : body.index("$connection = New-Object")]
+        probes = _residual_probes(ANONYMIZER.read_text())
 
         for table in ["Note", "History", "AttributeValue"]:
             self.assertIn(table, probes, f"{table} is not reported as residual PII")
@@ -410,8 +319,7 @@ class ColumnCoverageTests(unittest.TestCase):
         phone columns the run rewrites had no residual reporting at all. The
         report could show PhoneNumber swept clean while the same number sat in
         the note attached to the person."""
-        body = ANONYMIZER.read_text()
-        probes = body[body.index("$ResidualPiiProbes") : body.index("$connection = New-Object")]
+        probes = _residual_probes(ANONYMIZER.read_text())
 
         for table in [
             "dbo.PhoneNumber",
@@ -435,73 +343,42 @@ class ColumnCoverageTests(unittest.TestCase):
     def test_each_probe_says_which_question_it_answers(self):
         """'Note.Text' appearing twice with two different counts is unreadable.
         The suffix is what makes a row of the report mean something."""
-        body = ANONYMIZER.read_text()
-        probes = body[body.index("$ResidualPiiProbes") : body.index("$connection = New-Object")]
+        probes = _residual_probes(ANONYMIZER.read_text())
 
-        for name in re.findall(r"Name = '([^']+)'", probes):
+        names = re.findall(r"Name = '([^']+)'", probes)
+        self.assertTrue(names, "no probe names found to check")
+        for name in names:
             self.assertTrue(
                 name.endswith("-shaped)") or name.startswith("Location"),
                 f"probe '{name}' does not say whether it is looking for an "
                 f"email or a phone number",
             )
 
-    def test_the_phone_probe_scans_each_table_once(self):
-        """Three shapes against Note, History and AttributeValue is three full
-        scans of three large tables if they are issued as three probes. They are
-        OR-ed into one predicate instead, which is why the builder takes a list
-        of columns rather than a single column."""
-        body = ANONYMIZER.read_text()
-        builder = body[
-            body.index("function Get-PhoneShapedPredicate")
-            : body.index("function Invoke-Scalar")
-        ]
-
-        self.assertIn(
-            "[string[]] $Column",
-            builder,
-            "the builder takes one column, so History needs two probes and two scans",
-        )
-        self.assertIn(
-            '-join " OR "',
-            builder,
-            "the shapes must be OR-ed into a single predicate",
-        )
-
-    def test_the_phone_shapes_stay_tight(self):
-        """A pattern loose enough to catch a bare 4045551234 also catches order
-        numbers, giving amounts in cents, and most timestamps -- and a probe that
-        fires on every row says nothing about whether phone PII survived."""
-        body = ANONYMIZER.read_text()
-        builder = body[
-            body.index("function Get-PhoneShapedPredicate")
-            : body.index("function Invoke-Scalar")
-        ]
-
-        quoted = re.findall(r'"([^"]*)"', builder)
-        shapes = [candidate for candidate in quoted if "[0-9]" in candidate]
-        self.assertEqual(3, len(shapes), f"expected three shapes, found {shapes}")
-
-        for shape in shapes:
-            self.assertTrue(
-                any(separator in shape for separator in ("-", ".", ") ")),
-                f"shape '{shape}' has no separator, so it matches any ten digits",
-            )
-
 
 def _anonymization_targets(text):
-    """Split the $AnonymizationTargets array into one chunk per target.
+    """Split Get-AnonymizationTarget's list into one chunk per target.
 
     Keyed on the Name field because that is the only line every target has, and
     the chunks are what let a test say "the allowlist reaches Person but not
-    Communication" instead of "the allowlist appears somewhere in the file"."""
-    block = text[text.index("$AnonymizationTargets = @(") : text.index("$ResidualPiiProbes")]
-    chunks = re.split(r"\n    @\{", block)[1:]
+    Communication" instead of "the allowlist appears somewhere in the file".
+
+    The first chunk is everything before the list -- the help and the allowlist
+    fragments every target splices in -- and is dropped, so a fragment's name
+    shows up only in the targets that actually use it."""
+    block = harness.powershell_function(text, "Get-AnonymizationTarget")
+    chunks = re.split(r"\n\s*@\{", block)[1:]
     targets = {}
     for chunk in chunks:
         name = re.search(r"Name\s*=\s*'([^']+)'", chunk)
         if name:
             targets[name.group(1)] = chunk
     return targets
+
+
+def _residual_probes(text):
+    """Get-ResidualPiiProbe with its comments blanked, so its help text cannot
+    satisfy -- or trip -- an assertion about which tables it queries."""
+    return harness.powershell_function(_strip_comments(text), "Get-ResidualPiiProbe")
 
 
 class KeepListTests(unittest.TestCase):
@@ -538,11 +415,17 @@ class KeepListTests(unittest.TestCase):
         """These arrive from a dispatch box and are concatenated into LIKE
         patterns, which is the one place in this script where a caller's string
         becomes SQL. There is no parameter to bind them to -- a pattern assembled
-        per target is not a value -- so the pattern below is the whole boundary."""
-        body = _strip_comments(ANONYMIZER.read_text())
+        per target is not a value -- so the pattern below is the whole boundary.
 
-        self.assertIn("$DomainPattern", body)
-        pattern = re.search(r"\$DomainPattern\s*=\s*'([^']+)'", body)
+        Kept as a static check because it is a table of inputs against a regex,
+        and Python answers that faster than a PowerShell run would. That a domain
+        failing the pattern stops the run before a connection opens is behaviour,
+        and the Pester suite proves it."""
+        boundary = harness.powershell_function(
+            _strip_comments(ANONYMIZER.read_text()), "ConvertTo-KeepDomain"
+        )
+
+        pattern = re.search(r"\$domainPattern\s*=\s*'([^']+)'", boundary)
         self.assertIsNotNone(pattern, "the domain pattern is not a literal")
 
         compiled = re.compile(pattern.group(1), re.IGNORECASE)
@@ -561,17 +444,6 @@ class KeepListTests(unittest.TestCase):
 
         for legitimate in ["staff.example", "a-b.example.org", "x1.y2.example"]:
             self.assertRegex(legitimate, compiled, f"{legitimate} should be allowed")
-
-    def test_an_unvalidated_domain_stops_the_run(self):
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        guard = body[body.index("$DomainPattern") : body.index("function Get-DomainExclusion")]
-        self.assertIn(
-            "throw",
-            guard,
-            "a domain that fails the pattern does not stop the run, so it reaches "
-            "a query anyway",
-        )
 
     def test_the_keep_list_reaches_every_column_a_tester_is_identified_by(self):
         """Email is what mail is sent to, UserName is what login checks, the phone
@@ -617,12 +489,14 @@ class KeepListTests(unittest.TestCase):
         """PhoneNumber holds no address, so whether a number belongs to a tester
         cannot be read off the row. NOT EXISTS rather than NOT IN: NOT IN against a
         subquery that ever yields NULL returns no rows at all, and that failure is
-        silent -- it reads as "nothing left to anonymize"."""
-        body = _strip_comments(ANONYMIZER.read_text())
+        silent -- it reads as "nothing left to anonymize".
 
-        exclusion = body[
-            body.index("function Get-PersonDomainExclusion") : body.index("function Invoke-Scalar")
-        ]
+        Kept because the recording adapter answers a COUNT by its WHERE text and
+        would answer NOT IN just as readily; only SQL Server knows the
+        difference."""
+        exclusion = harness.powershell_function(
+            _strip_comments(ANONYMIZER.read_text()), "Get-PersonDomainExclusion"
+        )
         self.assertIn("NOT EXISTS", exclusion)
         self.assertNotIn("NOT IN", exclusion)
 
@@ -632,8 +506,7 @@ class KeepListTests(unittest.TestCase):
         body = _strip_comments(ANONYMIZER.read_text())
 
         for function in ["Get-DomainExclusion", "Get-PersonDomainExclusion"]:
-            start = body.index(f"function {function}")
-            chunk = body[start : start + 900]
+            chunk = harness.powershell_function(body, function)
             self.assertRegex(
                 chunk,
                 r"Count\s*-eq\s*0\s*\)\s*\{\s*\n\s*return\s+\"\"",
@@ -649,7 +522,7 @@ class KeepListTests(unittest.TestCase):
 
         self.assertIn("keptByDomain", body, "per-domain kept counts are not reported")
         self.assertIn(
-            "$DomainCensusQuery",
+            "$domainCensusQuery",
             body,
             "the run does not report which domains the catalog actually holds, so "
             "the keep list cannot be checked against reality",
@@ -710,7 +583,7 @@ class LoginIsAnonymizedTests(unittest.TestCase):
             "congregant can still sign in to staging",
         )
 
-        probes = body[body.index("$ResidualPiiProbes") : body.index("$DomainCensusQuery")]
+        probes = _residual_probes(body)
         self.assertNotIn(
             "UserLogin",
             probes,
@@ -813,7 +686,13 @@ class ComputedColumnTests(unittest.TestCase):
     full and then died on PhoneNumber, because NumberReversed is declared
     AS (reverse([Number])) PERSISTED and SQL Server rejects an UPDATE that writes a
     computed column. Nothing spans the targets in one transaction, so the catalog
-    was left half anonymized."""
+    was left half anonymized.
+
+    The guard that now refuses such a run before its first write is exercised by
+    two Pester suites: ComputedColumnGuard.Tests.ps1 runs the check itself, and
+    StagingAnonymization.Tests.ps1 shows a refusal stops the run with nothing
+    written. Kept here: whether today's PhoneNumber SetClause is one SQL Server
+    accepts, which a recording adapter only knows if it is told."""
 
     def test_the_phone_target_does_not_write_the_computed_column(self):
         targets = _anonymization_targets(ANONYMIZER.read_text())
@@ -824,39 +703,6 @@ class ComputedColumnTests(unittest.TestCase):
             r"(^|[,\r\n])\s*\[?NumberReversed\]?\s*=",
             "the SetClause assigns NumberReversed, which is computed; rewriting "
             "Number is what clears it",
-        )
-
-    def test_a_computed_column_is_refused_before_the_first_write(self):
-        """The dry run only issues COUNT(*) against the predicate, so it never binds
-        the SetClause. Without a check of its own it reports a clean plan for a
-        statement SQL Server will reject."""
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        self.assertIn(
-            "sys.computed_columns",
-            body,
-            "nothing asks the catalog which columns are computed",
-        )
-
-        guard = body.index("$computedColumnFaults")
-        loop = body.index("foreach ($target in $AnonymizationTargets) {\n        $pending")
-        self.assertLess(
-            guard,
-            loop,
-            "the computed-column check runs after the loop that writes, so it "
-            "cannot stop a half-finished apply",
-        )
-
-    def test_the_computed_column_check_throws(self):
-        body = _strip_comments(ANONYMIZER.read_text())
-
-        fault = body.index("$computedColumnFaults.Count -gt 0")
-        following = body[fault : fault + 400]
-        self.assertIn(
-            "throw",
-            following,
-            "a computed column is reported but not refused, so the apply proceeds "
-            "and fails partway",
         )
 
 

@@ -5,40 +5,47 @@
     the predicate, so the dry run binds no SetClause and reports a clean plan. The
     failure then lands halfway through the apply with earlier targets committed.
 
-    The Python suite asserts against the text of the script. That can establish
-    that the guard is written and wired in ahead of the write loop. It cannot
-    establish that the guard runs, and on 2026-08-24 it did not: the function read
-    its rows with $row['ColumnName'], Invoke-Rows returns [pscustomobject], and a
-    PSObject has no indexer. The guard threw the moment it reached the first table
-    that actually had a computed column, which is the only case it exists for.
+    Reading the script's text can establish that the guard is written and wired in
+    ahead of the write loop. It cannot establish that the guard runs, and on
+    2026-08-24 it did not: the function read its rows with $row['ColumnName'],
+    Invoke-Rows returns [pscustomobject], and a PSObject has no indexer. The guard
+    threw the moment it reached the first table that actually had a computed
+    column, which is the only case it exists for.
 
-    So these exercise the function, against rows shaped exactly the way Invoke-Rows
-    shapes them.
+    So these exercise the function through the SQL adapter it is handed, whose
+    Rows answers with rows shaped exactly the way Invoke-Rows shapes them.
+    Whether the guard runs before the first write is a question about the whole
+    run rather than about this function, and StagingAnonymization.Tests.ps1
+    answers it.
 #>
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
     $script:AnonymizerScript = Get-RepositoryPath 'Deployment/Database/Invoke-StagingAnonymization.ps1'
-    . (Import-ScriptFunction -Path $script:AnonymizerScript -Name 'Get-ComputedColumnAssignment', 'Invoke-Rows')
-    # Invoke-Rows is imported so Pester has something to mock, and so the import
-    # fails loudly if the guard's collaborator is ever renamed out from under it.
+    . (Import-ScriptFunction -Path $script:AnonymizerScript -Name 'Get-ComputedColumnAssignment')
 
-    # Never opened. The parameter is typed, so the call needs one to exist.
-    $script:Connection = New-Object System.Data.SqlClient.SqlConnection
+    # Never opened, and never looked inside: the adapter decides what a connection
+    # is, and the one below ignores it. The parameter is mandatory, so it has to
+    # be something.
+    $script:Connection = 'unopened'
 
-    # Matches Invoke-Rows: a [pscustomobject] per row, one property per column.
-    function script:New-ColumnRow {
-        param([string[]]$Name)
-        return ,@($Name | ForEach-Object { [pscustomobject][ordered]@{ ColumnName = $_ } })
+    # An adapter with only the operation the guard uses. Rows matches Invoke-Rows:
+    # a [pscustomobject] per row, one property per column, and an array even when
+    # there is a single row. A closure, so each It states its own catalog.
+    function script:New-ColumnSource {
+        param([string[]]$Name = @())
+
+        $rows = @($Name | ForEach-Object { [pscustomobject][ordered]@{ ColumnName = $_ } })
+        return @{
+            Rows = { param($Connection, $Query, $TimeoutSeconds) return ,$rows }.GetNewClosure()
+        }
     }
 }
 
 Describe 'Get-ComputedColumnAssignment' {
     It 'names a computed column the SetClause assigns' {
-        Mock -CommandName Invoke-Rows -MockWith { New-ColumnRow -Name 'NumberReversed' }
-
-        $offenders = Get-ComputedColumnAssignment -Connection $script:Connection `
+        $offenders = Get-ComputedColumnAssignment -Sql (New-ColumnSource -Name 'NumberReversed') -Connection $script:Connection `
             -Table 'dbo.PhoneNumber' -SetClause "Number = '5550000001',`n            NumberReversed = '1000000555'"
 
         $offenders | Should -Contain 'NumberReversed'
@@ -55,11 +62,11 @@ Describe 'Get-ComputedColumnAssignment' {
         # Import-ScriptFunction lifts the function out without the script's
         # preamble, so this scope has to restate the mode or it tests semantics
         # production never runs under.
-        Mock -CommandName Invoke-Rows -MockWith { New-ColumnRow -Name 'NumberReversed' }
+        $source = New-ColumnSource -Name 'NumberReversed'
 
         Set-StrictMode -Version Latest
         try {
-            { Get-ComputedColumnAssignment -Connection $script:Connection `
+            { Get-ComputedColumnAssignment -Sql $source -Connection $script:Connection `
                 -Table 'dbo.PhoneNumber' -SetClause "Number = '5550000001'" } | Should -Not -Throw
         }
         finally {
@@ -70,18 +77,14 @@ Describe 'Get-ComputedColumnAssignment' {
     It 'ignores a computed column that only appears on the right-hand side' {
         # FullNumber is built from CountryCode. Reading a column is fine; the guard
         # must only object to assigning one, or it blocks a correct SetClause.
-        Mock -CommandName Invoke-Rows -MockWith { New-ColumnRow -Name 'CountryCode' }
-
-        $offenders = Get-ComputedColumnAssignment -Connection $script:Connection `
+        $offenders = Get-ComputedColumnAssignment -Sql (New-ColumnSource -Name 'CountryCode') -Connection $script:Connection `
             -Table 'dbo.PhoneNumber' -SetClause "FullNumber = ISNULL(CountryCode, '') + '5550000001'"
 
         $offenders | Should -BeNullOrEmpty
     }
 
     It 'passes a table that has no computed columns at all' {
-        Mock -CommandName Invoke-Rows -MockWith { ,@() }
-
-        $offenders = Get-ComputedColumnAssignment -Connection $script:Connection `
+        $offenders = Get-ComputedColumnAssignment -Sql (New-ColumnSource) -Connection $script:Connection `
             -Table 'dbo.Person' -SetClause "Email = 'person' + CAST(Id AS varchar(10)) + '@example.invalid'"
 
         $offenders | Should -BeNullOrEmpty
@@ -91,22 +94,20 @@ Describe 'Get-ComputedColumnAssignment' {
         # The caller does $faults += $offenders and then counts. A bare string
         # would still count as one, but a caller that indexed it would walk
         # characters. Same unrolling trap Invoke-Rows guards with its leading comma.
-        Mock -CommandName Invoke-Rows -MockWith { New-ColumnRow -Name 'NumberReversed' }
-
-        $offenders = Get-ComputedColumnAssignment -Connection $script:Connection `
+        $offenders = Get-ComputedColumnAssignment -Sql (New-ColumnSource -Name 'NumberReversed') -Connection $script:Connection `
             -Table 'dbo.PhoneNumber' -SetClause "NumberReversed = 'x'"
 
         ,$offenders | Should -BeOfType [System.Object[]]
     }
 
     It 'finds an assignment wherever it sits in the clause' {
-        Mock -CommandName Invoke-Rows -MockWith { New-ColumnRow -Name 'NumberReversed' }
+        $source = New-ColumnSource -Name 'NumberReversed'
 
-        $head = Get-ComputedColumnAssignment -Connection $script:Connection `
+        $head = Get-ComputedColumnAssignment -Sql $source -Connection $script:Connection `
             -Table 'dbo.PhoneNumber' -SetClause "NumberReversed = 'x', Number = 'y'"
-        $tail = Get-ComputedColumnAssignment -Connection $script:Connection `
+        $tail = Get-ComputedColumnAssignment -Sql $source -Connection $script:Connection `
             -Table 'dbo.PhoneNumber' -SetClause "Number = 'y', NumberReversed = 'x'"
-        $bracketed = Get-ComputedColumnAssignment -Connection $script:Connection `
+        $bracketed = Get-ComputedColumnAssignment -Sql $source -Connection $script:Connection `
             -Table 'dbo.PhoneNumber' -SetClause "Number = 'y',`n            [NumberReversed] = 'x'"
 
         $head | Should -Contain 'NumberReversed'
