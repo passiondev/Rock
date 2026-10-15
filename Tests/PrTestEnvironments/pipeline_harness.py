@@ -21,6 +21,7 @@ check.
 
 import copy
 import functools
+import json
 import pathlib
 import re
 import subprocess
@@ -371,6 +372,128 @@ def tracked_under(directory, suffix=""):
     become something a test demands the pipeline account for."""
     prefix = directory.relative_to(REPO_ROOT).as_posix() + "/"
     return [p for p in tracked() if p.startswith(prefix) and p.endswith(suffix)]
+
+
+# The node half of `run_github_script`. It stands in for the three things a
+# github-script body reaches for -- `github`, `core` and `require` -- and nothing
+# else, so a body that grows a fourth fails here by name instead of passing.
+#
+# The fake GitHub holds one thing: the labels on each pull request. It answers a
+# missing label or an unknown pull request with a 404, as GitHub does, so a body
+# that sends the wrong issue number fails on the add rather than quietly labelling
+# nothing. Labels are what these bodies exist to change, and what a test asserts.
+#
+# `require` resolves a relative path against the working directory, which is how
+# github-script resolves it against the workspace. The runner starts node at the
+# repository root, so the module a body requires is the one in this tree -- the
+# one the job's checkout would have put there.
+_GITHUB_SCRIPT_DRIVER = r"""
+const path = require('path');
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+
+const pulls = new Map(Object.entries(input.labels).map(([number, names]) => [Number(number), new Set(names)]));
+
+function notFound(what) {
+  const error = new Error(`Not Found: ${what}`);
+  error.status = 404;
+  return error;
+}
+
+function labelsOf(issue_number) {
+  if (!pulls.has(issue_number)) {
+    throw notFound(`pull request ${issue_number}`);
+  }
+  return pulls.get(issue_number);
+}
+
+const github = {
+  rest: {
+    issues: {
+      async removeLabel({ issue_number, name }) {
+        if (!labelsOf(issue_number).delete(name)) {
+          throw notFound(`label ${name}`);
+        }
+      },
+      async addLabels({ issue_number, labels }) {
+        const held = labelsOf(issue_number);
+        for (const name of labels) {
+          held.add(name);
+        }
+      }
+    },
+    repos: {
+      async getContent({ path: filePath }) {
+        if (!(filePath in input.files)) {
+          throw notFound(filePath);
+        }
+        return { data: { content: Buffer.from(input.files[filePath]).toString('base64') } };
+      }
+    }
+  }
+};
+
+const outputs = {};
+let failed = null;
+const core = {
+  setOutput(name, value) { outputs[name] = String(value); },
+  setFailed(message) { failed = String(message); },
+  info() {},
+  warning() {}
+};
+
+const context = { repo: { owner: 'passiondev', repo: 'Rock' }, ...input.context };
+const workspaceRequire = (id) => require(id.startsWith('.') ? path.resolve(id) : id);
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+
+new AsyncFunction('github', 'context', 'core', 'require', input.body)(github, context, core, workspaceRequire)
+  .then(() => {
+    const labels = Object.fromEntries([...pulls].map(([number, held]) => [number, [...held].sort()]));
+    process.stdout.write(JSON.stringify({ labels, outputs, failed }));
+  });
+"""
+
+
+def run_github_script(body, labels, context=None, expressions=None, files=None):
+    """Run an `actions/github-script` body under node against a fake GitHub, and
+    return what it left behind: `labels` (pull request number to its sorted label
+    names), `outputs` (what it passed to `core.setOutput`) and `failed` (what it
+    passed to `core.setFailed`, or None).
+
+    `labels` is the starting state, `{42: ["rock:queued"]}`. `files` is what
+    `repos.getContent` serves, by path. `expressions` maps each `${{ }}` in the body
+    to the text Actions would paste in its place. Pasting is what Actions does
+    before node ever sees the body, so the runner does the same -- and refuses a
+    body with one left over, because node would read it as a string, turn the
+    number in it into NaN, and fail somewhere unrelated.
+
+    Reading a `script:` body as text proves a word is in it. Running it proves
+    what it does to the pull request, which is the only thing the step is for.
+    A node failure raises with node's own stderr; it is never a quiet empty result.
+    """
+    for expression, value in (expressions or {}).items():
+        body = body.replace("${{ " + expression + " }}", value)
+    leftover = re.search(r"\$\{\{.*?\}\}", body)
+    if leftover:
+        raise AssertionError(f"no value supplied for {leftover.group(0)}; pass it in `expressions`")
+
+    completed = subprocess.run(
+        ["node", "-e", _GITHUB_SCRIPT_DRIVER],
+        input=json.dumps({
+            "body": body,
+            "labels": {str(number): names for number, names in labels.items()},
+            "context": context or {},
+            "files": files or {},
+        }),
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"the script failed under node:\n{completed.stderr}")
+
+    result = json.loads(completed.stdout)
+    result["labels"] = {int(number): names for number, names in result["labels"].items()}
+    return result
 
 
 class HarnessAssertions:

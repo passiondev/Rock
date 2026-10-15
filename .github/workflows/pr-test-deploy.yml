@@ -31,23 +31,34 @@ jobs:
       host_name: ${{ steps.prepare.outputs.host_name }}
       force_build: ${{ steps.prepare.outputs.force_build }}
     steps:
+      # Every state transition in this workflow goes through pr-test-status.js, which
+      # owns the list of state labels -- so each job that makes one checks it out.
+      #
+      # No `ref`, deliberately, here and in each job below. On pull_request_target
+      # that checks out the base branch's commit: the same trusted code this
+      # workflow file came from, never the PR head. These jobs hold a token that
+      # writes to the pull request, so the PR must not be able to supply the
+      # JavaScript they run.
+      #
+      # Only the module comes from this checkout. The config below is still read
+      # from the default branch through the API, not from here, for the reason
+      # given beside that read.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts/pr-test-status.js
+          sparse-checkout-cone-mode: false
+
       - name: Validate label command and reconcile queued state
         id: prepare
         uses: actions/github-script@v7
         with:
           script: |
+            const { reconcilePrTestLabels } = require('./.github/scripts/pr-test-status.js');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const commandLabel = 'rock:start';
             const autoLabel = 'rock:auto';
-            const stateLabels = [
-              'rock:queued',
-              'rock:building',
-              'rock:deploying',
-              'rock:deployed',
-              'rock:stopped',
-              'rock:failed'
-            ];
 
             let pull;
             if (context.eventName === 'workflow_dispatch') {
@@ -121,15 +132,15 @@ jobs:
               return;
             }
 
-            for (const label of [commandLabel, ...stateLabels]) {
-              try {
-                await github.rest.issues.removeLabel({ owner, repo, issue_number: pull.number, name: label });
-              } catch (error) {
-                if (error.status !== 404) throw error;
-              }
+            // The command label is a request, not a state, so the module does not own
+            // it. Clearing it is what lets the next rock:start fire a fresh `labeled`.
+            try {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: pull.number, name: commandLabel });
+            } catch (error) {
+              if (error.status !== 404) throw error;
             }
 
-            await github.rest.issues.addLabels({ owner, repo, issue_number: pull.number, labels: ['rock:queued'] });
+            await reconcilePrTestLabels({ github, owner, repo, issue_number: pull.number, status: 'queued' });
 
             const hostName = `pr-${pull.number}.${environmentDomain}`;
             core.setOutput('should_deploy', 'true');
@@ -146,18 +157,28 @@ jobs:
     if: needs.prepare.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     steps:
+      # This job and mark-deploying each carried their own list of labels to remove
+      # until 2026-10-15. Neither named rock:stopped, so a stop that finished
+      # partway through a deploy left the pull request showing two states. The
+      # module clears every state but the one being set.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts/pr-test-status.js
+          sparse-checkout-cone-mode: false
+
       - name: Move PR from queued to building
         uses: actions/github-script@v7
         with:
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const issue_number = Number('${{ needs.prepare.outputs.pr_number }}');
-            for (const label of ['rock:queued', 'rock:deployed', 'rock:failed']) {
-              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
-              catch (error) { if (error.status !== 404) throw error; }
-            }
-            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock:building'] });
+            const { reconcilePrTestLabels } = require('./.github/scripts/pr-test-status.js');
+            await reconcilePrTestLabels({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ needs.prepare.outputs.pr_number }}'),
+              status: 'building'
+            });
 
   build:
     name: Build deployable artifact
@@ -177,18 +198,24 @@ jobs:
     if: needs.prepare.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/scripts/pr-test-status.js
+          sparse-checkout-cone-mode: false
+
       - name: Move PR from building to deploying
         uses: actions/github-script@v7
         with:
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const issue_number = Number('${{ needs.prepare.outputs.pr_number }}');
-            for (const label of ['rock:queued', 'rock:building', 'rock:deployed', 'rock:failed']) {
-              try { await github.rest.issues.removeLabel({ owner, repo, issue_number, name: label }); }
-              catch (error) { if (error.status !== 404) throw error; }
-            }
-            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ['rock:deploying'] });
+            const { reconcilePrTestLabels } = require('./.github/scripts/pr-test-status.js');
+            await reconcilePrTestLabels({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ needs.prepare.outputs.pr_number }}'),
+              status: 'deploying'
+            });
 
   deploy:
     name: Queue deployment command
