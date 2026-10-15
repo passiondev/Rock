@@ -26,10 +26,12 @@ BeforeAll {
     $script:PlanScript = Get-RepositoryPath '.github/scripts/Get-ArtifactPlan.ps1'
     $script:RulePath = Get-RepositoryPath '.github/scripts/artifact-paths.json'
 
-    # The classifier is a module both scripts import; the rest is the plan's own.
+    # The classifier and the artifact address are modules the scripts import;
+    # the rest is the plan's own. Reading the bucket listing is the address
+    # module's job, and ArtifactRecord.Tests.ps1 covers it.
     Import-Module (Get-RepositoryPath '.github/scripts/ArtifactPaths.psm1') -Force
+    Import-Module (Get-RepositoryPath '.github/scripts/ArtifactRecord.psm1') -Force
     . (Import-ScriptFunction -Path $script:PlanScript -Name @(
-        'ConvertFrom-ArtifactListing',
         'Get-ArtifactBaseCandidate',
         'Select-ArtifactBase'))
 
@@ -48,7 +50,7 @@ BeforeAll {
         return [pscustomobject]@{
             Slug = $Slug
             Sha = $sha
-            ObjectPath = "pr-environments/$Slug/$sha/RockWeb-$Slug-$($sha.Substring(0, 7)).zip"
+            ObjectPath = (Get-ArtifactAddress -Slug $Slug -Sha $sha).ObjectPath
             Updated = ([DateTimeOffset]'2026-10-15T12:00:00Z').AddDays(-$DaysAgo)
         }
     }
@@ -144,24 +146,6 @@ Describe 'Get-ArtifactChangeClass' {
             { Get-ArtifactChangeClass -NameStatus @("M`tRockWeb/Themes/RockNextGen/Styles/theme.css") -RuleSet $script:Rules -GeneratedThemeName @() } |
                 Should -Throw '*GeneratedTheme*'
         }
-    }
-}
-
-Describe 'ConvertFrom-ArtifactListing' {
-    It 'reads slug, commit and age out of a gsutil ls -l line' {
-        $sha = 'a' * 40
-        $listing = @(
-            "  412345678  2026-10-14T18:02:11Z  gs://rock-pr-env/pr-environments/staging/$sha/RockWeb-staging-aaaaaaa.zip"
-            'TOTAL: 1 objects, 412345678 bytes (393.24 MiB)'
-        )
-
-        $artifact = @(ConvertFrom-ArtifactListing -Line $listing)
-
-        $artifact | Should -HaveCount 1
-        $artifact[0].Slug | Should -Be 'staging'
-        $artifact[0].Sha | Should -Be $sha
-        $artifact[0].ObjectPath | Should -Be "pr-environments/staging/$sha/RockWeb-staging-aaaaaaa.zip"
-        $artifact[0].Updated | Should -Be ([DateTimeOffset]'2026-10-14T18:02:11Z')
     }
 }
 
@@ -389,12 +373,17 @@ Describe 'artifact-paths.json against the files it describes' {
         }
     }
 
-    It 'builds when anything the plan or the repackage loads changes' {
+    It 'builds when anything the plan, the repackage or the packager loads changes' {
         # A base judged by an older classifier is not to be trusted, so a change to
-        # the classifier has to rule out every base. Read from the scripts rather
-        # than listed, because a third file they come to load would otherwise fall
-        # through to the .github/** ignore rule.
-        $scripts = @('.github/scripts/Get-ArtifactPlan.ps1', '.github/scripts/New-RepackagedArtifact.ps1')
+        # the classifier has to rule out every base -- and a base zipped, named or
+        # recorded another way is not what a build would make now. Read from the
+        # scripts rather than listed, because a further file they come to load
+        # would otherwise fall through to the .github/** ignore rule.
+        $scripts = @(
+            '.github/scripts/Get-ArtifactPlan.ps1'
+            '.github/scripts/New-RepackagedArtifact.ps1'
+            '.github/scripts/New-PackagedArtifact.ps1'
+        )
         $loaded = @($scripts | ForEach-Object {
             $body = Get-Content -Raw -Path (Get-RepositoryPath $_)
             [regex]::Matches($body, "Join-Path \`$PSScriptRoot '([^']+)'") | ForEach-Object { ".github/scripts/$($_.Groups[1].Value)" }

@@ -7,7 +7,9 @@ from this commit in such files alone; when one does, the repackage job swaps the
 changed files into a copy of it instead of building.
 
 What the two scripts decide is tested in Pester -- ArtifactPlan.Tests.ps1 and
-ArtifactRepackage.Tests.ps1. What is tested here is the wiring, because every
+ArtifactRepackage.Tests.ps1 -- and where every artifact goes and what its record
+says is ArtifactRecord.psm1, tested in ArtifactRecord.Tests.ps1, which both
+packaging jobs write through. What is tested here is the wiring, because every
 piece of it fails quietly: a gate that lets both jobs run uploads two zips to one
 folder, an output only one job sets leaves every deploy after a repackage with an
 empty object path, and a label nothing reads looks exactly like a build that
@@ -115,28 +117,29 @@ class TheRepackageShipsWhatABuildWouldTests(harness.HarnessAssertions, unittest.
         self.assertNotVacuous(built, "the package job no longer uploads to Cloud Storage")
         self.assertEqual(built, uploads(self.steps))
 
-    def test_the_metadata_and_outputs_are_the_ones_a_build_writes(self):
-        """The repackage writes them itself rather than sharing the package job's
-        step, whose steps are held identical to the hand-deploy build's. So the
-        build's step is the source of truth here: every field it records, in its
-        order, then whatever only a repackage has; and the same outputs."""
-        built = next(s for s in self.jobs["package"]["steps"] if s.get("id") == "package-metadata")["run"]
-        repackaged = REPACKAGE_SCRIPT.read_text()
+    def test_the_build_packages_with_the_scripts_its_workflow_came_with(self):
+        """Both jobs name the zip and write its record and outputs through
+        ArtifactRecord.psm1, and ArtifactRecord.Tests.ps1 holds what those say.
+        The repackage runs its target's copy, which is safe: a target from
+        before the module carries the older, self-contained repackage script,
+        and one from before artifact reuse plans a build and never gets there.
+        The build has no such escape -- it packages every target, including one
+        with no New-PackagedArtifact.ps1 -- so it runs the copy from the commit
+        this workflow was read from, checked out into a folder of its own so
+        the build's tree is left as the build left it."""
+        steps = self.jobs["package"]["steps"]
+        package = next(s for s in steps if s.get("id") == "package-metadata")
+        side = [
+            s for s in steps
+            if (s.get("uses") or "").startswith("actions/checkout@") and (s.get("with") or {}).get("path")
+        ]
+        self.assertEqual(1, len(side), "the package job runs whichever packaging script its target has, if any")
+        checkout = side[0]["with"]
 
-        def fields(script):
-            block = re.search(r"\$metadata = \[ordered\]@\{(.*?)\n\s*\}", script, re.DOTALL)
-            self.assertIsNotNone(block, "no [ordered] metadata block")
-            return re.findall(r"^\s*(\w+)\s*=", block.group(1), re.MULTILINE)
-
-        def outputs(script):
-            return sorted(re.findall(r'"(\w+)=[^"]*" \| Out-File -FilePath \$env:GITHUB_OUTPUT', script))
-
-        built_fields = fields(built)
-        self.assertNotVacuous(built_fields, "the package job records no metadata fields")
-        self.assertEqual(built_fields, fields(repackaged)[: len(built_fields)])
-
-        self.assertNotVacuous(outputs(built), "the package job writes no outputs")
-        self.assertEqual(outputs(built), outputs(repackaged))
+        self.assertEqual("${{ github.workflow_sha }}", checkout.get("ref"))
+        self.assertIn(".github/scripts", str(checkout.get("sparse-checkout") or ".github/scripts").split())
+        self.assertLess(steps.index(side[0]), steps.index(package), "the scripts arrive after the step that runs them")
+        self.assertIn(f"./{checkout['path']}/.github/scripts/New-PackagedArtifact.ps1", package["run"])
 
     def test_the_run_keeps_the_zip_as_a_build_does(self):
         kept = [

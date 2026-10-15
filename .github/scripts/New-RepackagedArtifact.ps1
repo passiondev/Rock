@@ -162,31 +162,16 @@ function New-PatchedArtifactArchive {
     }
 }
 
-function Get-MetadataField {
-    <#
-        .SYNOPSIS
-        One field of an artifact's pr-test-artifact.json, or '' when it has none.
-
-        .DESCRIPTION
-        A base's metadata predates whichever fields were added after it was
-        written -- builtFromSha, for one, only a repackage records -- so an
-        absent field is expected and means "not recorded", not an error.
-    #>
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory = $true)]$Metadata,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-
-    $field = $Metadata.PSObject.Properties[$Name]
-    if ($null -eq $field -or $null -eq $field.Value) {
-        return ''
-    }
-    return [string]$field.Value
-}
-
 Import-Module (Join-Path $PSScriptRoot 'ArtifactPaths.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ArtifactRecord.psm1') -Force
+
+# The plan names the base by its zip. Its record sits beside it, at the address
+# that path decodes to -- and a path that decodes to none is not a zip any
+# packaging job wrote, so there is nothing trustworthy to start from.
+$baseAddress = ConvertFrom-ArtifactObjectPath -ObjectPath $BaseObjectPath
+if ($null -eq $baseAddress) {
+    throw "$BaseObjectPath is not where a packaging job puts an artifact. Rerun with force_build to build instead."
+}
 
 $ruleSet = Get-Content -Raw -Path (Join-Path $PSScriptRoot 'artifact-paths.json') | ConvertFrom-Json
 $themes = @(Get-GeneratedThemeName -Sha $TargetSha)
@@ -196,8 +181,7 @@ $change = @(Get-ArtifactChangeClass -NameStatus $nameStatus -RuleSet $ruleSet -G
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "rockweb-base-$BaseSha"
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 $basePath = Join-Path $work 'base.zip'
-$baseMetadataPath = Join-Path $work 'pr-test-artifact.json'
-$baseFolder = $BaseObjectPath.Substring(0, $BaseObjectPath.LastIndexOf('/'))
+$baseRecordPath = Join-Path $work $baseAddress.RecordName
 
 gsutil -q cp "gs://$Bucket/$BaseObjectPath" $basePath
 if ($LASTEXITCODE -ne 0) {
@@ -209,16 +193,15 @@ if ($LASTEXITCODE -ne 0) {
 # The build has always written this file beside its zip, so its absence is
 # tolerated -- the folder's commit is then the best answer there is.
 $builtFromSha = $BaseSha
-gsutil -q cp "gs://$Bucket/$baseFolder/pr-test-artifact.json" $baseMetadataPath
+gsutil -q cp "gs://$Bucket/$($baseAddress.RecordPath)" $baseRecordPath
 if ($LASTEXITCODE -eq 0) {
-    $baseMetadata = Get-Content -Raw -Path $baseMetadataPath | ConvertFrom-Json
-    $recordedBuild = Get-MetadataField -Metadata $baseMetadata -Name 'builtFromSha'
-    if ($recordedBuild) {
-        $builtFromSha = $recordedBuild
+    $baseRecord = Read-ArtifactRecord -Path $baseRecordPath
+    if ($baseRecord.builtFromSha) {
+        $builtFromSha = $baseRecord.builtFromSha
     }
 
     # A zip cut short on upload still opens, minus whatever was cut.
-    $recordedHash = Get-MetadataField -Metadata $baseMetadata -Name 'sha256'
+    $recordedHash = $baseRecord.sha256
     $actualHash = (Get-FileHash -Path $basePath -Algorithm SHA256).Hash
     $isHashMismatched = $recordedHash -and $recordedHash -ne $actualHash
     if ($isHashMismatched) {
@@ -229,38 +212,23 @@ else {
     Write-Host "::warning::No pr-test-artifact.json beside $BaseObjectPath; recording $BaseSha as the build this artifact carries."
 }
 
-$shortSha = $TargetSha.Substring(0, [Math]::Min(7, $TargetSha.Length))
-$artifactName = "RockWeb-$ArtifactSlug-$shortSha.zip"
-$gcsObjectPath = "pr-environments/$ArtifactSlug/$TargetSha/$artifactName"
+$address = Get-ArtifactAddress -Slug $ArtifactSlug -Sha $TargetSha
 
 # Absolute, because the archive is opened through .NET, which resolves a
 # relative path against the process's directory rather than PowerShell's.
-$artifactPath = Join-Path (Get-Location).Path $artifactName
+$artifactPath = Join-Path (Get-Location).Path $address.Name
 New-PatchedArtifactArchive -BasePath $basePath -DestinationPath $artifactPath -SourceRoot (Get-Location).Path -Change $change
 
-# The package job's fields, in its order, then the two that only a repackage has.
-$metadata = [ordered]@{
-    prNumber = $PrNumber
-    sha = $TargetSha
-    shortSha = $shortSha
-    artifactName = $artifactName
-    artifactGcsPath = "gs://$Bucket/$gcsObjectPath"
-    hostName = $HostName
-    sha256 = (Get-FileHash -Path $artifactPath -Algorithm SHA256).Hash
-    builtFromSha = $builtFromSha
-    baseArtifactGcsPath = "gs://$Bucket/$BaseObjectPath"
-}
-$metadata | ConvertTo-Json | Out-File -FilePath pr-test-artifact.json -Encoding utf8
-
-"artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-"artifact_gcs_object_path=$gcsObjectPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-"host_name=$HostName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-"pr_number=$PrNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-"sha=$TargetSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+# The record and outputs a build writes, from the same module the build uses,
+# plus the two fields only a repackage has.
+$record = New-ArtifactRecord -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName `
+    -Sha256 (Get-FileHash -Path $artifactPath -Algorithm SHA256).Hash -BuiltFromSha $builtFromSha -BaseObjectPath $BaseObjectPath
+Write-ArtifactRecord -Record $record -Path $address.RecordName
+Write-ArtifactOutput -Address $address -PrNumber $PrNumber -HostName $HostName -Path $env:GITHUB_OUTPUT
 
 $patched = @($change | Where-Object { $_.Class -eq 'patch' })
 @(
     '### Repackaged artifact',
     '',
-    "``$artifactName`` is ``$BaseObjectPath`` with $($patched.Count) file(s) swapped in. Its compiled output was built from ``$builtFromSha``."
+    "``$($address.Name)`` is ``$BaseObjectPath`` with $($patched.Count) file(s) swapped in. Its compiled output was built from ``$builtFromSha``."
 ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

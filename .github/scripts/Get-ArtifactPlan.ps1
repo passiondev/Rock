@@ -49,37 +49,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function ConvertFrom-ArtifactListing {
-    <#
-        .SYNOPSIS
-        Reads the artifacts out of `gsutil ls -l gs://<bucket>/pr-environments/**/RockWeb-*.zip`.
-
-        .DESCRIPTION
-        One object per zip: Slug, Sha, ObjectPath (relative to the bucket) and
-        Updated. Anything else in the listing -- the TOTAL line, a zip under a
-        folder that is not a full commit SHA -- is skipped: a short SHA cannot be
-        fetched from GitHub, so its artifact could never be diffed anyway.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Line
-    )
-
-    $shape = '^\s*\d+\s+(?<updated>\S+)\s+gs://[^/]+/(?<path>pr-environments/(?<slug>[^/]+)/(?<sha>[0-9a-f]{40})/RockWeb-[^/]+\.zip)\s*$'
-    foreach ($entry in $Line) {
-        if ($entry -notmatch $shape) {
-            continue
-        }
-
-        [pscustomobject]@{
-            Slug = $Matches['slug']
-            Sha = $Matches['sha']
-            ObjectPath = $Matches['path']
-            Updated = [DateTimeOffset]::Parse($Matches['updated'], [System.Globalization.CultureInfo]::InvariantCulture)
-        }
-    }
-}
-
 function Get-ArtifactBaseCandidate {
     <#
         .SYNOPSIS
@@ -228,6 +197,7 @@ function Write-ArtifactPlan {
 }
 
 Import-Module (Join-Path $PSScriptRoot 'ArtifactPaths.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ArtifactRecord.psm1') -Force
 
 # What a forced run reports, and the fallback: a plan this cannot make costs a
 # build, never a failed deploy.

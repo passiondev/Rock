@@ -216,11 +216,19 @@ class TheCheckoutTheActionRequiresTests(harness.HarnessAssertions, unittest.Test
         for name, job_name, steps in _session_jobs():
             uses = [step.get("uses") or "" for step in steps]
             at = uses.index(SESSION_USES)
-            checkouts = [i for i, u in enumerate(uses[:at]) if u.startswith("actions/checkout")]
+            # The last checkout into the workspace itself is the one whose tree
+            # the step sees; an earlier one has been overwritten by it. A
+            # checkout with a `path` of its own -- the package job's copy of the
+            # packaging scripts -- lands beside that tree and replaces nothing,
+            # so it is not the one the runner looks in for the action.
+            checkouts = [
+                i
+                for i, u in enumerate(uses[:at])
+                if u.startswith("actions/checkout")
+                and str((steps[i].get("with") or {}).get("path") or ".").strip("./") == ""
+            ]
             if not checkouts:
                 continue
-            # The last checkout before the step is the one whose working tree the
-            # step sees; an earlier one has been overwritten by it.
             with_block = steps[checkouts[-1]].get("with") or {}
             sparse = with_block.get("sparse-checkout")
             if sparse is None:

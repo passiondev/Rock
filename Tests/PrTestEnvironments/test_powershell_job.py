@@ -165,8 +165,10 @@ class ScriptsLiveInScriptFilesTests(harness.HarnessAssertions, unittest.TestCase
     # What the workflows carry now. It started at 27 when the rule was written and
     # only falls: a change that raises it is adding script code nothing can run,
     # which is the thing this file exists to stop. Extracting the deploy script
-    # drift comparison into .github/actions/report-script-drift took the first one.
-    WORKFLOW_BACKLOG = 26
+    # drift comparison into .github/actions/report-script-drift took the first one;
+    # moving the package job's zip-and-record step into New-PackagedArtifact.ps1
+    # took the second.
+    WORKFLOW_BACKLOG = 25
 
     def _inline_blocks(self, paths):
         """(file, step name, executable line count) for every `run:` block."""

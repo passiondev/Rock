@@ -228,12 +228,6 @@ jobs:
       sha: ${{ steps.package-metadata.outputs.sha }}
 
     steps:
-      - name: Resolve package inputs
-        id: package-inputs
-        run: |
-          $shortSha = $env:HEAD_SHA.Substring(0, [Math]::Min(7, $env:HEAD_SHA.Length))
-          "SHORT_SHA=$shortSha" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.head_sha || github.sha }}
@@ -724,33 +718,26 @@ jobs:
             "| Unresolved ``.refresh`` pointers | $env:UNRESOLVED_REFRESH_COUNT |"
           ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
+      # The zip's name and folder, and the record beside it, come from
+      # ArtifactRecord.psm1, the module the plan and the repackage use too. The
+      # target checked out above can predate it -- an older pull request head,
+      # or the commit production promotes -- and this job has to package every
+      # one of them, so the script comes from the commit this workflow file was
+      # read from instead, into a folder of its own beside the build's tree.
+      - name: Check out the packaging scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .artifact-scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
       - name: Package RockWeb zip and metadata
         id: package-metadata
         run: |
-          $artifactName = "RockWeb-${{ env.ARTIFACT_SLUG }}-${{ env.SHORT_SHA }}.zip"
-          $gcsPrefix = "pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}"
-          $gcsObjectPath = "$gcsPrefix/$artifactName"
-          $gcsPath = "gs://$env:PR_TEST_GCS_BUCKET/$gcsObjectPath"
-
-          Compress-Archive -Path RockWeb\* -DestinationPath $artifactName -Force
-          $hash = (Get-FileHash $artifactName -Algorithm SHA256).Hash
-
-          $metadata = [ordered]@{
-            prNumber = "${{ env.PR_NUMBER }}"
-            sha = "${{ env.HEAD_SHA }}"
-            shortSha = "${{ env.SHORT_SHA }}"
-            artifactName = $artifactName
-            artifactGcsPath = $gcsPath
-            hostName = "${{ env.HOST_NAME }}"
-            sha256 = $hash
-          }
-          $metadata | ConvertTo-Json | Out-File -FilePath pr-test-artifact.json -Encoding utf8
-
-          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "artifact_gcs_object_path=$gcsObjectPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "host_name=${{ env.HOST_NAME }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "pr_number=${{ env.PR_NUMBER }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "sha=${{ env.HEAD_SHA }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          ./.artifact-scripts/.github/scripts/New-PackagedArtifact.ps1 -TargetSha $env:HEAD_SHA -ArtifactSlug $env:ARTIFACT_SLUG `
+            -Bucket $env:PR_TEST_GCS_BUCKET -PrNumber $env:PR_NUMBER -HostName $env:HOST_NAME
 
       - name: Upload GitHub artifact
         uses: actions/upload-artifact@v4

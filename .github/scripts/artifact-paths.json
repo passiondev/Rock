@@ -42,6 +42,8 @@
     { "class": "build", "pattern": ".github/scripts/ArtifactPaths.psm1", "reason": "applies these rules; a base judged by an older copy is not trusted" },
     { "class": "build", "pattern": ".github/scripts/Get-ArtifactPlan.ps1", "reason": "decides whether to build" },
     { "class": "build", "pattern": ".github/scripts/New-RepackagedArtifact.ps1", "reason": "the patch recipe" },
+    { "class": "build", "pattern": ".github/scripts/ArtifactRecord.psm1", "reason": "names, finds and records every artifact; a base found by an older copy is not trusted" },
+    { "class": "build", "pattern": ".github/scripts/New-PackagedArtifact.ps1", "reason": "how the build zips RockWeb; a base zipped another way is not what a build would make now" },
     { "class": "patch", "pattern": "RockWeb/**", "reason": "a Web Site project: Lava, markup, .ascx.cs and assets ship as source" },
     { "class": "ignore", "pattern": "Documentation/**", "reason": "never packaged" },
     { "class": "ignore", "pattern": "**/*.md", "reason": "never packaged" },

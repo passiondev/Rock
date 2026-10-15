@@ -34,8 +34,13 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", workflow["on"])
         # The artifact name and GCS folder are keyed on ARTIFACT_SLUG, which
         # defaults to pr-<pr_number>, so the same build also serves staging and
-        # production without their artifacts colliding with a PR's.
-        self.assertRegex(workflow_text, r"RockWeb-\$\{\{\s*env\.ARTIFACT_SLUG\s*\}\}-\$\{\{\s*env\.SHORT_SHA\s*\}\}\.zip")
+        # production without their artifacts colliding with a PR's. The name is
+        # composed by Get-ArtifactAddress in ArtifactRecord.psm1, and the Pester
+        # suite ArtifactRecord.Tests.ps1 pins it; what is left to hold here is
+        # that the build hands it the slug and the commit.
+        package = next(s for s in workflow["jobs"]["package"]["steps"] if s.get("id") == "package-metadata")
+        self.assertIn("-ArtifactSlug $env:ARTIFACT_SLUG", package["run"])
+        self.assertIn("-TargetSha $env:HEAD_SHA", package["run"])
         self.assertIn("pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}", workflow_text)
         self.assertIn("format('pr-{0}', inputs.pr_number)", workflow_text)
         self.assertIn("artifact_gcs_object_path", workflow_text)
