@@ -36,12 +36,22 @@ the authority on it.
 Prefer **trunk** in prose. Keep `baseBranch`, `default branch` and
 `productionBranch` where they name a concrete key or setting.
 
-**The declared version** is the Rock version a checkout says it is; **the pinned
-minor** is the Rock minor the thing being deployed to is already on. Both deploy
-guards compare the one against the other, because Rock migrates its database on
-the first request after a deploy and a mismatch is not reversible:
-`production-deploy.yml` against the production branch, `staging-deploy.yml`
-against the pin the `pr-*` fleet shares.
+**The declared version** is the Rock version a checkout says it is: `19.4.4`.
+Its **line** is the major alone, `19`. Its **minor** is the first two parts,
+`19.4`. **The pinned version** is the version declared by the branch that a pin
+names. Both deploy guards compare the declared version with a pinned version,
+because Rock migrates its database on the first request after a deploy and a
+mismatch is not reversible. They do not compare the same part of it:
+
+| Guard | Pinned version from | Compares | Override |
+|---|---|---|---|
+| `production-deploy.yml` | the production branch | the minor | `acknowledge_version_change` |
+| `staging-deploy.yml` | the branch the `pr-*` fleet is pinned to | the line | none |
+
+So a trunk on 19.5 deploys to staging while the fleet is pinned to 19.4, and the
+same pair would stop at production. Whether staging should compare the minor as
+well is an open question for the team. Until somebody answers it, the staging
+step's name, which still says *minor*, is wrong about what it checks.
 
 Where the declared version is read from moves at a major upgrade -- an assembly
 attribute in `Rock.Version/AssemblySharedInfo.cs` through 18.x, `<Version>` in
@@ -49,7 +59,9 @@ attribute in `Rock.Version/AssemblySharedInfo.cs` through 18.x, `<Version>` in
 script, `.github/scripts/rock-version.sh`. They read it themselves until
 2026-09-15, probing the two files in opposite orders, and agreed only because a
 checkout carries one of the two. Which file answers first is the whole of what
-that order decides, and the argument for it lives with the script.
+that order decides, and the argument for it lives with the script. The script
+also owns the split: `rock_line_of_version` and `rock_minor_of_version`, so the
+two guards cannot disagree about where a line ends.
 
 ## Environments
 
@@ -84,6 +96,17 @@ the guard swept `Documentation/` and `.github/`, and the document defining the
 term sits at the repository root, so the one place a reader looks up what the
 shared catalog is was the one place nothing checked.
 
+The **staging anonymizer** is a different matter, and it does not change any of
+that. `Deployment/Database/Invoke-StagingAnonymization.ps1`, run through
+`db-anonymize-staging.yml`, rewrites email addresses and phone numbers in the
+staging catalog only. It never reads or writes the shared catalog. Its terms:
+
+| Term | Means |
+|---|---|
+| **SQL adapter** | The five operations the anonymizer reaches the database through: Open, Close, Scalar, NonQuery and Rows. `New-SqlClientAdapter` is the real one. If Open fails, it leaves nothing open. |
+| **recording adapter** | The one in `StagingAnonymization.Tests.ps1`. It answers like the staging catalog and records every call. |
+| **safety sequence** | The order the anonymizer must keep: refuse the production address, check the keep domains, open, compare `DB_NAME()` with `-ExpectedCatalog`, check the computed columns still bind, stop unless `-Apply`, then update in batches. The Pester suite proves the order; the Python suite proves only the SQL text. |
+
 ## The control plane
 
 | Term | Means |
@@ -95,20 +118,52 @@ shared catalog is was the one place nothing checked.
 | **enqueue** / **poll** | Writing a command, and waiting for its result. The two halves of the protocol. |
 | **the envelope** | The three fields every command carries whatever its verb: `commandId`, `command`, `requestedAtUtc`. Owned by `queue-vm-command`; a payload that sets one is an error. |
 | **the payload** | The fields a particular verb adds on top of the envelope. A field whose value is blank is dropped rather than sent empty. |
+| **command id prefix** | The part of a `commandId` the producer chooses, such as `deploy-pr-123`. `run-vm-command` appends `-<run_id>-<run_attempt>`, so a re-run never collides with the result of the run before it. |
+| **wait ceiling** | The longest a producer waits for a result: (attempts − 1) × interval, because the last look happens before the final sleep. It must be longer than the verb's own timeout on the VM plus a margin, or the producer reports a timeout while the command is still running. |
+| **queue transport** | What the agent reads and writes the queue through: List, Read, Write and Remove. `New-GcsQueueTransport` is the real one; the Pester suite passes an in-memory one. |
+| **command runner** | `Invoke-CommandJob`: runs one command's script in a background job with a timeout, and returns its output, whether it timed out, and its failure. |
+| **poll pass** | `Invoke-CommandQueuePass`: one run of the agent. It refreshes its scripts, then drains `pending/` -- run, write the log, write the result, remove. A failed refresh never stops the drain. |
 
-Both halves of the protocol are composite actions — `.github/actions/queue-vm-command`
-and `.github/actions/await-vm-command` — and a producer calls them rather than
-carrying its own copy. The enqueue keeps its PowerShell in `Write-VmCommand.ps1`
-beside `action.yml` instead of inline, because PowerShell embedded in YAML is a
-string no test can execute: that is how two producers came to redact a field
-named `connectionString` while the one holding the sandbox password called it
-`sandboxConnectionString`. Redaction keys on the shape of a field name, not a
-list of known ones.
+A producer calls one composite action, `.github/actions/run-vm-command`, which
+enqueues, waits, and can copy the command's log into the job summary.
+`.github/actions/queue-vm-command` and `.github/actions/await-vm-command` are its
+two halves. They stay separate actions because the Pester suite runs their
+scripts, but no workflow calls them directly. The enqueue keeps its PowerShell in
+`Write-VmCommand.ps1` beside `action.yml` instead of inline, because PowerShell
+embedded in YAML is a string no test can execute: that is how two producers came
+to redact a field named `connectionString` while the one holding the sandbox
+password called it `sandboxConnectionString`. Redaction keys on the shape of a
+field name, not a list of known ones.
+
+A result counts as success only when its status is `succeeded`.
+`Read-CommandResult` in `Await-VmCommand.ps1` owns that rule. Any other status
+is a failure, and so is a result with no status at all.
 
 Use **destroy** for removing an environment — it is the command name and the
 chat trigger (`rock:destroy`). *Tear down*, *remove* and *prune* are prose
 variants for the same act; prefer `destroy` where a reader might be looking for
 the command.
+
+## Labels
+
+A PR's `rock:*` labels are of three kinds, and a label of one kind never does the
+work of another.
+
+| Term | Means | Labels |
+|---|---|---|
+| **state label** | What the PR environment is doing now. Only the pipeline sets one, and a PR carries at most one. `STATE_LABELS` in `.github/scripts/pr-test-status.js` is the list. | `rock:queued`, `rock:building`, `rock:deploying`, `rock:deployed`, `rock:failed`, `rock:stopped` |
+| **command label** | A request from a person. The workflow that handles it removes it, so the next request fires a fresh `labeled` event. | `rock:start` (`pr-test-deploy.yml`), `rock:stop` and `rock:destroy` (`pr-test-lifecycle.yml`) |
+| **setting label** | A choice that stays on the PR until a person removes it. | `rock:auto` (redeploy on every push), `rock:full-build` (never repackage) |
+| **reconcile** | `reconcilePrTestLabels`: remove every state label, then add the one for the new status. `destroyed` adds none. | |
+
+## Manifests
+
+| Term | Means |
+|---|---|
+| **manifest** | `env.json`: the record of one environment, beside its site. Three functions write it -- `Write-EnvironmentManifest` (`Deploy-PrEnvironment.ps1`), `Write-DeploymentManifest` (`Deploy-RockEnvironment.ps1`) and `Write-StoppedManifest` (`Stop-PrEnvironment.ps1`). `Invoke-PrEnvironmentCleanup.ps1`, `Invoke-SandboxRefreshWithPrEnvironments.ps1` and `Invoke-PrEnvironmentCertificateRenewal.ps1` read it. `ManifestContract.Tests.ps1` pins the fields the readers depend on. |
+| **`prNumber`** | The field that makes a manifest a PR environment's. Cleanup stops and destroys by it, so staging and production never carry one. |
+| **manifest root** | A directory that a reader searches for manifests. `C:\RockTestEnvs` is the one every reader searches. |
+| **backup root** | `C:\RockBackups`. An InPlace deploy writes production's manifest and its site backups here, under `<name>\`. It is not a manifest root, and certificate renewal must never search it: `-AdditionalManifestRoots` defaults to none. |
 
 ## Artifacts
 
@@ -121,6 +176,9 @@ the command.
 | **the plan** | The `plan` job, and `.github/scripts/Get-ArtifactPlan.ps1` under it: repackage if it found a base artifact, build otherwise. |
 | **build** / **patch** / **ignore** | How `.github/scripts/artifact-paths.json` classes a changed path: the build writes it, the build copies it verbatim, or it never reaches the artifact. One build-class path anywhere in the difference rules a base out. |
 | **server-owned** | A path the deploy keeps the server's copy of: the lists at the top of `Deploy-RockEnvironment.ps1`. A change to one still reaches the artifact, built or patched, but the plan warns that it may not reach the site. |
+| **artifact address** | Where one artifact lives: its zip's name, its folder, and the object paths of the zip and the record. `Get-ArtifactAddress` composes it from the slug and the commit, and `ConvertFrom-ArtifactObjectPath` reads one back by composing again and comparing. Both are in `.github/scripts/ArtifactRecord.psm1`, which runs only on runners, so ADR-0001 does not govern it. |
+| **artifact record** | `pr-test-artifact.json`, beside each zip: seven fields in a fixed order, and nine for a repackage, which adds `builtFromSha` and `baseArtifactGcsPath`. Written and read by `New-`, `Write-` and `Read-ArtifactRecord`. The deploy never reads it. A later repackage does, for `builtFromSha` and `sha256`. |
+| **artifact store** | What the plan and the repackage list and download artifacts through: a List and a Download. `New-GsutilArtifactStore` is the real one; the Pester suite passes an in-memory one. Uploads do not go through it. |
 
 A repackage is not a lighter kind of deploy. What it produces is the zip a full
 build would have made, under the same name, in the same folder, with the same
@@ -138,6 +196,7 @@ repackage path, but the job and the step summary say **repackage**.
 |---|---|
 | **DedicatedSite** | The mode that owns its whole directory. Every PR environment and staging. |
 | **InPlace** | The mode that updates files inside an existing site it does not own. Production. |
+| **overlay plan** | What an InPlace deploy will do, as one record: where (`SitePath`, `ExtractPath`, `BackupDirectory`), what it keeps (the preserved and server-owned lists, the theme overrides it found), and the robocopy exclusions built from those. `Get-InPlaceOverlayPlan` makes it once, before the dry-run fork. A dry run prints it; `Invoke-InPlaceOverlay` carries it out. |
 
 The mode decides which of `Deploy-RockEnvironment.ps1`'s parameters apply, and
 whether the shared-asset overlay runs at all. It is the single most consequential

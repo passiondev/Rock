@@ -194,7 +194,8 @@ jobs:
           #
           # OPEN QUESTION for the team, recorded here and not answered: should the
           # shared catalog be guarded on the line, or on the minor as production
-          # is? This step's name and CONTEXT.md both say "minor". Answering
+          # is? This step's name still says "minor"; CONTEXT.md records the
+          # question. Answering
           # "minor" is rock_line_of_version -> rock_minor_of_version on the two
           # lines below (and _line -> _minor in their names), plus flipping
           # test_a_minor_bump_within_the_pinned_line_is_allowed to a refusal.
