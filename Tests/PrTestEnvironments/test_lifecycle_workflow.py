@@ -22,7 +22,9 @@ class PrTestLifecycleTests(unittest.TestCase):
 
         self.assertIn('Stop-WebAppPool', stop)
         self.assertIn('Stop-Website', stop)
-        self.assertIn('status = "stopped"', stop)
+        # That the stop marks its manifest stopped is Pester/ManifestContract.Tests.ps1
+        # now: it stops a deployed manifest with the stop script's own writer and
+        # checks cleanup reads the status and the stop date back.
         self.assertNotIn('Remove-Item $EnvironmentPath', stop)
 
         self.assertIn('Remove-Website', destroy)

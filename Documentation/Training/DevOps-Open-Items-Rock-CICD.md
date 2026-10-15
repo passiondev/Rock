@@ -173,10 +173,20 @@ Two independent defects, and the first one is the interesting one:
   explaining that this keeps renewal from stopping and starting the site. That reasoning does
   not hold: renewal stops `W3SVC` **service-wide** for the HTTP-01 challenge (line 189), so
   staging was already taking the full downtime and simply never got a certificate for it.
-  **Fixed:** renewal takes `-AdditionalManifestRoots` (default `C:\RockBackups`) and scans
-  direct children of those roots only — never `-Recurse`, because the siblings of that
-  manifest are timestamped site backups and recursing would bind certificates from stale
-  manifests. Hosts are de-duplicated by name.
+  **Fixed:** renewal takes `-AdditionalManifestRoots` and scans direct children of those
+  roots only — never `-Recurse`, because the siblings of that manifest are timestamped site
+  backups and recursing would bind certificates from stale manifests. Hosts are
+  de-duplicated by name.
+  **Superseded (2026-10-15): the default is now empty.** It was `C:\RockBackups` while
+  staging was deployed InPlace. Staging has since moved to DedicatedSite, so its manifest is
+  at `C:\RockTestEnvs\staging\env.json` and the walk of `C:\RockTestEnvs` finds it. That left
+  production's manifest, `C:\RockBackups\production\env.json`, as the only thing under the
+  old default — and the production bootstrap ships the renewal script, and production's queue
+  agent accepts `renew-certificate`. One such command would have stopped `W3SVC` on
+  production and rebound its https binding. The parameter stays for a by-hand run on the
+  test VM; `Pester/ManifestContract.Tests.ps1` fails if the default reaches the backup root
+  again. A stale `C:\RockBackups\staging\env.json` from the InPlace days may still sit on
+  the test VM; it is harmless (renewal no longer reads that root) and can be deleted.
 
 **Still open — the reporting gap that hid all of this for months.** `succeeded` does not mean
 a certificate was issued. The script returns early with a clean exit when it finds no

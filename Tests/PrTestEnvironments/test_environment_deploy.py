@@ -729,19 +729,13 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         self.assertIn("if (![string]::IsNullOrWhiteSpace($Connection))", text)
         self.assertIn("leaving the existing web.ConnectionStrings.config in place", text)
 
-    def test_dedicated_site_manifest_lands_where_certificate_renewal_finds_it(self):
-        """Invoke-PrEnvironmentCertificateRenewal.ps1 walks $EnvironmentRoot for
-        env.json files with status 'deployed' and keys off hostName/siteName, not
-        PR numbers -- so staging gets Let's Encrypt renewal for free, but only if
-        its manifest is written under that root."""
-        text = DEPLOY_SCRIPT.read_text()
-        self.assertIn('$EnvironmentRoot = "C:\\RockTestEnvs"', text)
-        # Where the manifest actually lands moved into Resolve-DeploymentTarget and
-        # is checked by running it: Pester/DeploymentTarget.Tests.ps1, "puts the
-        # manifest beside the site it describes".
-        self.assertIn('status = "deployed"', text)
-        self.assertIn("hostName = $HostName", text)
-        self.assertIn("siteName = $SiteName", text)
+    # Staging's manifest landing where certificate renewal finds it used to be
+    # asserted here, as string matches on the deploy script's root default and on
+    # three lines of its manifest hashtable. Pester/ManifestContract.Tests.ps1
+    # now writes staging's manifest with the deploy's own writer, at the deploy's
+    # own default root, and hands it to renewal's own reader -- "renews staging,
+    # which is deployed as its own site". The strings said the fields were spelled
+    # somewhere; the suite says renewal reads what the deploy wrote.
 
     # The production manifest staying out of the certificate renewal job's search
     # path used to be asserted here, as a string match on the assignment. That
@@ -889,23 +883,15 @@ class CertificateSelectionTests(unittest.TestCase):
         selector = selector.split("\nfunction ", 1)[0]
         self.assertIn("$_.NotAfter -gt (Get-Date)", selector)
 
-    def test_renewal_also_covers_in_place_environments_like_staging(self):
-        """In-place environments keep their manifest outside $EnvironmentRoot on
-        purpose, so a renewal that walked only that one tree could never see staging
-        -- and never did. Renewal already stops W3SVC service-wide for the HTTP-01
-        challenge, so those sites were taking the downtime without getting a
-        certificate for it."""
-        text = RENEWAL_SCRIPT.read_text()
-        self.assertIn("$AdditionalManifestRoots", text)
-        self.assertIn(r"C:\RockBackups", text)
-
-        discovery = text.split("function Get-DeployedPrEnvironmentManifests", 1)[1]
-        discovery = discovery.split("\nfunction ", 1)[0]
-        self.assertIn("$AdditionalManifestRoots", discovery)
-        # Backup siblings of that manifest are timestamped copies of the site.
-        # Recursing into them would bind certificates from stale manifests.
-        additional = discovery.split("foreach ($additionalRoot", 1)[1]
-        self.assertNotIn("-Recurse", additional)
+    # Renewal walking C:\RockBackups used to be required here, by string match,
+    # from when staging was deployed InPlace and kept its manifest there. Staging
+    # is a DedicatedSite now, so the only manifest left under that root is
+    # production's, and the default that walked it would have let a
+    # renew-certificate on production's queue stop W3SVC there.
+    # Pester/ManifestContract.Tests.ps1 holds the opposite, by running renewal's
+    # reader over manifests the real deploy writers produced: "never reaches the
+    # production manifest at its own defaults". The one-level-only rule for a root
+    # an operator names by hand is "reads one level down and no further" there.
 
     def test_renewal_that_finds_nothing_says_so_instead_of_passing_quietly(self):
         """A clean exit over an empty VM is indistinguishable from a successful

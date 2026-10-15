@@ -283,13 +283,71 @@ function Copy-GcsObjectToFile {
     Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri -OutFile $DestinationPath
 }
 
+# The only writer of prNumber anywhere, and so the only thing that makes a
+# directory under the environment root a PR environment. Cleanup stops and
+# destroys by it, the sandbox refresh stops pools by it, and renewal issues
+# certificates for every deployed host it finds -- three readers, none of which
+# calls this.
+#
+# It builds the manifest itself, from parameters, rather than writing whatever
+# hashtable the caller assembled. That is what lets ManifestContract.Tests.ps1
+# run it: the suite writes real manifests with this function and hands them to
+# the real readers, so a field renamed here and not there fails a test instead
+# of quietly stopping cleanup from ever finding the site.
 function Write-EnvironmentManifest {
+    [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][hashtable]$Values
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Path,
+
+        [Parameter(Mandatory = $true)]
+        [int]
+        $PrNumber,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Sha,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $ArtifactGcsPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $HostName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $SiteName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AppPoolName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $SitePath
     )
 
-    $Values | ConvertTo-Json -Depth 5 | Out-File -FilePath $Path -Encoding UTF8 -Force
+    $manifest = @{
+        prNumber = $PrNumber
+        sha = $Sha
+        artifactGcsPath = $ArtifactGcsPath
+        hostName = $HostName
+        siteName = $SiteName
+        appPoolName = $AppPoolName
+        environmentPath = $EnvironmentPath
+        sitePath = $SitePath
+        status = "deployed"
+        deployedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+
+    $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $Path -Encoding UTF8 -Force
 }
 
 if ($PrNumber -le 0) {
@@ -342,19 +400,9 @@ try {
     Ensure-AppPool -Name $AppPoolName
     Ensure-Website -Name $SiteName -PhysicalPath $SitePath -HostHeader $HostName -PoolName $AppPoolName -Thumbprint $CertificateThumbprint
 
-    $manifest = @{
-        prNumber = $PrNumber
-        sha = $Sha
-        artifactGcsPath = $ArtifactGcsPath
-        hostName = $HostName
-        siteName = $SiteName
-        appPoolName = $AppPoolName
-        environmentPath = $EnvironmentPath
-        sitePath = $SitePath
-        status = "deployed"
-        deployedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    }
-    Write-EnvironmentManifest -Path $ManifestPath -Values $manifest
+    Write-EnvironmentManifest -Path $ManifestPath -PrNumber $PrNumber -Sha $Sha `
+        -ArtifactGcsPath $ArtifactGcsPath -HostName $HostName -SiteName $SiteName `
+        -AppPoolName $AppPoolName -EnvironmentPath $EnvironmentPath -SitePath $SitePath
 
     Start-WebAppPool -Name $AppPoolName
     Start-Website -Name $SiteName

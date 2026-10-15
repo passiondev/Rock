@@ -24,8 +24,11 @@ so Invoke-PrEnvironmentCertificateRenewal.ps1 discovers and renews its Let's
 Encrypt certificate with no extra configuration -- that script keys off
 hostName/siteName in env.json, not off a PR number.
 
-InPlace deliberately writes its manifest somewhere else, so a certificate
-renewal run on the test VM can never reach a production site.
+InPlace deliberately writes its manifest somewhere else -- $BackupRoot, default
+C:\RockBackups -- so certificate renewal never reaches a production site. That
+holds only while renewal's defaults leave the backup root out: the production
+bootstrap ships every script in this directory, renewal included, to
+production's queue. ManifestContract.Tests.ps1 holds the two together.
 #>
 
 # On the sixteen parameters below, and why they are still sixteen.
@@ -512,6 +515,72 @@ $SiteName = $DeploymentTarget.SiteName
 $AppPoolName = $DeploymentTarget.AppPoolName
 $SitePath = $DeploymentTarget.SitePath
 $ManifestPath = $DeploymentTarget.ManifestPath
+
+# The one place this script writes env.json, in either mode.
+#
+# A function rather than inline at the end of the deploy so that
+# ManifestContract.Tests.ps1 can run it. Three scripts read what this writes --
+# cleanup, the sandbox refresh and certificate renewal -- and none of them calls
+# this one, so the only thing holding the field names and the file's location
+# to what those readers expect is that suite writing a real manifest with this
+# function and handing it to the real readers.
+#
+# Everything comes in as a parameter, $Target included, rather than being read
+# from the script scope: a manifest says what the caller asked for, and a value
+# picked up from scope is one the suite could not see change.
+#
+# No prNumber, ever. Cleanup stops and destroys any manifest carrying one under
+# its root, and staging's manifest sits in that root.
+function Write-DeploymentManifest {
+    [CmdletBinding()]
+    param(
+        # What Resolve-DeploymentTarget returned: SiteName, AppPoolName, SitePath
+        # and ManifestPath. Passed whole so the manifest and the deploy can never
+        # disagree about which site this was.
+        [Parameter(Mandatory = $true)]
+        [hashtable]
+        $Target,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Mode,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Sha,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $ArtifactGcsPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $HostName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentPath
+    )
+
+    $manifest = [ordered]@{
+        environmentName = $EnvironmentName
+        mode = $Mode
+        sha = $Sha
+        artifactGcsPath = $ArtifactGcsPath
+        hostName = $HostName
+        siteName = $Target.SiteName
+        appPoolName = $Target.AppPoolName
+        environmentPath = $EnvironmentPath
+        sitePath = $Target.SitePath
+        status = "deployed"
+        deployedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $Target.ManifestPath -Encoding UTF8 -Force
+}
 
 function Ensure-Directory {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -2798,20 +2867,8 @@ try {
             -ServerOwnedThemeFiles $ServerOwnedThemeFiles
     }
 
-    $manifest = [ordered]@{
-        environmentName = $EnvironmentName
-        mode = $Mode
-        sha = $Sha
-        artifactGcsPath = $ArtifactGcsPath
-        hostName = $HostName
-        siteName = $SiteName
-        appPoolName = $AppPoolName
-        environmentPath = $EnvironmentPath
-        sitePath = $SitePath
-        status = "deployed"
-        deployedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    }
-    $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $ManifestPath -Encoding UTF8 -Force
+    Write-DeploymentManifest -Target $DeploymentTarget -EnvironmentName $EnvironmentName -Mode $Mode `
+        -Sha $Sha -ArtifactGcsPath $ArtifactGcsPath -HostName $HostName -EnvironmentPath $EnvironmentPath
 
     # Both modes, and after the copy rather than before it: an InPlace deploy
     # robocopies over a site it did not create, so this is the only point in a

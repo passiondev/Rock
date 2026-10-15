@@ -863,7 +863,9 @@ re-diagnosing them. All verified 2026-08-10.
    Renewal also could not see `staging` at all, because in-place environments keep their
    manifest outside the tree renewal walked.
    Both are fixed in code — the selector now ranks CA-issued certificates above self-signed
-   ones, and renewal scans the additional manifest root — but the fixes are VM-side scripts
+   ones, and staging now deploys as its own site, with its manifest inside the tree renewal
+   walks. (Renewal no longer scans the backup root by default: the only manifest left there
+   is production's.) The fixes are VM-side scripts
    and take effect only after the bootstrap workflow runs. Until then, expect the warning.
    Verify by measuring the issuer, never by reading a run's conclusion; a run that finds
    nothing to do now says `RENEWAL ISSUED NOTHING` instead of passing quietly.

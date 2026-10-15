@@ -46,7 +46,7 @@
   as what you get if you run this by hand, not as something the fleet does on its own. Use
   `-WhatIf` first. See open item 6.
 - `Invoke-SandboxRefreshWithPrEnvironments.ps1` stops PR app pools before DB refresh and restarts only previously running app pools afterward.
-- `Invoke-PrEnvironmentCertificateRenewal.ps1` issues/renews Let's Encrypt certs for deployed PR environments and rebinds IIS HTTPS bindings. Run through the scheduled/manual certificate renewal workflow so the `pr-test-acme-http` network tag is present only during ACME validation.
+- `Invoke-PrEnvironmentCertificateRenewal.ps1` issues/renews Let's Encrypt certs for deployed PR environments and rebinds IIS HTTPS bindings. Run through the scheduled/manual certificate renewal workflow so the `pr-test-acme-http` network tag is present only during ACME validation. It renews every deployed manifest under `C:\RockTestEnvs`, staging's included, and nothing else. `-AdditionalManifestRoots` is empty by default and the queue cannot set it; name a root by hand only on the test VM, and never `C:\RockBackups` on production — that is where production's own manifest lives, and renewal stops `W3SVC` and rebinds https for every host it finds.
 
 ## Sandbox DB refresh coordination
 
