@@ -532,56 +532,6 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
                     "needs to deliver",
                 )
 
-    def test_the_plan_resolves_the_overlay_source_the_way_the_apply_run_does(self):
-        """The dry run must not work out the base site differently from the apply run.
-
-        The apply run falls back to the Default Web Site's physical path when no
-        source is configured, and no source is configured in the normal case. A plan
-        that read the parameter directly reported "none found" for a run that would
-        go on to restore eight files -- under-reporting, which is the same defect as
-        promising something that will not happen, and harder to notice because it
-        reads as nothing being at stake.
-
-        Both now go through one function, so they cannot disagree.
-        """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
-
-        resolvers = [
-            index for index, line in enumerate(lines)
-            if "Resolve-SharedAssetSource" in line
-            and not line.lstrip().startswith("#")
-            and not line.lstrip().startswith("function ")
-        ]
-        self.assertGreaterEqual(
-            len(resolvers), 2,
-            "the plan and the apply run must both resolve the overlay source through "
-            f"Resolve-SharedAssetSource; found {len(resolvers)} call(s)",
-        )
-
-        # The plan feeds the resolver's answer into the discovery call rather than
-        # reading $SharedAssetSourcePath itself. The assignment spans an if
-        # expression, so match over a window rather than one line.
-        planned = [
-            index for index, line in enumerate(lines)
-            if "$plannedSource" in line and "=" in line
-            and "Resolve-SharedAssetSource" in "\n".join(lines[index:index + 6])
-        ]
-        self.assertTrue(
-            planned,
-            "$plannedSource must come from Resolve-SharedAssetSource, or the plan can "
-            "still disagree with the apply run",
-        )
-
-        # And nothing reads the raw parameter as a site root any more.
-        for index, line in enumerate(lines):
-            if "-SiteRoot" not in line:
-                continue
-            self.assertNotIn(
-                "$SharedAssetSourcePath", line,
-                f"line {index + 1} discovers against the raw parameter; it must use the "
-                "resolved source so a blank parameter still finds the Default Web Site",
-            )
-
     def test_in_place_deploy_is_a_dry_run_unless_apply_is_passed(self):
         """A production overwrite should never be one mistyped argument away. The
         script reports its plan and returns unless -Apply is explicitly given."""
@@ -669,57 +619,55 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
             "the binary files actually live",
         )
 
-    def test_the_dry_run_plan_does_not_promise_preservation_it_will_not_deliver(self):
+    def test_the_dry_run_promises_preservation_only_where_it_runs(self):
         """A dry run exists so a human can read the plan and decide. On DedicatedSite
         the unconditional line "Would preserve directories: Content, App_Data, Logs,
-        Uploads" told that human the exact reverse of what the apply run does."""
-        text = DEPLOY_SCRIPT.read_text()
-        lines = text.splitlines()
+        Uploads" once told that human the exact reverse of what the apply run does.
 
-        # Each message and the one mode it is true for. Both directions are checked,
-        # because guarding the promise behind a branch and then putting it in the
-        # wrong arm is a plan that is not merely unhelpful but exactly backwards.
-        expected = {
-            "Would preserve directories:": "InPlace",
-            "would NOT survive": "DedicatedSite",
-        }
+        The dry run only ever runs InPlace, so the DedicatedSite arm that answered it
+        -- "would NOT survive" -- could never run and has gone. What is left to hold
+        here is the guard: a change that lifted the promise out of the InPlace block,
+        or wrote it for both modes, would bring the reversed plan back.
 
-        for message, mode in expected.items():
-            occurrences = [index for index, line in enumerate(lines) if message in line]
-            self.assertTrue(
-                occurrences,
-                f'the dry run no longer says "{message}" at all',
+        Whether the promise is kept is asked of the code that keeps it rather than of
+        this file's text. DeployBranch.Tests.ps1 holds the overlay plan the dry run
+        prints against the robocopy arguments Invoke-InPlaceOverlay hands over.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+        message = "Would preserve directories:"
+
+        occurrences = [index for index, line in enumerate(lines) if message in line]
+        self.assertTrue(occurrences, f'the dry run no longer says "{message}" at all')
+        for index in occurrences:
+            # Walk out to the innermost block containing the line, follow any else
+            # back to its if, and read the mode off that condition. A line moved to
+            # the top level has no opener; one moved under a condition that does not
+            # name a mode is reported for both.
+            opener = _enclosing_opener(lines, index)
+            self.assertIsNotNone(
+                opener,
+                f'"{message}" at line {index + 1} sits at the top level of the script, '
+                "where no branch can be guarding it",
             )
-            for index in occurrences:
-                # Walk out to the innermost block containing the line, follow any
-                # else back to its if, and read the mode off that condition. An
-                # unguarded line fails here because the first opener above it is
-                # the dry-run `if`, which does not branch on $Mode.
-                opener = _enclosing_opener(lines, index)
-                self.assertIsNotNone(
-                    opener,
-                    f'"{message}" at line {index + 1} sits at the top level of the script, '
-                    "where no branch can be guarding it",
-                )
-                condition_index = _chained_if(lines, opener)
-                condition = lines[condition_index]
-                match = re.search(r"\$Mode\s+-eq\s+'(\w+)'", condition)
-                self.assertIsNotNone(
-                    match,
-                    f'"{message}" at line {index + 1} is inside `{condition.strip()}`, which does '
-                    "not branch on $Mode -- so it is reported for both modes",
-                )
-                arm = match.group(1)
-                if opener != condition_index:
-                    # An else arm, so the line runs for the mode the condition rejects.
-                    # Two modes in the ValidateSet, so rejecting one selects the other.
-                    arm = "InPlace" if arm == "DedicatedSite" else "DedicatedSite"
-                self.assertEqual(
-                    arm,
-                    mode,
-                    f'"{message}" at line {index + 1} is reported for {arm}, and it is only true '
-                    f"for {mode}. The two arms of the dry-run plan are the wrong way round.",
-                )
+            condition_index = _chained_if(lines, opener)
+            condition = lines[condition_index]
+            match = re.search(r"\$Mode\s+-eq\s+'(\w+)'", condition)
+            self.assertIsNotNone(
+                match,
+                f'"{message}" at line {index + 1} is inside `{condition.strip()}`, which does '
+                "not branch on $Mode -- so it is reported for both modes",
+            )
+            arm = match.group(1)
+            if opener != condition_index:
+                # An else arm, so the line runs for the mode the condition rejects.
+                # Two modes in the ValidateSet, so rejecting one selects the other.
+                arm = "InPlace" if arm == "DedicatedSite" else "DedicatedSite"
+            self.assertEqual(
+                arm,
+                "InPlace",
+                f'"{message}" at line {index + 1} is reported for {arm}, which replaces the '
+                "site wholesale and keeps none of those directories",
+            )
 
     def test_production_connection_string_on_disk_is_left_alone_when_none_supplied(self):
         """CI has no production database credentials by design. With no connection

@@ -27,6 +27,13 @@
         Orphan reconciliation happens while the pool is still stopped and nothing
         holds a lock on bin.
 
+    Get-InPlaceOverlayPlan
+        What that branch keeps away from the artifact, worked out once. The dry
+        run prints this record and the overlay hands its exclusions to robocopy,
+        so the plan an operator approves is held here against the arguments
+        robocopy was actually given -- the one comparison nothing made while the
+        two were worked out separately.
+
     Both hand back one record with the same two fields. That is asserted here
     directly: it is what lets the deploy body ask "is there a backup" instead of
     asking which branch ran, and a stray emitter anywhere inside either function
@@ -38,13 +45,14 @@ BeforeAll {
 
     $script:DeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
 
-    # The two functions under test, and the two helpers they call that are cheap
-    # and honest to run for real. Everything else is stubbed below, because the
-    # question is what order it was called in and not what it did -- and -Supplied
-    # is that list, held against what the lifted bodies actually reach for. A stub
-    # the deploy script has stopped calling fails here rather than going on passing.
+    # The two branches and the in-place plan under test, and the two helpers they
+    # call that are cheap and honest to run for real. Everything else is stubbed
+    # below, because the question is what order it was called in and not what it
+    # did -- and -Supplied is that list, held against what the lifted bodies
+    # actually reach for. A stub the deploy script has stopped calling fails here
+    # rather than going on passing.
     . (Import-ScriptFunction -Path $script:DeployScript -Name `
-            'Invoke-DedicatedSiteReplace', 'Invoke-InPlaceOverlay', `
+            'Invoke-DedicatedSiteReplace', 'Get-InPlaceOverlayPlan', 'Invoke-InPlaceOverlay', `
             'Ensure-Directory', 'ConvertTo-NativePath' `
         -Supplied `
             'Write-DeployStep', 'Resolve-SharedAssetSource', 'Sync-SharedSiteAssets', `
@@ -91,6 +99,41 @@ BeforeAll {
         #>
         param([string]$Name)
         return [array]::IndexOf($script:Calls, $Name)
+    }
+
+    function Script:ExclusionsOf {
+        <#
+            The /XD and /XF pairs one recorded robocopy call was given, in order
+            and with their flags. The source, the destination and the retry
+            switches are how robocopy runs rather than what it keeps away, so
+            they are left out: a test of the exclusions should not break when
+            /R:3 becomes /R:5. Joined into one string so a mismatch prints both
+            lists whole, and so an empty list compares as an empty string rather
+            than vanishing in the pipeline on its way to Should.
+        #>
+        param([int]$Index)
+        $arguments = @((Script:DetailOf -Name 'robocopy' -Index $Index).Arguments)
+        $pairs = @()
+        for ($i = 0; $i -lt $arguments.Count; $i++) {
+            if ($arguments[$i] -cin '/XD', '/XF') {
+                $pairs += "$($arguments[$i]) $($arguments[$i + 1])"
+                $i++
+            }
+        }
+        return ($pairs -join "`n")
+    }
+
+    function Script:PairsOf {
+        <#
+            A plan's exclusion list in the shape Script:ExclusionsOf returns, so
+            the two can be compared as one string each.
+        #>
+        param([object[]]$Exclusions)
+        $pairs = @()
+        for ($i = 0; $i -lt $Exclusions.Count; $i += 2) {
+            $pairs += "$($Exclusions[$i]) $($Exclusions[$i + 1])"
+        }
+        return ($pairs -join "`n")
     }
 
     # Write-DeployStep is the one stub that is not about ordering. The real one
@@ -394,24 +437,32 @@ Describe 'Invoke-InPlaceOverlay' {
         Set-Content -Path (Join-Path $script:SitePath 'web.config') -Value '<configuration />'
         Set-Content -Path (Join-Path $script:ExtractPath 'web.config') -Value '<configuration />'
 
+        # Made when the overlay is run rather than here, so an It that changes
+        # what discovery finds before running it gets a plan that found it.
         $script:Overlay = {
-            param([hashtable]$Override = @{})
-            $splat = @{
-                SitePath               = $script:SitePath
-                ExtractPath            = $script:ExtractPath
-                EnvironmentName        = 'production'
-                Sha                    = 'abc1234'
-                BackupRoot             = $script:BackupRoot
-                ManifestPath           = $script:ManifestPath
-                ConnectionString       = 'Server=db;Database=rock;'
-                ExistingWebConfig      = '<configuration />'
-                PreservedDirectories   = @('Content')
-                PreservedFiles         = @('web.ConnectionStrings.config')
-                ServerOwnedDirectories = @('Assets/Fonts/FontAwesome')
-                ServerOwnedThemeFiles  = @('_variables.less')
-            }
-            foreach ($key in $Override.Keys) { $splat[$key] = $Override[$key] }
-            return Invoke-InPlaceOverlay @splat
+            $script:Plan = Get-InPlaceOverlayPlan `
+                -SitePath $script:SitePath `
+                -ExtractPath $script:ExtractPath `
+                -EnvironmentName 'production' `
+                -BackupRoot $script:BackupRoot `
+                -PreservedDirectories @('Content') `
+                -PreservedFiles @('web.ConnectionStrings.config') `
+                -ServerOwnedDirectories @('Assets/Fonts/FontAwesome') `
+                -ServerOwnedThemeFiles @('_variables.less')
+
+            # The deploy body makes the plan before it downloads anything, long
+            # before the overlay runs. Starting the recording over here keeps it
+            # the overlay's alone, so "first" below means first in the overlay.
+            $script:Calls = @()
+            $script:Arguments = @{}
+            $script:Steps = @()
+
+            return Invoke-InPlaceOverlay `
+                -Plan $script:Plan `
+                -Sha 'abc1234' `
+                -ManifestPath $script:ManifestPath `
+                -ConnectionString 'Server=db;Database=rock;' `
+                -ExistingWebConfig '<configuration />'
         }
     }
 
@@ -465,15 +516,43 @@ Describe 'Invoke-InPlaceOverlay' {
         }
     }
 
-    It 'discovers the theme overrides against the live site' {
-        # The question here is which files production has that the artifact must
-        # not overwrite. Asking $ExtractPath answers "all of them" -- every theme
-        # in the artifact ships the pair -- and excludes the override file from
-        # themes v19 adds and the box has never had. theme.less imports it
-        # unconditionally, so those themes stop compiling.
+    It 'hands robocopy the exclusions the plan names, and no others' {
+        # The plan is what the dry run printed and what the operator approved
+        # before ticking apply. An exclusion robocopy is given beyond it is a
+        # decision nobody read; one it is not given is a promise the copy breaks.
+        $script:DiscoveredThemeFiles = @('Themes/Rock/Styles/_variables.less')
+
         & $script:Overlay | Out-Null
 
-        (Script:DetailOf -Name 'Get-ServerOwnedThemeFilePaths').SiteRoot | Should -Be $script:SitePath
+        @($script:Plan.BackupExclusions).Count | Should -BeGreaterThan 0 -Because 'an empty plan matches an empty command line and proves nothing'
+        @($script:Plan.CopyExclusions).Count | Should -BeGreaterThan 0 -Because 'an empty plan matches an empty command line and proves nothing'
+        Script:ExclusionsOf -Index 0 | Should -BeExactly (Script:PairsOf -Exclusions $script:Plan.BackupExclusions)
+        Script:ExclusionsOf -Index 1 | Should -BeExactly (Script:PairsOf -Exclusions $script:Plan.CopyExclusions)
+    }
+
+    It 'keeps away from the copy the theme file the dry run says it will keep' {
+        # The dry run's "Would keep this site's own theme override files" line is
+        # read off the plan's ThemeOverrides. A file named there and missing from
+        # robocopy's /XF list is production's brand overwritten by upstream's
+        # empty pair, under a plan that said it would not be.
+        $themeFile = 'Themes/Rock/Styles/_variables.less'
+        $script:DiscoveredThemeFiles = @($themeFile)
+
+        & $script:Overlay | Out-Null
+
+        (@($script:Plan.ThemeOverrides) -ccontains $themeFile) | Should -BeTrue -Because 'this is the list the dry run reports'
+        $native = ConvertTo-NativePath -Path (Join-Path $script:ExtractPath $themeFile)
+        ((Script:ExclusionsOf -Index 1) -split "`n" -ccontains "/XF $native") | Should -BeTrue -Because 'robocopy matches exclusions against the source tree, and /XD against a file name excludes nothing'
+    }
+
+    It 'backs up into the directory the dry run named' {
+        # The dry run prints "Would back up <site> to <directory>\<timestamp>",
+        # and the operator reads that line to check the backup root before
+        # ticking apply. The leaf is the only part a dry run cannot know.
+        $result = & $script:Overlay
+
+        (Split-Path -Parent $result.BackupPath) | Should -BeExactly $script:Plan.BackupDirectory
+        $script:Plan.BackupDirectory | Should -BeExactly (Join-Path $script:BackupRoot 'production')
     }
 
     It 'reconciles orphaned assemblies while the pool is still stopped' {
@@ -524,6 +603,44 @@ Describe 'Invoke-InPlaceOverlay' {
     }
 }
 
+Describe 'Get-InPlaceOverlayPlan' {
+
+    BeforeEach {
+        Script:Reset-Fixture
+
+        $script:PlanFor = {
+            return Get-InPlaceOverlayPlan `
+                -SitePath $script:SitePath `
+                -ExtractPath $script:ExtractPath `
+                -EnvironmentName 'production' `
+                -BackupRoot $script:BackupRoot `
+                -ServerOwnedThemeFiles @('_variables.less')
+        }
+    }
+
+    It 'discovers the theme overrides against the live site' {
+        # The question here is which files production has that the artifact must
+        # not overwrite. Asking $ExtractPath answers "all of them" -- every theme
+        # in the artifact ships the pair -- and excludes the override file from
+        # themes v19 adds and the box has never had. theme.less imports it
+        # unconditionally, so those themes stop compiling.
+        & $script:PlanFor | Out-Null
+
+        (Script:DetailOf -Name 'Get-ServerOwnedThemeFilePaths').SiteRoot | Should -Be $script:SitePath
+    }
+
+    It 'changes nothing, because the dry run makes it too' {
+        # The deploy body makes this plan before it forks into the dry run, so
+        # whatever this does a dry run does as well -- and a dry run is the one
+        # command an operator runs on production on the promise that it touches
+        # nothing.
+        & $script:PlanFor | Out-Null
+
+        Script:IndexOf 'robocopy' | Should -Be -1
+        Test-Path $script:BackupRoot | Should -BeFalse -Because 'the backup directory belongs to the apply run'
+    }
+}
+
 Describe 'the two branches as one interface' {
 
     BeforeEach { Script:Reset-Fixture }
@@ -539,10 +656,10 @@ Describe 'the two branches as one interface' {
         Ensure-Directory -Path $script:ExtractPath
         Ensure-Directory -Path $script:SitePath
 
-        $inPlace = Invoke-InPlaceOverlay `
+        $plan = Get-InPlaceOverlayPlan `
             -SitePath $script:SitePath -ExtractPath $script:ExtractPath `
-            -EnvironmentName 'production' -Sha 'abc1234' `
-            -BackupRoot $script:BackupRoot -ManifestPath $script:ManifestPath
+            -EnvironmentName 'production' -BackupRoot $script:BackupRoot
+        $inPlace = Invoke-InPlaceOverlay -Plan $plan -Sha 'abc1234' -ManifestPath $script:ManifestPath
 
         ($dedicated.Keys | Sort-Object) | Should -Be ($inPlace.Keys | Sort-Object)
     }

@@ -1309,12 +1309,13 @@ function Resolve-SharedAssetSource {
         The site the shared-asset overlay and the server-owned restore read from.
 
     .DESCRIPTION
-        Extracted because the dry run and the apply run both need the answer and
-        had worked it out separately. The apply path falls back to the Default Web
-        Site's physical path when no explicit source is configured, which is the
-        normal case; the plan read the configured value alone and so reported
-        "none found" for a run that would go on to restore eight files. A plan
-        that under-reports is the same defect as one that over-promises.
+        The apply path falls back to the Default Web Site's physical path when no
+        explicit source is configured, which is the normal case. This was
+        extracted for a dry-run plan that read the configured value alone and so
+        reported "none found" for a run that would go on to restore eight files.
+        That plan was the DedicatedSite arm of a dry run that only ever runs
+        InPlace, so no operator ever read it, and it has since been removed.
+        Invoke-DedicatedSiteReplace is the one caller left.
     #>
     param(
         [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ConfiguredPath
@@ -1327,11 +1328,11 @@ function Resolve-SharedAssetSource {
     # Guarded with Get-Command, and -ErrorAction is not enough on its own. A
     # missing cmdlet raises CommandNotFoundException before any parameter is
     # bound, so SilentlyContinue never gets the chance to suppress it -- verified,
-    # not assumed. That matters more than it used to: the dry run calls this now,
-    # and a plan that throws where the previous one returned a value is a
-    # regression in the one command an operator runs to find out what will happen.
-    # It also keeps the function callable from the tests, which do not run on
-    # Windows and have no IIS module.
+    # not assumed. It matters because of when the one caller asks: the dedicated
+    # site has already been deleted and replaced by then, so a throw here leaves
+    # an environment with no shared assets and no server-owned restore. It also
+    # keeps the function callable from the tests, which do not run on Windows
+    # and have no IIS module.
     #
     # Absent is not an error. The caller treats an empty source as "nothing to
     # overlay from", which is the right answer both off Windows and on a box where
@@ -2425,31 +2426,43 @@ function Invoke-DedicatedSiteReplace {
     }
 }
 
-function Invoke-InPlaceOverlay {
+function Get-InPlaceOverlayPlan {
     <#
     .SYNOPSIS
-        Copy the artifact over a site that already exists and is not ours.
+        What the in-place overlay will keep away from the artifact, worked out
+        once for the dry run and the apply run alike.
 
     .DESCRIPTION
-        The other of the two things a deploy can be, and the one production uses.
-        It ran as top-level script for the same reason and at the same cost as
-        the branch above.
+        Production's runbook has an operator read the dry run's plan and then
+        tick apply. That approval is only worth something if the plan is what the
+        apply run goes on to do, and for as long as this pipeline has existed the
+        two were worked out separately: the dry run from the script's lists and a
+        theme discovery of its own, the overlay from its parameters and another.
+        They agreed because nobody had changed one without the other, and nothing
+        would have said so the day somebody did. Now there is one record. The dry
+        run prints it and Invoke-InPlaceOverlay hands its exclusions to robocopy
+        as they are.
 
-        What this does that the other does not is leave a way back. It copies the
-        site aside first, and it reads Rock's migration log before the copy so
-        that the advice it hands back can say whether restoring those files is
-        enough on its own. Both facts travel in the returned record; the reading
-        used to be taken in the dedicated-site branch and read here, where under
-        Set-StrictMode it was a terminating error on every in-place run that got
-        far enough to need it.
+        All of it can be worked out before anything is downloaded, which is what
+        lets a dry run report it. robocopy matches /XD and /XF against the source
+        tree, so the copy's exclusions are spelled against $ExtractPath -- a path
+        the script fixes up front and the download only fills in later -- and the
+        theme discovery reads the live site, which nothing has touched yet.
 
-        No /MIR and no /PURGE anywhere in here. Files the server legitimately
-        owns -- uploaded content, its own fonts, its theme overrides -- are on the
-        far side of this copy and a purge would take them permanently.
+        Read-only. It looks for files and builds strings; it creates nothing, so a
+        dry run that calls it still changes nothing.
 
-    .PARAMETER ExistingWebConfig
-        The site's own web.config as text, read before this was called -- the copy
-        writes the artifact's file over the top of it.
+    .PARAMETER BackupRoot
+        The root every environment's backups go under. The plan carries this
+        environment's directory beneath it and stops there: the timestamped leaf
+        is the apply run's to add, because a dry run has no moment to stamp.
+
+    .OUTPUTS
+        A hashtable. SitePath, ExtractPath and BackupDirectory say where; the
+        lists the dry run reads out -- PreservedDirectories, PreservedFiles,
+        ServerOwnedDirectories and the discovered ThemeOverrides -- say what; and
+        BackupExclusions and CopyExclusions are the robocopy arguments built from
+        them, the only part the overlay itself reads.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -2457,31 +2470,15 @@ function Invoke-InPlaceOverlay {
         [Parameter(Mandatory = $true)][string]$SitePath,
         [Parameter(Mandatory = $true)][string]$ExtractPath,
         [Parameter(Mandatory = $true)][string]$EnvironmentName,
-        [Parameter(Mandatory = $true)][string]$Sha,
         [Parameter(Mandatory = $true)][string]$BackupRoot,
-        [Parameter(Mandatory = $true)][string]$ManifestPath,
-        # As above: the empty string is what an unsupplied [string] already is,
-        # and the collections need their @() because an unsupplied [string[]] is not.
-        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ConnectionString,
-        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ExistingWebConfig,
+        # The collections need their @() because an unsupplied [string[]] is
+        # $null rather than empty, and the record hands them on to a dry run
+        # that joins them into the lines an operator reads.
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$PreservedDirectories = @(),
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$PreservedFiles = @(),
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedDirectories = @(),
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedThemeFiles = @()
     )
-
-    # Read before the copy, compared after the site fails to come up. See
-    # Get-MigrationFingerprint: it decides whether the rollback advice this run
-    # hands back can honestly say "restore the files". It is taken here, in the
-    # branch that makes the backup, because that advice is only ever offered
-    # where there is a backup for it to qualify. It used to be taken in the
-    # dedicated-site branch and read here, which under Set-StrictMode made the
-    # unhealthy-deploy path a terminating error on every in-place run.
-    $preDeployMigrationFingerprint = Get-MigrationFingerprint -SiteRoot $SitePath
-
-    $backupPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) ((Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss") + "-$Sha")
-    Ensure-Directory -Path $backupPath
-    Write-DeployStep "Backing up $SitePath to $backupPath (excluding preserved user data)."
 
     # Back up what the deploy can actually damage: build output and config.
     # Uploaded Content is excluded because it is not being touched and copying
@@ -2491,21 +2488,10 @@ function Invoke-InPlaceOverlay {
         $backupExclusions += '/XD'
         $backupExclusions += (Join-Path $SitePath $directory)
     }
-    # Through Write-Host rather than straight out. The success stream is this
-    # function's return value now, and robocopy's job summary -- bytes copied,
-    # files skipped, retries -- would otherwise be handed back as if it were the
-    # record. Write-Host is where every other line of this deploy already goes,
-    # so the summary still reaches the log the operator reads.
-    & robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NP | Write-Host
-    $backupExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
-    if ($backupExit -gt 7) {
-        throw "Backup failed with robocopy exit code $backupExit; refusing to deploy."
-    }
-    Write-DeployStep "Backup complete."
 
-    # Copy the artifact over the live site. No /MIR and no /PURGE: files the
-    # server legitimately owns must survive, and a purge here would delete
-    # uploaded content and break the site permanently.
+    # Kept away from the copy of the artifact over the live site. There is no
+    # /MIR and no /PURGE on that copy, so these are the whole of what stands
+    # between the server's own files and the artifact's.
     $copyExclusions = @()
     foreach ($directory in $PreservedDirectories) {
         $copyExclusions += '/XD'
@@ -2541,6 +2527,107 @@ function Invoke-InPlaceOverlay {
         $copyExclusions += '/XF'
         $copyExclusions += (ConvertTo-NativePath -Path (Join-Path $ExtractPath $file))
     }
+
+    return @{
+        SitePath               = $SitePath
+        ExtractPath            = $ExtractPath
+        BackupDirectory        = (Join-Path $BackupRoot $EnvironmentName)
+        PreservedDirectories   = @($PreservedDirectories)
+        PreservedFiles         = @($PreservedFiles)
+        ServerOwnedDirectories = @($ServerOwnedDirectories)
+        ThemeOverrides         = $themeOverrides
+        BackupExclusions       = $backupExclusions
+        CopyExclusions         = $copyExclusions
+    }
+}
+
+function Invoke-InPlaceOverlay {
+    <#
+    .SYNOPSIS
+        Copy the artifact over a site that already exists and is not ours.
+
+    .DESCRIPTION
+        The other of the two things a deploy can be, and the one production uses.
+        It ran as top-level script for the same reason and at the same cost as
+        the branch above.
+
+        What this does that the other does not is leave a way back. It copies the
+        site aside first, and it reads Rock's migration log before the copy so
+        that the advice it hands back can say whether restoring those files is
+        enough on its own. Both facts travel in the returned record; the reading
+        used to be taken in the dedicated-site branch and read here, where under
+        Set-StrictMode it was a terminating error on every in-place run that got
+        far enough to need it.
+
+        No /MIR and no /PURGE anywhere in here. Files the server legitimately
+        owns -- uploaded content, its own fonts, its theme overrides -- are on the
+        far side of this copy and a purge would take them permanently.
+
+        Which files those are is not decided here. This carries out the plan
+        Get-InPlaceOverlayPlan made, which is the plan the dry run printed, so
+        the exclusions an operator approved are the exclusions robocopy is
+        handed rather than a second working-out that happened to match.
+
+    .PARAMETER Plan
+        The record Get-InPlaceOverlayPlan returned: the site, the extracted
+        artifact, this environment's backup directory, and the robocopy
+        exclusions for the backup and for the copy.
+
+    .PARAMETER ExistingWebConfig
+        The site's own web.config as text, read before this was called -- the copy
+        writes the artifact's file over the top of it.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Plan,
+        [Parameter(Mandatory = $true)][string]$Sha,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        # No `= ''`, for the reason Invoke-DedicatedSiteReplace gives: an
+        # unsupplied [string] is already the empty string.
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ConnectionString,
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ExistingWebConfig
+    )
+
+    # Unpacked under the names these steps have always used, so each robocopy
+    # call below still reads as the command it runs and the log lines name the
+    # same paths they always named.
+    $SitePath = $Plan.SitePath
+    $ExtractPath = $Plan.ExtractPath
+    $backupExclusions = @($Plan.BackupExclusions)
+    $copyExclusions = @($Plan.CopyExclusions)
+    $themeOverrides = @($Plan.ThemeOverrides)
+
+    # Read before the copy, compared after the site fails to come up. See
+    # Get-MigrationFingerprint: it decides whether the rollback advice this run
+    # hands back can honestly say "restore the files". It is taken here, in the
+    # branch that makes the backup, because that advice is only ever offered
+    # where there is a backup for it to qualify. It used to be taken in the
+    # dedicated-site branch and read here, which under Set-StrictMode made the
+    # unhealthy-deploy path a terminating error on every in-place run.
+    $preDeployMigrationFingerprint = Get-MigrationFingerprint -SiteRoot $SitePath
+
+    $backupPath = Join-Path $Plan.BackupDirectory ((Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss") + "-$Sha")
+    Ensure-Directory -Path $backupPath
+    Write-DeployStep "Backing up $SitePath to $backupPath (excluding preserved user data)."
+
+    # Through Write-Host rather than straight out. The success stream is this
+    # function's return value now, and robocopy's job summary -- bytes copied,
+    # files skipped, retries -- would otherwise be handed back as if it were the
+    # record. Write-Host is where every other line of this deploy already goes,
+    # so the summary still reaches the log the operator reads.
+    & robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NP | Write-Host
+    $backupExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+    if ($backupExit -gt 7) {
+        throw "Backup failed with robocopy exit code $backupExit; refusing to deploy."
+    }
+    Write-DeployStep "Backup complete."
+
+    # Copy the artifact over the live site. No /MIR and no /PURGE: files the
+    # server legitimately owns must survive, and a purge here would delete
+    # uploaded content and break the site permanently. What is kept away from
+    # the copy is the plan's $copyExclusions, unchanged -- see
+    # Get-InPlaceOverlayPlan for what each list protects and why.
     Write-DeployStep "Keeping this site's own copies of $($themeOverrides.Count) theme override file(s): $($themeOverrides -join ', ')."
 
     Write-DeployStep "Copying the artifact over $SitePath."
@@ -2724,6 +2811,28 @@ try {
     Write-DeployStep "Deploy started."
     Write-DeployScriptProvenance
 
+    # One plan, made here and above the dry-run fork, so the plan a dry run
+    # prints and the plan an apply run carries out come from the same call
+    # rather than from two that have to be kept in step by hand. The operator
+    # approves the first and production gets the second.
+    #
+    # Making it this early moves the theme discovery from after the backup to
+    # before the download. Neither the download, the pool stop, nor the
+    # backup writes to the live site's Themes directory, so nothing the deploy
+    # does in between can change the answer -- and if the discovery ever
+    # throws, it now throws before the site is taken offline rather than after.
+    if ($Mode -eq 'InPlace') {
+        $overlayPlan = Get-InPlaceOverlayPlan `
+            -SitePath $SitePath `
+            -ExtractPath $ExtractPath `
+            -EnvironmentName $EnvironmentName `
+            -BackupRoot $BackupRoot `
+            -PreservedDirectories $PreservedDirectories `
+            -PreservedFiles $PreservedFiles `
+            -ServerOwnedDirectories $ServerOwnedDirectories `
+            -ServerOwnedThemeFiles $ServerOwnedThemeFiles
+    }
+
     if ($Mode -eq 'InPlace' -and -not $Apply) {
         # Through Write-DeployStep rather than Write-Host, because this plan is the
         # whole point of a dry run. It is step 6 of the production runbook -- the
@@ -2734,33 +2843,20 @@ try {
         # it was run for.
         Write-Host ""
         Write-DeployStep "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
-        Write-DeployStep "Would back up $SitePath to $(Join-Path (Join-Path $BackupRoot $EnvironmentName) '<timestamp>')."
+        Write-DeployStep "Would back up $($overlayPlan.SitePath) to $(Join-Path $overlayPlan.BackupDirectory '<timestamp>')."
         Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
-        # Mode-aware, because the two branches do opposite things with this list
-        # and a plan that promised preservation on a dedicated site would be
-        # telling the reviewer the reverse of what the apply run does.
-        if ($Mode -eq 'DedicatedSite') {
-            Write-DeployStep "Would replace $SitePath wholesale. These directories would NOT survive: $($PreservedDirectories -join ', ')"
-        }
-        else {
-            Write-DeployStep "Would preserve directories: $($PreservedDirectories -join ', ')"
-        }
-        Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
-        Write-DeployStep "Would leave server-owned paths untouched: $($ServerOwnedDirectories -join ', ')"
-        # Resolved the same way the apply run resolves it, not read straight off
-        # the parameter. The parameter is normally blank and the apply run falls
-        # back to the Default Web Site, so reading it directly made the plan say
-        # "none found" for a run that would restore eight files.
-        $plannedSource = if ($Mode -eq 'DedicatedSite') {
-            Resolve-SharedAssetSource -ConfiguredPath $SharedAssetSourcePath
-        }
-        else {
-            $SitePath
-        }
-        $plannedOverrides = @(Get-ServerOwnedThemeFilePaths `
-            -SiteRoot $plannedSource `
-            -FileNames $ServerOwnedThemeFiles)
-        Write-DeployStep "Would keep this site's own theme override files: $(if ($plannedOverrides.Count -gt 0) { $plannedOverrides -join ', ' } else { 'none found' })"
+        # Read off the overlay plan, and never off the script's lists directly.
+        # These four lines are the promise the operator approves, and the plan
+        # is what Invoke-InPlaceOverlay turns into robocopy exclusions, so a
+        # list the copy ignores cannot appear here as if it were kept.
+        #
+        # InPlace only, like the whole of this block. The dedicated-site branch
+        # replaces the directory wholesale and keeps none of these; a line that
+        # said otherwise used to sit in an arm here that could never run.
+        Write-DeployStep "Would preserve directories: $($overlayPlan.PreservedDirectories -join ', ')"
+        Write-DeployStep "Would preserve files: $($overlayPlan.PreservedFiles -join ', ')"
+        Write-DeployStep "Would leave server-owned paths untouched: $($overlayPlan.ServerOwnedDirectories -join ', ')"
+        Write-DeployStep "Would keep this site's own theme override files: $(if ($overlayPlan.ThemeOverrides.Count -gt 0) { $overlayPlan.ThemeOverrides -join ', ' } else { 'none found' })"
         # Asked of the merge rather than worked out again here. A dry run returns
         # before the artifact is downloaded, so there is no incoming file yet to
         # merge against -- but which server-owned settings this site has is the
@@ -2852,19 +2948,14 @@ try {
             -ServerOwnedThemeFiles $ServerOwnedThemeFiles
     }
     else {
+        # The plan made above the dry-run fork, so what this copies around is
+        # what a dry run of the same inputs reported.
         Invoke-InPlaceOverlay `
-            -SitePath $SitePath `
-            -ExtractPath $ExtractPath `
-            -EnvironmentName $EnvironmentName `
+            -Plan $overlayPlan `
             -Sha $Sha `
-            -BackupRoot $BackupRoot `
             -ManifestPath $ManifestPath `
             -ConnectionString $ConnectionString `
-            -ExistingWebConfig $existingWebConfig `
-            -PreservedDirectories $PreservedDirectories `
-            -PreservedFiles $PreservedFiles `
-            -ServerOwnedDirectories $ServerOwnedDirectories `
-            -ServerOwnedThemeFiles $ServerOwnedThemeFiles
+            -ExistingWebConfig $existingWebConfig
     }
 
     Write-DeploymentManifest -Target $DeploymentTarget -EnvironmentName $EnvironmentName -Mode $Mode `
