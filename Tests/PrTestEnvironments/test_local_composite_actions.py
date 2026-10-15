@@ -318,39 +318,94 @@ class RunActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
 
 
 class WaitCeilingTests(harness.HarnessAssertions, unittest.TestCase):
-    """Two workflows that can queue the same command must wait the same length.
+    """How long a producer waits for the VM to answer.
 
-    `pr-test-destroy-all.yml` queued `destroy` and waited 600 seconds while
-    `pr-test-lifecycle.yml` queued the same `destroy` and waited 1800. A teardown
-    that ran past ten minutes was a timeout in one run and a success in the other,
-    for identical work on the same VM -- and because `fail-fast` is off in the
-    sweep, the false timeout was triaged as a failed teardown of a PR whose disk
-    had in fact been released.
+    Two rules. Every wait outlasts the agent's own timeout for the verb it
+    queued, so a run that hangs comes back as the agent's verdict -- "timed out
+    after N seconds and was terminated", with the log -- instead of as a
+    workflow that gave up on a result still on its way. And two workflows that
+    queue the same verb wait the same length.
 
-    Six copies of this wait were converted to the shared action and five of them
-    were brought to a common ceiling. This is the sixth, found by review rather
-    than by anything in the suite, which is the gap this test closes.
-
-    A ceiling is only compared where both ends resolve to a literal. Where a caller
-    computes its attempt count from an input, there is nothing here to compare and
-    the pair is skipped rather than guessed at.
+    Both read a wait the way a run does. An attempt count or an interval taken
+    from `env` or from an input resolves to the default the workflow declares
+    for it. The first rule used to live only in prose, in three dispatch
+    inputs' descriptions and the agent's contract table, and the second
+    skipped every wait read from an input, which was six of the ten.
     """
 
-    def ceiling_seconds(self, with_block, defaults):
-        """The wait ceiling in seconds, or None if either half is an expression."""
-        attempts = str(with_block.get("attempts", defaults["attempts"]))
-        interval = str(with_block.get("interval-seconds", defaults["interval-seconds"]))
-        if not (attempts.isdigit() and interval.isdigit()):
-            return None
-        return int(attempts) * int(interval)
+    # The agent is a scheduled task Windows starts once a minute
+    # (Install-PrEnvironmentCommandQueueTask.ps1, `/SC MINUTE /MO 1`), so a
+    # command can sit in pending/ for up to sixty seconds before its timeout
+    # starts counting. After the timeout the agent still has to report: the
+    # result write retries twice, five and then ten seconds apart
+    # (Complete-QueuedCommand), and around it are gsutil round trips -- the
+    # script refresh before the queue is read, and the log upload before the
+    # result. Ninety seconds is the minute, the fifteen, and fifteen for those.
+    #
+    # It does not cover a command queued behind another one. The agent runs
+    # them one at a time, and how long the one ahead takes is not a property
+    # of the verb being waited for.
+    MARGIN_SECONDS = 90
 
     def action_defaults(self):
         """The `attempts` and `interval-seconds` defaults the action declares."""
         inputs = harness.composite_action("run-vm-command")["inputs"]
         return {name: inputs[name]["default"] for name in ("attempts", "interval-seconds")}
 
-    def commands_and_ceilings(self):
-        """{command name: {workflow: ceiling}} over every call that runs a command.
+    def resolved(self, parsed, job, value):
+        """`value` as a whole number of attempts or seconds.
+
+        A literal is read as it is. `${{ env.X }}` is the job's, or else the
+        workflow's, env entry X. `${{ inputs.X }}` and
+        `${{ github.event.inputs.X }}` are the default the workflow declares for
+        its input X under workflow_dispatch or workflow_call -- what every run
+        waits unless an operator types another number into the form for that
+        one run. Anything else fails rather than being skipped, because a
+        skipped wait is one this class passes over without saying so.
+        """
+        text = str(value).strip()
+        if text.isdigit():
+            return int(text)
+
+        env = {**(parsed.get("env") or {}), **(job.get("env") or {})}
+        from_env = re.fullmatch(r"\$\{\{\s*env\.(\w+)\s*\}\}", text)
+        if from_env and from_env.group(1) in env:
+            # The job is dropped for the next hop: an env entry that reads
+            # another env entry would be a loop, not a ceiling.
+            return self.resolved(parsed, {}, env[from_env.group(1)])
+
+        from_input = re.fullmatch(r"\$\{\{\s*(?:github\.event\.)?inputs\.(\w+)\s*\}\}", text)
+        if from_input:
+            on = harness.triggers(parsed) or {}
+            defaults = {
+                str(spec["default"])
+                for trigger in ("workflow_dispatch", "workflow_call")
+                for name, spec in (((on.get(trigger) or {}).get("inputs")) or {}).items()
+                if name == from_input.group(1) and (spec or {}).get("default") is not None
+            }
+            if len(defaults) == 1:
+                return self.resolved(parsed, {}, defaults.pop())
+
+        self.fail(
+            f"`{text}` is not a number, and not an env entry or an input with one "
+            "default that resolves to a number, so how long this wait lasts cannot "
+            "be read from the workflow."
+        )
+
+    def wait(self, parsed, job_name, step):
+        """(attempts, interval in seconds) for one call, with the action's defaults."""
+        block = step.get("with") or {}
+        defaults = self.action_defaults()
+        job = parsed["jobs"][job_name]
+        return (
+            self.resolved(parsed, job, block.get("attempts", defaults["attempts"])),
+            self.resolved(
+                parsed, job, block.get("interval-seconds", defaults["interval-seconds"])
+            ),
+        )
+
+    def verbs(self, parsed, step):
+        """The verbs one call can queue.
 
         A workflow's `command` dispatch input carries an `options:` list, which is
         the set of command names it can queue. That is how `pr-test-lifecycle.yml`
@@ -358,24 +413,99 @@ class WaitCeilingTests(harness.HarnessAssertions, unittest.TestCase):
         The verb and its wait are one step now, so nothing has to guess which wait
         belongs to which enqueue.
         """
-        defaults = self.action_defaults()
+        named = str((step.get("with") or {}).get("command", ""))
+        if not named.startswith("${{"):
+            return [named]
+        dispatch = (harness.triggers(parsed) or {}).get("workflow_dispatch") or {}
+        options = (((dispatch.get("inputs") or {}).get("command") or {}).get("options")) or []
+        self.assertTrue(
+            options,
+            f"the call queues `{named}` and the workflow's `command` input lists no "
+            "options, so which verbs it waits for cannot be read.",
+        )
+        return [str(option) for option in options]
+
+    def commands_and_ceilings(self):
+        """{command name: {workflow: ceiling}} over every call that runs a command."""
         found = {}
         for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
             parsed = harness.workflow(path.name)
-            dispatch = (harness.triggers(parsed) or {}).get("workflow_dispatch") or {}
-            options = (((dispatch.get("inputs") or {}).get("command") or {}).get("options")) or []
-
-            for _, step in _run_calls(path.name):
-                block = step.get("with") or {}
-                named = str(block.get("command", ""))
-                seconds = self.ceiling_seconds(block, defaults)
-                if seconds is None:
-                    continue
-                for command in options if named.startswith("${{") else [named]:
-                    found.setdefault(command, {})[path.name] = seconds
+            for job_name, step in _run_calls(path.name):
+                attempts, interval = self.wait(parsed, job_name, step)
+                for command in self.verbs(parsed, step):
+                    found.setdefault(command, {})[path.name] = attempts * interval
         return found
 
+    def test_every_wait_outlasts_the_timeout_of_the_verb_it_queued(self):
+        """The agent's verdict arrives while somebody is still looking for it.
+
+        The agent kills a command at its row's TimeoutSeconds and writes a failed
+        result naming the timeout, and the log goes up with it. A wait that gives
+        up first reports "No result" and points at the scheduled task -- the
+        wrong place -- while the real answer lands in the bucket afterwards with
+        nobody reading it.
+
+        Measured to the last look, not to the end of the wait. The wait looks
+        before it sleeps, so after the last look it sleeps one more interval and
+        gives up without looking again; a result written in that interval is
+        never seen.
+        """
+        agent = QUEUE_AGENT.read_text(encoding="utf-8")
+        checked = []
+        short = []
+
+        for name in QUEUE_PRODUCERS:
+            parsed = harness.workflow(name)
+            for job_name, step in _run_calls(name):
+                attempts, interval = self.wait(parsed, job_name, step)
+                last_look = (attempts - 1) * interval
+                for verb in self.verbs(parsed, step):
+                    timeout = harness.command_contract(agent, verb)["TimeoutSeconds"]
+                    checked.append((name, job_name, verb))
+                    if last_look < timeout + self.MARGIN_SECONDS:
+                        short.append(
+                            f"{name} job `{job_name}` last looks for `{verb}` at "
+                            f"{last_look}s ({attempts} attempts {interval}s apart); "
+                            f"the agent may run it {timeout}s and report up to "
+                            f"{self.MARGIN_SECONDS}s after that"
+                        )
+
+        self.assertNotVacuous(checked, "no call to the run action was found")
+        self.assertEqual(
+            [],
+            short,
+            "a wait gives up before the agent's own timeout can report. Raise its "
+            "attempts: a longer wait costs time only on a run that has already "
+            "gone wrong.\n  " + "\n  ".join(short),
+        )
+
+    def test_a_wait_it_cannot_read_fails_rather_than_being_skipped(self):
+        """No workflow does this today, so only a made-up one shows the refusal.
+
+        The class this replaced skipped what it could not read, and what it
+        could not read was every wait an operator can change.
+        """
+        parsed = {"jobs": {"run": {"env": {"POLL_ATTEMPTS": "${{ needs.plan.outputs.attempts }}"}}}}
+        with self.assertRaises(self.failureException):
+            self.resolved(parsed, parsed["jobs"]["run"], "${{ env.POLL_ATTEMPTS }}")
+
     def test_one_command_has_one_ceiling(self):
+        """Two workflows that can queue the same command must wait the same length.
+
+        `pr-test-destroy-all.yml` queued `destroy` and waited 600 seconds while
+        `pr-test-lifecycle.yml` queued the same `destroy` and waited 1800. A
+        teardown still unanswered at ten minutes was a timeout in one run and a
+        success in the other, for identical work on the same VM -- and because
+        `fail-fast` is off in the sweep, the false timeout was triaged as a failed
+        teardown of a PR whose disk had in fact been released.
+
+        The rule above does not cover this. `destroy` is killed at 300 seconds and
+        600 clears that, but a command can wait in pending/ behind another -- the
+        agent runs them one at a time, and a PR deploy may hold it for 1500
+        seconds -- so the time to an answer is not bounded by the verb's own
+        timeout. Equal ceilings keep the verdict from depending on which workflow
+        asked.
+        """
         found = self.commands_and_ceilings()
         self.assertNotVacuous(found, "no workflow both queues a command and waits for it")
 
