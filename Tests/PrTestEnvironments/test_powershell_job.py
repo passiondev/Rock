@@ -533,18 +533,21 @@ class PesterJobTests(harness.HarnessAssertions, unittest.TestCase):
             # walks still has to exist, or the sweep finds nothing and passes.
             # `$Script` interpolated into the path comes from a -ForEach table, and
             # the table's entries are already checked above as bare filenames.
-            directories = [
+            # A suite can also read a file that is not a script -- the artifact
+            # suites check artifact-paths.json against the build configs it
+            # describes -- and that file has to exist for the same reason.
+            read_paths = [
                 target
                 for target in swept.findall(text)
                 if not target.endswith(".ps1") and "$" not in target
             ]
-            for target in directories:
+            for target in read_paths:
                 self.assertTrue(
-                    (harness.REPO_ROOT / target).is_dir(),
-                    f"{suite.name} sweeps {target}, which is not a directory.",
+                    (harness.REPO_ROOT / target).exists(),
+                    f"{suite.name} reads {target}, which does not exist.",
                 )
 
-            found[suite.name] = literals + directories
+            found[suite.name] = literals + read_paths
 
             for literal in literals:
                 # A literal with a path in it is resolved the way the suite itself

@@ -91,6 +91,16 @@ name: Deployment Pipeline Tests
       - 'Rock/Cms/ThemeCustomizationSettings.cs'
       - 'Rock/SystemGuid/DefinedValue.cs'
       - 'Rock/Model/CMS/Theme/ThemeService.cs'
+      # Where the front-end builds write inside RockWeb. ArtifactPlan.Tests.ps1
+      # reads each output path from these and checks that artifact-paths.json
+      # classes it as build, so a new bundle cannot be repackaged as source. The
+      # Blocks project is already covered by its tree above.
+      - 'Rock.JavaScript/webpack.config.js'
+      - 'Rock.JavaScript/webpack.config.monaco.js'
+      - 'Rock.JavaScript.EditorJs/webpack.config.js'
+      - 'Rock.JavaScript.Obsidian/package.json'
+      - 'Rock.JavaScript.Obsidian/Framework/rollup.config.cjs'
+      - 'Rock.JavaScript.Obsidian.Reporting/rollup.config.cjs'
       # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
       - 'CONTEXT.md'
   # The path list is repeated rather than shared through a YAML anchor: PyYAML
@@ -136,6 +146,16 @@ name: Deployment Pipeline Tests
       - 'Rock/Cms/ThemeCustomizationSettings.cs'
       - 'Rock/SystemGuid/DefinedValue.cs'
       - 'Rock/Model/CMS/Theme/ThemeService.cs'
+      # Where the front-end builds write inside RockWeb. ArtifactPlan.Tests.ps1
+      # reads each output path from these and checks that artifact-paths.json
+      # classes it as build, so a new bundle cannot be repackaged as source. The
+      # Blocks project is already covered by its tree above.
+      - 'Rock.JavaScript/webpack.config.js'
+      - 'Rock.JavaScript/webpack.config.monaco.js'
+      - 'Rock.JavaScript.EditorJs/webpack.config.js'
+      - 'Rock.JavaScript.Obsidian/package.json'
+      - 'Rock.JavaScript.Obsidian/Framework/rollup.config.cjs'
+      - 'Rock.JavaScript.Obsidian.Reporting/rollup.config.cjs'
       # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
       - 'CONTEXT.md'
   workflow_dispatch:

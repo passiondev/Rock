@@ -68,6 +68,13 @@ name: Deploy Staging
         required: false
         default: passion-19.4.4
         type: string
+      force_build:
+        description: >-
+          Build from source even if an existing artifact could be repackaged. For a
+          repackage that failed, or one whose site does not show the change.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # A newer commit supersedes an in-flight staging deploy. Two deploys writing the
@@ -84,6 +91,7 @@ permissions:
   # permissions in every workflow reached through `uses:` below.
   contents: read
   actions: read
+  pull-requests: read
 
 jobs:
   resolve:
@@ -216,6 +224,9 @@ jobs:
       head_sha: ${{ needs.resolve.outputs.sha }}
       host_name: staging.connect.passion.team
       artifact_slug: staging
+      # github.event.inputs for the reason resolve's checkout gives: a string
+      # on dispatch, null on push, so anything but a ticked box is false.
+      force_build: ${{ github.event.inputs.force_build == 'true' }}
     secrets: inherit
 
   deploy:

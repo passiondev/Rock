@@ -110,6 +110,28 @@ chat trigger (`rock:destroy`). *Tear down*, *remove* and *prune* are prose
 variants for the same act; prefer `destroy` where a reader might be looking for
 the command.
 
+## Artifacts
+
+| Term | Means |
+|---|---|
+| **the artifact** | The deployable RockWeb zip and the `pr-test-artifact.json` beside it, in `pr-environments/<slug>/<sha>/` in the deployment bucket. Every deploy starts from one. |
+| **full build** | The Windows `package` job of `pr-test-artifact.yml`: compile, bundle, zip. About half an hour. |
+| **repackage** | The `repackage` job: a copy of a **base artifact** with the files that changed since swapped in. Minutes, and nothing is compiled. |
+| **base artifact** | An artifact already in the bucket whose commit differs from the target only in files the build copies verbatim. The **plan** looks for one. |
+| **the plan** | The `plan` job, and `.github/scripts/Get-ArtifactPlan.ps1` under it: repackage if it found a base artifact, build otherwise. |
+| **build** / **patch** / **ignore** | How `.github/scripts/artifact-paths.json` classes a changed path: the build writes it, the build copies it verbatim, or it never reaches the artifact. One build-class path anywhere in the difference rules a base out. |
+| **server-owned** | A path the deploy keeps the server's copy of: the lists at the top of `Deploy-RockEnvironment.ps1`. A change to one still reaches the artifact, built or patched, but the plan warns that it may not reach the site. |
+
+A repackage is not a lighter kind of deploy. What it produces is the zip a full
+build would have made, under the same name, in the same folder, with the same
+metadata plus `builtFromSha` naming the commit whose compiled output it carries.
+Everything after the artifact -- the deploy command, the VM, both deploy modes --
+cannot tell the two apart and does not need to.
+
+Use **full build** for forcing one: it is what `force_build` and the
+`rock:full-build` label ask for. *Skip the build* is fine in prose for the
+repackage path, but the job and the step summary say **repackage**.
+
 ## Deploy modes
 
 | Term | Means |

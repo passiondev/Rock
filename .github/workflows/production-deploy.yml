@@ -47,6 +47,13 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      force_build:
+        description: >-
+          Build from source even if an existing artifact could be repackaged. For a
+          repackage that failed, or one whose site does not show the change.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Never two production deploys at once, and never cancel one midway -- a
@@ -62,6 +69,7 @@ permissions:
   # permissions in every workflow reached through `uses:` below.
   contents: read
   actions: read
+  pull-requests: read
 
 jobs:
   resolve:
@@ -357,6 +365,7 @@ jobs:
       head_sha: ${{ needs.resolve.outputs.sha }}
       host_name: ${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
       artifact_slug: production
+      force_build: ${{ inputs.force_build }}
     secrets: inherit
 
   approve:

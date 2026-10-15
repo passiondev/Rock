@@ -29,6 +29,7 @@ jobs:
       pr_number: ${{ steps.prepare.outputs.pr_number }}
       head_sha: ${{ steps.prepare.outputs.head_sha }}
       host_name: ${{ steps.prepare.outputs.host_name }}
+      force_build: ${{ steps.prepare.outputs.force_build }}
     steps:
       - name: Validate label command and reconcile queued state
         id: prepare
@@ -135,6 +136,9 @@ jobs:
             core.setOutput('pr_number', String(pull.number));
             core.setOutput('head_sha', head.sha);
             core.setOutput('host_name', hostName);
+            // Read from the pull request rather than the event, so a manual
+            // redeploy honours it too. Left on, it builds every push.
+            core.setOutput('force_build', String(pull.labels.some(label => label.name === 'rock:full-build')));
 
   mark-building:
     name: Mark PR as building
@@ -164,6 +168,7 @@ jobs:
       pr_number: ${{ needs.prepare.outputs.pr_number }}
       head_sha: ${{ needs.prepare.outputs.head_sha }}
       host_name: ${{ needs.prepare.outputs.host_name }}
+      force_build: ${{ needs.prepare.outputs.force_build == 'true' }}
     secrets: inherit
 
   mark-deploying:

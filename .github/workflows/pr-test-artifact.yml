@@ -23,22 +23,29 @@ name: PR Test Environment Artifact
           they do not collide with PR builds or with each other.
         required: false
         type: string
+      force_build:
+        description: >-
+          Build even when an artifact already in the bucket could be repackaged.
+          pr-test-deploy.yml sets it from the rock:full-build label.
+        required: false
+        default: false
+        type: boolean
     outputs:
       artifact_name:
         description: GitHub artifact name for the deployable zip.
-        value: ${{ jobs.package.outputs.artifact_name }}
+        value: ${{ jobs.package.outputs.artifact_name || jobs.repackage.outputs.artifact_name }}
       artifact_gcs_object_path:
         description: GCS object path for the deployable zip, relative to the deployment bucket.
-        value: ${{ jobs.package.outputs.artifact_gcs_object_path }}
+        value: ${{ jobs.package.outputs.artifact_gcs_object_path || jobs.repackage.outputs.artifact_gcs_object_path }}
       host_name:
         description: Intended PR test environment host name.
-        value: ${{ jobs.package.outputs.host_name }}
+        value: ${{ jobs.package.outputs.host_name || jobs.repackage.outputs.host_name }}
       pr_number:
         description: Pull request number packaged by this workflow.
-        value: ${{ jobs.package.outputs.pr_number }}
+        value: ${{ jobs.package.outputs.pr_number || jobs.repackage.outputs.pr_number }}
       sha:
         description: Commit SHA packaged by this workflow.
-        value: ${{ jobs.package.outputs.sha }}
+        value: ${{ jobs.package.outputs.sha || jobs.repackage.outputs.sha }}
   workflow_dispatch:
     inputs:
       pr_number:
@@ -57,6 +64,11 @@ name: PR Test Environment Artifact
         description: Names the artifact and its GCS folder. Defaults to pr-<pr_number>.
         required: false
         type: string
+      force_build:
+        description: Build even when an artifact already in the bucket could be repackaged.
+        required: false
+        default: false
+        type: boolean
 
 defaults:
   run:
@@ -65,10 +77,141 @@ defaults:
 permissions:
   contents: read
   actions: read
+  # The plan asks GitHub which pull requests a commit came from.
+  pull-requests: read
 
 jobs:
+  # Most changes are Lava, markup and theme assets the build copies into the
+  # artifact untouched. This looks for an artifact already in the bucket that
+  # differs from this commit in such files alone; finding one, the repackage job
+  # swaps them into a copy of it and the half-hour build is skipped. Rules and
+  # reasoning: .github/scripts/artifact-paths.json and Get-ArtifactPlan.ps1.
+  #
+  # A plan it cannot make costs a build, never the deploy. The step's own
+  # continue-on-error covers the script; this one covers the job around it -- a
+  # failed checkout or sign-in, or a hung listing that runs out the timeout --
+  # so the run still concludes success once the package job has built.
+  plan:
+    name: Decide whether to build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    env:
+      HEAD_SHA: ${{ inputs.head_sha || github.sha }}
+      ARTIFACT_SLUG: ${{ inputs.artifact_slug || format('pr-{0}', inputs.pr_number) }}
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      base_sha: ${{ steps.plan.outputs.base_sha }}
+      base_object_path: ${{ steps.plan.outputs.base_object_path }}
+
+    steps:
+      # The target's own rules and scripts, so a change to either is judged by
+      # the version that will ship it. Both are build-class paths, so a commit
+      # that changes them always builds.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      # Anything but an explicit repackage sends the package job in, so a
+      # failure here is not allowed to fail the run.
+      - name: Look for an artifact to repackage
+        id: plan
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_BUILD: ${{ inputs.force_build }}
+        run: |
+          # A commit from before artifact reuse has no plan to run, and builds.
+          if (-not (Test-Path .github/scripts/Get-ArtifactPlan.ps1)) {
+            Write-Host "::notice::$env:HEAD_SHA predates artifact reuse; building."
+            exit 0
+          }
+          ./.github/scripts/Get-ArtifactPlan.ps1 -TargetSha $env:HEAD_SHA -ArtifactSlug $env:ARTIFACT_SLUG `
+            -Bucket $env:PR_TEST_GCS_BUCKET -Repository $env:GITHUB_REPOSITORY -ForceBuild:($env:FORCE_BUILD -eq 'true')
+
+  # The zip a build would have made, from the base the plan found plus the files
+  # that changed since. Fails rather than falling back: rerun with force_build,
+  # or add the rock:full-build label, to build instead.
+  repackage:
+    name: Repackage RockWeb without a build
+    needs: plan
+    if: needs.plan.outputs.mode == 'repackage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PR_NUMBER: ${{ inputs.pr_number }}
+      HEAD_SHA: ${{ inputs.head_sha || github.sha }}
+      HOST_NAME: ${{ inputs.host_name }}
+      ARTIFACT_SLUG: ${{ inputs.artifact_slug || format('pr-{0}', inputs.pr_number) }}
+      PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
+      BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+      BASE_OBJECT_PATH: ${{ needs.plan.outputs.base_object_path }}
+    outputs:
+      artifact_name: ${{ steps.repackage.outputs.artifact_name }}
+      artifact_gcs_object_path: ${{ steps.repackage.outputs.artifact_gcs_object_path }}
+      host_name: ${{ steps.repackage.outputs.host_name }}
+      pr_number: ${{ steps.repackage.outputs.pr_number }}
+      sha: ${{ steps.repackage.outputs.sha }}
+
+    steps:
+      # Before the checkout, which is when it is read. The build's text files
+      # carry CRLF: it checks out on a Windows runner, whose Git for Windows has
+      # autocrlf on system-wide -- its own "Setup Git CRLF" step comes after its
+      # checkout. A patched file needs the same endings as its neighbours.
+      - name: Setup Git CRLF
+        run: git config --global core.autocrlf true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Repackage the base artifact
+        id: repackage
+        run: |
+          ./.github/scripts/New-RepackagedArtifact.ps1 -BaseSha $env:BASE_SHA -BaseObjectPath $env:BASE_OBJECT_PATH `
+            -TargetSha $env:HEAD_SHA -Bucket $env:PR_TEST_GCS_BUCKET -ArtifactSlug $env:ARTIFACT_SLUG `
+            -PrNumber $env:PR_NUMBER -HostName $env:HOST_NAME
+
+      - name: Upload GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.repackage.outputs.artifact_name }}
+          path: |
+            ${{ steps.repackage.outputs.artifact_name }}
+            pr-test-artifact.json
+          retention-days: 14
+
+      - name: Upload package zip to Cloud Storage
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: ${{ steps.repackage.outputs.artifact_name }}
+          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}
+
+      - name: Upload package metadata to Cloud Storage
+        uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: pr-test-artifact.json
+          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}
+
+  # !cancelled(): a failed plan job would otherwise skip this too, and a plan it
+  # could not make is meant to cost a build.
   package:
     name: Build and package RockWeb
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' }}
     runs-on: windows-latest
     timeout-minutes: 90
     env:
