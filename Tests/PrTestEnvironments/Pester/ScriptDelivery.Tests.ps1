@@ -18,6 +18,13 @@
 
     These tests call the functions. A structural test cannot tell a byte[] from a
     string, and that distinction was the entire defect.
+
+    Five of those eight text tests are gone now. Two were about the refresh's
+    place in the poll -- it runs before any command, and a refresh that throws
+    still lets the queue drain -- and CommandQueuePass.Tests.ps1 runs both against
+    the pass itself. Two were about a bad file, one that does not parse and one
+    that cannot be fetched, and the Describe below runs both. The fifth only
+    checked that the line the ordering tests measured from still existed.
 #>
 
 BeforeAll {
@@ -202,6 +209,23 @@ Describe 'Sync-DeploymentScripts' {
         Sync-DeploymentScripts -Prefix $script:Prefix -Destination $script:Destination
 
         @(Get-ChildItem -Path $script:Destination -Filter '*.sync').Count | Should -Be 0
+    }
+
+    It 'does not let one file that cannot be fetched stop the rest' {
+        # The agent is in its own listing, and Windows may hold its file while it
+        # runs. Listed first, as the agent sorts ahead of Stop-PrEnvironment, a
+        # failure that aborted the loop would skip exactly the scripts most likely
+        # to need the fix. Absent from the fetch map, so the mock answers it 404.
+        $missing = $script:Prefix + $script:StopScript
+        $present = $script:Prefix + $script:DeployScript
+        $script:Listed = @($missing, $present)
+        $script:FetchMap = @{ $present = $script:ScriptText }
+
+        Sync-DeploymentScripts -Prefix $script:Prefix -Destination $script:Destination -WarningAction SilentlyContinue
+
+        $landed = Join-Path $script:Destination $script:DeployScript
+        Test-Path $landed | Should -BeTrue -Because 'a file after the one that failed still has to arrive'
+        (Get-Content $landed -Raw) | Should -Be $script:ScriptText
     }
 }
 

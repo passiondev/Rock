@@ -18,7 +18,41 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
     $script:ActionScript = Get-RepositoryPath '.github/actions/await-vm-command/Await-VmCommand.ps1'
-    . (Import-ScriptFunction -Path $script:ActionScript -Name 'Get-PositiveInteger', 'Get-LogTail', 'Show-CommandLog')
+    . (Import-ScriptFunction -Path $script:ActionScript -Name 'Get-PositiveInteger', 'Get-LogTail', 'Show-CommandLog', 'Read-CommandResult')
+}
+
+Describe 'Read-CommandResult' {
+    # The results a current agent writes are read back through this in
+    # CommandQueuePass.Tests.ps1, straight from the poll pass. These are the shapes
+    # that suite cannot produce, because no current agent writes them.
+
+    It 'reads a result from an agent older than the log upload as having no log' {
+        $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"succeeded"}'
+
+        $outcome.Succeeded | Should -BeTrue
+        $outcome.LogObject | Should -Be ''
+        $outcome.Error | Should -Be ''
+    }
+
+    It 'does not read a result with no status as a success' {
+        # The silent green: a step that exits 0 on a result that said nothing.
+        $outcome = Read-CommandResult -Json '{"commandId":"abc"}'
+
+        $outcome.Succeeded | Should -BeFalse
+    }
+
+    It 'does not read any status but succeeded as a success' {
+        $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"success"}'
+
+        $outcome.Succeeded | Should -BeFalse
+    }
+
+    It 'keeps the parsed result for printing' {
+        $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"failed","error":"boom"}'
+
+        $outcome.Result.commandId | Should -Be 'abc'
+        $outcome.Error | Should -Be 'boom'
+    }
 }
 
 Describe 'Get-PositiveInteger' {

@@ -22,9 +22,13 @@
     result: a false red on work that ran exactly once, which is recoverable by
     reading a log. The behaviour it replaces is not recoverable by anything.
 
-    These tests call the real function with the network edge mocked, because the
-    distinction being asserted -- did the delete still happen -- is invisible to a
-    test that reads source text.
+    These tests call the real function with the queue handed to it as a
+    transport -- the same four-operation hashtable New-GcsQueueTransport builds
+    over GCS -- because the distinction being asserted, did the delete still
+    happen, is invisible to a test that reads source text. They used to shadow
+    Write-GcsObjectText and Remove-GcsObject by name; the transport is that same
+    edge, passed in rather than shadowed. CommandQueuePass.Tests.ps1 covers the
+    poll pass that calls this.
 #>
 
 BeforeAll {
@@ -32,14 +36,13 @@ BeforeAll {
 
     $script:AgentScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Invoke-PrEnvironmentCommandQueue.ps1'
     . (Import-ScriptFunction -Path $script:AgentScript `
-            -Name 'Invoke-WithRetry', 'Complete-QueuedCommand' `
-            -Supplied 'Write-GcsObjectText', 'Remove-GcsObject')
+            -Name 'Invoke-WithRetry', 'Complete-QueuedCommand')
 
     $script:CommandObject = 'pr-environments/commands-prod/pending/abc123.json'
     $script:ResultObject = 'pr-environments/commands-prod/results/abc123.json'
 
     # Defined once here and steered by the script-scoped counters below. Redefining
-    # a function inside an It leaks it into every It after it, which is its own way
+    # a stand-in inside an It leaks it into every It after it, which is its own way
     # of going green while asserting nothing.
     $script:WriteFailuresRemaining = 0
     $script:RemoveFailuresRemaining = 0
@@ -48,26 +51,30 @@ BeforeAll {
     $script:WriteAttempts = 0
     $script:RemoveAttempts = 0
 
-    function script:Write-GcsObjectText {
-        param([string]$ObjectName, [string]$Text, [string]$ContentType)
+    # Only the two operations Complete-QueuedCommand uses. If it started reaching
+    # for List or Read, the call would fail here on a missing key, which is the
+    # point: retiring a command has no business reading the queue.
+    $script:Transport = @{
+        Write  = {
+            param([string]$ObjectName, [string]$Text, [string]$ContentType)
 
-        $script:WriteAttempts++
-        if ($script:WriteFailuresRemaining -gt 0) {
-            $script:WriteFailuresRemaining--
-            throw "simulated GCS 503 on write"
+            $script:WriteAttempts++
+            if ($script:WriteFailuresRemaining -gt 0) {
+                $script:WriteFailuresRemaining--
+                throw "simulated GCS 503 on write"
+            }
+            $script:Written += $ObjectName
         }
-        $script:Written += $ObjectName
-    }
+        Remove = {
+            param([string]$ObjectName)
 
-    function script:Remove-GcsObject {
-        param([string]$ObjectName)
-
-        $script:RemoveAttempts++
-        if ($script:RemoveFailuresRemaining -gt 0) {
-            $script:RemoveFailuresRemaining--
-            throw "simulated GCS 503 on delete"
+            $script:RemoveAttempts++
+            if ($script:RemoveFailuresRemaining -gt 0) {
+                $script:RemoveFailuresRemaining--
+                throw "simulated GCS 503 on delete"
+            }
+            $script:Removed += $ObjectName
         }
-        $script:Removed += $ObjectName
     }
 
     function script:Reset-Counters {
@@ -84,7 +91,8 @@ BeforeAll {
     function script:Complete-TestCommand {
         param([int]$Attempts = 3)
 
-        Complete-QueuedCommand -CommandObjectName $script:CommandObject `
+        Complete-QueuedCommand -Transport $script:Transport `
+            -CommandObjectName $script:CommandObject `
             -ResultObjectName $script:ResultObject `
             -ResultJson '{"status":"success"}' `
             -Attempts $Attempts `
@@ -145,7 +153,8 @@ Describe 'Completing a queued command' {
         $script:RemoveFailuresRemaining = 99
 
         $warnings = @()
-        Complete-QueuedCommand -CommandObjectName $script:CommandObject `
+        Complete-QueuedCommand -Transport $script:Transport `
+            -CommandObjectName $script:CommandObject `
             -ResultObjectName $script:ResultObject `
             -ResultJson '{"status":"success"}' `
             -Attempts 2 `
@@ -161,7 +170,8 @@ Describe 'Completing a queued command' {
         $script:WriteFailuresRemaining = 99
 
         $warnings = @()
-        Complete-QueuedCommand -CommandObjectName $script:CommandObject `
+        Complete-QueuedCommand -Transport $script:Transport `
+            -CommandObjectName $script:CommandObject `
             -ResultObjectName $script:ResultObject `
             -ResultJson '{"status":"success"}' `
             -Attempts 2 `

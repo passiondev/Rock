@@ -118,17 +118,15 @@ class ContractTableTests(harness.HarnessAssertions, unittest.TestCase):
 
 
 class CommandQueueTests(unittest.TestCase):
-    def test_queue_processor_pulls_commands_from_gcs_and_runs_local_scripts(self):
+    def test_the_agent_never_reaches_the_vm_over_ssh_or_restarts_it(self):
+        """The two absences are all this keeps. It used to match a dozen strings that
+        said the agent pulls from GCS and runs local scripts, and every one of them is
+        now held by something that runs it: the queue prefixes by
+        test_environment_deploy.py, the scripts each verb runs by the contract tests
+        above, and the result's shape by Pester/CommandQueuePass.Tests.ps1, which reads
+        what the poll pass writes back through the reader the workflow uses. An absence
+        is the one claim nothing executes."""
         text = QUEUE_SCRIPT.read_text()
-        for expected in [
-            "Get-GcsAccessToken", "Invoke-GcsRequest",
-            # The prefix is templated on $QueueName so each VM owns its own queue;
-            # see test_environment_deploy.py::test_each_vm_polls_its_own_queue_prefix.
-            "$QueueName/pending/", "$QueueName/processing/", "$QueueName/results/",
-            "Deploy-PrEnvironment.ps1", "Stop-PrEnvironment.ps1", "Destroy-PrEnvironment.ps1", "Invoke-PrEnvironmentCertificateRenewal.ps1",
-            "ConvertFrom-Json", "ConvertTo-Json", "CommandId", "status = \"succeeded\"", "status = \"failed\""
-        ]:
-            self.assertIn(expected, text)
         self.assertNotIn("ssh", text.lower())
         self.assertNotIn("Restart-Computer", text)
 
