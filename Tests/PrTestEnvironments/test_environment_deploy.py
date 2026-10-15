@@ -1512,12 +1512,9 @@ class ProductionVersionGuardTests(unittest.TestCase):
         # through would make a normal, expected probe look like a broken workflow.
         self.assertIn("2>/dev/null", run)
 
-    def test_a_version_mismatch_fails_the_run(self):
-        run = self._guard_step()["run"]
-
-        self.assertIn("::error::", run)
-        self.assertRegex(run, r"(?m)^\s*exit 1\s*$")
-        self.assertIn("acknowledge_version_change", run)
+    # A mismatch failing the run, and the acknowledgement letting it through, are
+    # run rather than read: ProductionVersionGuardRunTests in
+    # test_production_deploy.py executes this step against a stubbed `gh`.
 
     def test_the_acknowledgement_is_off_by_default(self):
         workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())

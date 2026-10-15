@@ -327,8 +327,12 @@ jobs:
             exit 1
           fi
 
-          ref_minor="${ref_version%.*}"
-          expected_minor="${expected_version%.*}"
+          # The minor -- 19.4 of 19.4.4 -- not the line the staging guard compares.
+          # A patch or a rollback on the same minor passes; anything else is the
+          # migration this step exists to stop. Each call refuses with its own
+          # annotation when what it is handed is not a version.
+          ref_minor="$(rock_minor_of_version "$ref_version")" || exit 1
+          expected_minor="$(rock_minor_of_version "$expected_version")" || exit 1
 
           {
             echo "| Rock version of ref | \`$ref_version\` |"

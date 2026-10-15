@@ -168,7 +168,9 @@ jobs:
           # read with which pattern, are all in .github/scripts/rock-version.sh --
           # shared with production-deploy.yml's version guard, which answered the
           # same question in the opposite order until 2026-09-15 and agreed with
-          # this one only because the tree carries one of the two files.
+          # this one only because the tree carries one of the two files. So are
+          # reading a version out of the pin's branch name and taking a version's
+          # line, which this step used to do with a sed and a slice of its own.
           #
           # Addressed through GITHUB_WORKSPACE rather than relatively, so that the
           # tests can run this step with the working directory pointed at a
@@ -177,16 +179,27 @@ jobs:
           . "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"
 
           if ! artifact_version="$(rock_version_of_tree)"; then
-            echo "::error::Refusing rather than guessing which minor this artifact is."
+            echo "::error::Refusing rather than guessing which Rock version this artifact is."
             exit 1
           fi
-          artifact_minor="${artifact_version%%.*}"
 
-          pinned_minor="$(printf '%s\n' "$pinned_branch" | sed -n 's/^passion-\([0-9][0-9]*\)\..*$/\1/p')"
-          if [ -z "$pinned_minor" ]; then
-            echo "::error::Could not read the fleet's pinned Rock minor from '$pinned_branch'. Refusing rather than assuming it matches."
+          if ! pinned_version="$(rock_version_of_branch "$pinned_branch")"; then
+            echo "::error::Could not read the fleet's pinned Rock version from '$pinned_branch'. Refusing rather than assuming it matches."
             exit 1
           fi
+
+          # This compares the line -- 19 of 19.4.4 -- and has since the guard was
+          # written: test_staging_catalog_version_guard.py allows 18.4.1 -> 18.5.0.
+          # production-deploy.yml compares the minor, 19.4.
+          #
+          # OPEN QUESTION for the team, recorded here and not answered: should the
+          # shared catalog be guarded on the line, or on the minor as production
+          # is? This step's name and CONTEXT.md both say "minor". Answering
+          # "minor" is rock_line_of_version -> rock_minor_of_version on the two
+          # lines below (and _line -> _minor in their names), plus flipping
+          # test_a_minor_bump_within_the_pinned_line_is_allowed to a refusal.
+          artifact_line="$(rock_line_of_version "$artifact_version")" || exit 1
+          pinned_line="$(rock_line_of_version "$pinned_version")" || exit 1
 
           # The mirror image of the refusal below, and the case the original guard
           # could not see. Its escape hatch was STAGING_DB_NAME being set at all, so
@@ -209,12 +222,12 @@ jobs:
             exit 0
           fi
 
-          if [ "$artifact_minor" != "$pinned_minor" ]; then
-            echo "::error::Refusing to deploy Rock $artifact_version to staging. STAGING_DB_NAME is unset, so this deploy would land on the sandbox catalog shared with every pr-* site, and that catalog is on the ${pinned_minor}.x line (pinned to $pinned_branch). Rock migrates on startup, so a ${artifact_minor}.x artifact would begin migrating a ${pinned_minor}.x catalog on the first request. Give staging its own database and set the STAGING_DB_NAME repository variable first."
+          if [ "$artifact_line" != "$pinned_line" ]; then
+            echo "::error::Refusing to deploy Rock $artifact_version to staging. STAGING_DB_NAME is unset, so this deploy would land on the sandbox catalog shared with every pr-* site, and that catalog is on the ${pinned_line}.x line (pinned to $pinned_branch). Rock migrates on startup, so a ${artifact_line}.x artifact would begin migrating a ${pinned_line}.x catalog on the first request. Give staging its own database and set the STAGING_DB_NAME repository variable first."
             exit 1
           fi
 
-          echo "Rock $artifact_version is on the pinned ${pinned_minor}.x line; the shared catalog stays consistent."
+          echo "Rock $artifact_version is on the pinned ${pinned_line}.x line; the shared catalog stays consistent."
 
   build:
     name: Build staging artifact

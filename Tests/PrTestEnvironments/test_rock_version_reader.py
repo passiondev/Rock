@@ -35,6 +35,7 @@ what both guards already had, and what they had was two shapes.
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -262,6 +263,101 @@ class ReaderAnswersTests(unittest.TestCase):
             f"the reader reads a different version out of this checkout than it "
             f"declares ({declared}):\n{output}",
         )
+
+
+class LineAndMinorTests(unittest.TestCase):
+    """What part of a version each guard compares, answered in one place.
+
+    The two guards read the version through the reader above and then sliced it
+    themselves: staging with `${version%%.*}`, which keeps the major, and
+    production with `${version%.*}`, which drops the last part. Both were commented
+    as comparing "the minor". Only production's does -- staging's is the line, and
+    test_staging_catalog_version_guard.py has allowed 18.4.1 -> 18.5.0 since the
+    guard was written. Two slices that look alike and mean different things are
+    how that went unread, so the reader names both and each guard calls the one it
+    means.
+
+    The expected values are worked by hand, not derived: a test that split the
+    version in Python to get its answer would agree with any reader that split it
+    the same wrong way."""
+
+    # (version, its line, its minor)
+    VERSIONS = (
+        ("19.4.4", "19", "19.4"),
+        ("18.4.1", "18", "18.4"),
+        # A trunk can be named for a two-part version -- TRUNK_BRANCH_PATTERN in
+        # test_base_branch_config.py allows passion-19.4 -- and production's old
+        # `${version%.*}` sliced that to "19", the line, while calling it the minor.
+        ("19.4", "19", "19.4"),
+    )
+
+    # Nothing either declaration has ever carried, and nothing a guard should
+    # compare. "19" is here on purpose: a bare major has no minor, and a reader that
+    # produced one has misread something, so the line is not answered either.
+    NOT_VERSIONS = ("", "19", "19.", "19..4", ".19.4", "v19.4.4", "19.4.4-beta", "$(Version)")
+
+    # (branch, the version it is named for)
+    BRANCHES = (
+        ("passion-19.4.4", "19.4.4"),
+        ("passion-18.4.1", "18.4.1"),
+        ("passion-19.4", "19.4"),
+    )
+
+    # Branches that are not named for a version. `develop` and `staging` are real
+    # branches here that declare 19.0.3 and 17.6.1 -- nothing about their names
+    # says so. A suffix is refused rather than trimmed: the guard reading the pin
+    # refuses when it cannot tell, and passion-19.4.4-anything is a name it would
+    # have to guess at.
+    NOT_VERSION_BRANCHES = (
+        "",
+        "develop",
+        "staging",
+        "passion-19",
+        "passion-19.x",
+        "passion-19.4.4-hotfix",
+        "fix/passion-19.4.4",
+        "Passion-19.4.4",
+    )
+
+    def assertAnswers(self, call, expected):
+        code, answer, output = run_reader(call, REPO_ROOT)
+        self.assertEqual(0, code, output)
+        self.assertEqual(expected, answer, output)
+
+    def assertRefuses(self, call):
+        """The same refusal rock_version_of_tree makes: non-zero, nothing on stdout,
+        and a GitHub annotation saying why. An empty answer with a zero status
+        would compare equal to another empty answer and wave a deploy through."""
+        code, answer, output = run_reader(call, REPO_ROOT)
+        self.assertNotEqual(0, code, f"{call} answered instead of refusing:\n{output}")
+        self.assertEqual("", answer, f"{call} refused but still answered:\n{output}")
+        self.assertIn("::error::", output, f"{call} refused without an annotation:\n{output}")
+
+    def test_the_line_of_a_version_is_its_major(self):
+        for version, line, _ in self.VERSIONS:
+            with self.subTest(version=version):
+                self.assertAnswers(f"rock_line_of_version {shlex.quote(version)}", line)
+
+    def test_the_minor_of_a_version_is_its_major_and_minor(self):
+        for version, _, minor in self.VERSIONS:
+            with self.subTest(version=version):
+                self.assertAnswers(f"rock_minor_of_version {shlex.quote(version)}", minor)
+
+    def test_something_that_is_not_a_version_has_no_line_or_minor(self):
+        for text in self.NOT_VERSIONS:
+            for function in ("rock_line_of_version", "rock_minor_of_version"):
+                with self.subTest(function=function, text=text):
+                    self.assertRefuses(f"{function} {shlex.quote(text)}")
+
+    def test_a_branch_answers_the_version_it_is_named_for(self):
+        for branch, version in self.BRANCHES:
+            with self.subTest(branch=branch):
+                self.assertAnswers(f"rock_version_of_branch {shlex.quote(branch)}", version)
+
+    def test_a_branch_not_named_for_a_version_refuses(self):
+        for branch in self.NOT_VERSION_BRANCHES:
+            with self.subTest(branch=branch):
+                self.assertRefuses(f"rock_version_of_branch {shlex.quote(branch)}")
 
 
 class NobodyElseReadsTheVersionTests(harness.HarnessAssertions, unittest.TestCase):

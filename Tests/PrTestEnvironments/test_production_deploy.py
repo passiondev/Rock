@@ -1,5 +1,10 @@
 import json
+import os
+import pathlib
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -204,6 +209,131 @@ class ProductionRefGuardTests(unittest.TestCase):
             "the Rock version guard is gone; a rollback to an older minor would now "
             "migrate the production database with nothing objecting",
         )
+
+
+@unittest.skipUnless(shutil.which("jq"), "jq is not installed")
+class ProductionVersionGuardRunTests(unittest.TestCase):
+    """Run the version guard's own step text against a stubbed `gh`.
+
+    The staging guard has been run by its tests since it was written; this one was
+    only ever read as text. That was survivable while its comparison was a
+    parameter expansion. It is now a call into .github/scripts/rock-version.sh,
+    and a misspelt function name there fails the step under `bash -e` -- which
+    refuses every production deploy, and no text match would notice.
+
+    These pin the half of the comparison that is production's own: it compares
+    the *minor*. 19.4.4 against 19.5.0 is one line, so the staging guard would
+    let it through; production must not. The stub serves files per branch, so the
+    expected version is only found where the guard should look for it -- on the
+    branch `productionBranch` names, read from the default branch's config."""
+
+    DEFAULT_BRANCH = "trunk"
+
+    def _run(self, ref_version, production_version, acknowledged=False):
+        """Returns `(exit code, stdout + stderr)` for one run of the guard."""
+        script = _step_named(VERSION_GUARD_STEP)["run"]
+        # What the runner substitutes before bash ever sees the text. Anything
+        # left over would reach bash as a "bad substitution", so it is refused
+        # here rather than passed through.
+        expressions = {
+            "${{ inputs.acknowledge_version_change }}": "true" if acknowledged else "false",
+            "${{ github.actor }}": "deployer",
+        }
+        for expression, value in expressions.items():
+            script = script.replace(expression, value)
+        self.assertNotIn(
+            "${{",
+            script,
+            "the version guard carries an expression this test does not substitute",
+        )
+
+        workdir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        checkout = workdir / "checkout"
+        checkout.mkdir()
+        (checkout / "Directory.Build.props").write_text(
+            f"<Project>\n  <PropertyGroup>\n    <Version>{ref_version}</Version>\n"
+            "  </PropertyGroup>\n</Project>\n"
+        )
+
+        production_branch = f"passion-{production_version}"
+        served = workdir / "served"
+        config = served / self.DEFAULT_BRANCH / ".github" / "pr-test-environments.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"productionBranch": production_branch}))
+        props = served / production_branch / "Directory.Build.props"
+        props.parent.mkdir(parents=True)
+        props.write_text(
+            f"<Project>\n  <PropertyGroup>\n    <Version>{production_version}</Version>\n"
+            "  </PropertyGroup>\n</Project>\n"
+        )
+
+        # `gh api repos/<owner>/<repo>/contents/<path>?ref=<branch> --jq .content`
+        # answers with the file's base64, the way the contents API does; a path
+        # the branch does not carry is a 404 and a non-zero exit.
+        stub_dir = workdir / "bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "gh"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'endpoint="$2"\n'
+            'path="${endpoint#*/contents/}"\n'
+            'path="${path%%\\?*}"\n'
+            'ref="${endpoint##*\\?ref=}"\n'
+            'served="$STUB_SERVED/$ref/$path"\n'
+            'if [ ! -f "$served" ]; then echo "stub gh: 404 $ref:$path" >&2; exit 1; fi\n'
+            'base64 < "$served"\n'
+        )
+        stub.chmod(0o755)
+
+        env = dict(
+            os.environ,
+            PATH=f"{stub_dir}:{os.environ['PATH']}",
+            STUB_SERVED=str(served),
+            GITHUB_WORKSPACE=str(REPO_ROOT),
+            GITHUB_STEP_SUMMARY=str(workdir / "summary.md"),
+            GH_TOKEN="unused",
+            REF="the-ref",
+            REPOSITORY="passiondev/Rock",
+            DEFAULT_BRANCH=self.DEFAULT_BRANCH,
+        )
+        # The flags the runner gives a `shell: bash` step.
+        completed = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+            cwd=checkout,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        return completed.returncode, completed.stdout + completed.stderr
+
+    def test_a_patch_change_within_the_production_minor_is_allowed(self):
+        """A rollback, or a patch release on the minor production runs. Refusing
+        this would make the checkbox routine, and a routine checkbox is ticked
+        without being read."""
+        code, output = self._run("19.4.1", "19.4.4")
+
+        self.assertEqual(0, code, f"a same-minor production deploy was refused:\n{output}")
+
+    def test_a_minor_change_within_the_line_is_refused(self):
+        """The case that tells production's guard apart from staging's: one line,
+        two minors. Staging lets this through; production compares the minor."""
+        code, output = self._run("19.5.0", "19.4.4")
+
+        self.assertNotEqual(0, code, f"a 19.5 ref was allowed onto a 19.4 production:\n{output}")
+        self.assertIn("::error::", output, output)
+        self.assertIn(
+            "19.4",
+            output,
+            f"the refusal does not name the minor production expects:\n{output}",
+        )
+
+    def test_an_acknowledged_minor_change_is_allowed(self):
+        """The upgrade path. The checkbox is what a deliberate upgrade ticks after
+        taking a backup, so it has to let the same deploy through -- loudly."""
+        code, output = self._run("19.5.0", "19.4.4", acknowledged=True)
+
+        self.assertEqual(0, code, f"an acknowledged version change was still refused:\n{output}")
+        self.assertIn("::warning::", output, output)
 
 
 if __name__ == "__main__":

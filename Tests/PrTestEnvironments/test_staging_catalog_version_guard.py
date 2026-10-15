@@ -131,15 +131,20 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
                 code, output = _run_guard("18.4.1", "passion-18.4.1", "", layout)
                 self.assertEqual(code, 0, f"a same-minor staging deploy was refused:\n{output}")
 
-    def test_a_patch_bump_within_the_pinned_minor_is_allowed(self):
-        """18.4.1 -> 18.5.0 does not cross a minor, so it does not migrate the
-        catalog onto a version the pr-* fleet cannot read. Blocking this would make
-        the guard a blanket freeze on staging, and a guard that stops ordinary work
-        gets switched off."""
+    def test_a_minor_bump_within_the_pinned_line_is_allowed(self):
+        """18.4.1 -> 18.5.0 crosses a minor and stays on the 18 line. The guard
+        compares the line, so this is allowed, and this is the test that pins it.
+
+        It was written as a patch bump "within the pinned minor", which it is not;
+        the reasoning then was that blocking it would make the guard a blanket
+        freeze on staging, and a guard that stops ordinary work gets switched off.
+        Whether staging should compare the minor instead is an open question
+        recorded beside the guard. Answering it "minor" flips this case to a
+        refusal, so this test changes with that answer."""
         for layout in LAYOUTS:
             with self.subTest(layout=layout):
                 code, output = _run_guard("18.5.0", "passion-18.4.1", "", layout)
-                self.assertEqual(code, 0, f"an in-minor staging deploy was refused:\n{output}")
+                self.assertEqual(code, 0, f"an in-line staging deploy was refused:\n{output}")
 
     def test_a_minor_change_on_the_shared_catalog_is_refused(self):
         """The 2026-08-18 deploy, exactly. This is the case the guard exists for."""
@@ -268,10 +273,10 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
         )
         # Also exit-code-invisible: drop the check and an empty pin falls into the
         # mismatch branch, where "19" != "" refuses anyway -- but it refuses by
-        # reporting a version mismatch against a catalog minor it never read,
+        # reporting a version mismatch against a catalog line it never read,
         # telling whoever is on the deploy to go fix the wrong thing.
         self.assertIn(
-            "pinned Rock minor",
+            "pinned Rock version",
             output,
             f"the guard did not say the pin was the unreadable part:\n{output}",
         )
