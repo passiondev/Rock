@@ -49,46 +49,33 @@ class _Probe:
         self.expiry_epoch = expiry_epoch
 
     def run(self, **env_overrides):
+        """Run the action's own step, which calls the script by path the way the
+        runner does. The summary is empty on the fatal path: the script exits
+        before it writes the table, which is the behaviour a reachability failure
+        should have."""
+        action = harness.composite_action("verify-public-url")
         with tempfile.TemporaryDirectory() as work:
-            binaries = os.path.join(work, "bin")
-            os.makedirs(binaries)
-            self._write_stubs(binaries, work)
-
-            summary = os.path.join(work, "summary.md")
-            env = {
-                **os.environ,
-                "PATH": binaries + os.pathsep + os.environ["PATH"],
-                "HOST_NAME": "site.example.org",
-                "ATTEMPTS": "3",
-                "RETRY_DELAY_SECONDS": "0",
-                "REQUEST_TIMEOUT_SECONDS": "5",
-                "CERTIFICATE_WARNING_DAYS": "21",
-                "GITHUB_STEP_SUMMARY": summary,
-                **env_overrides,
-            }
-
-            completed = subprocess.run(
-                ["bash", str(SCRIPT)],
-                cwd=work,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=60,
+            return harness.run_bash(
+                harness.step(action, "Verify the public URL from the internet")["run"],
+                env={
+                    "GITHUB_ACTION_PATH": str(SCRIPT.parent),
+                    "HOST_NAME": "site.example.org",
+                    "ATTEMPTS": "3",
+                    "RETRY_DELAY_SECONDS": "0",
+                    "REQUEST_TIMEOUT_SECONDS": "5",
+                    "CERTIFICATE_WARNING_DAYS": "21",
+                    **env_overrides,
+                },
+                stubs=self._stubs(work),
             )
-            # Absent on the fatal path: the script exits before it writes the
-            # table, which is the behaviour a reachability failure should have.
-            completed.summary = ""
-            if os.path.exists(summary):
-                with open(summary, encoding="utf-8") as handle:
-                    completed.summary = handle.read()
-            return completed
 
-    def _write_stubs(self, binaries, work):
+    def _stubs(self, work):
+        """The outside world, as the bodies of the commands that reach it. `work`
+        holds the fixture files the stubs read while the step runs."""
+        stubs = {}
+
         def stub(name, body):
-            path = os.path.join(binaries, name)
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write("#!/usr/bin/env bash\n" + textwrap.dedent(body))
-            os.chmod(path, 0o755)
+            stubs[name] = textwrap.dedent(body)
 
         # One code per attempt, so a test can make the site come up on the third try.
         codes = os.path.join(work, "codes")
@@ -127,12 +114,14 @@ class _Probe:
             printf '%s' "{NOW_EPOCH}"
         """)
 
+        return stubs
+
 
 class ReachabilityTests(unittest.TestCase):
     def test_a_serving_site_passes_and_reports_its_code(self):
         result = _Probe(["200"]).run()
 
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(0, result.returncode, result.output)
         self.assertIn("returned HTTP 200", result.stdout)
 
     def test_a_site_that_comes_up_late_still_passes(self):
@@ -141,7 +130,7 @@ class ReachabilityTests(unittest.TestCase):
         would fail every deploy it was added to protect."""
         result = _Probe(["000", "000", "200"]).run()
 
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(0, result.returncode, result.output)
         self.assertIn("returned HTTP 200", result.stdout)
 
     def test_an_unreachable_site_is_fatal_and_says_where_to_look(self):

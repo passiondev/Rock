@@ -656,10 +656,6 @@ class GuardTests(unittest.TestCase):
         self.assertIsNone(_sparse_paths({"uses": "actions/checkout@v4"}))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class QueueActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
     """The enqueue is the other half of the wait, and it moved for a sharper reason.
 
@@ -1310,3 +1306,7 @@ class SecretsContextTests(harness.HarnessAssertions, unittest.TestCase):
         credentials = harness.composite_action("gcp-session")["inputs"]["credentials-json"]
 
         self.assertIs(True, credentials["required"])
+
+
+if __name__ == "__main__":
+    unittest.main()

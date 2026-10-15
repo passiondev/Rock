@@ -665,11 +665,7 @@ class CommandWorkflowTests(unittest.TestCase):
         -- looks exactly like a healthy deploy. Naming the source is safe; echoing
         secrets.DB_NAME into a public log is not."""
         workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
-        steps = workflow["jobs"]["deploy"]["steps"]
-        reporting = [s for s in steps if s.get("name") == "Report which catalog this deploy will use"]
-
-        self.assertEqual(len(reporting), 1)
-        step = reporting[0]
+        step = harness.step(workflow, "Report which catalog this deploy will use", job="deploy")
 
         # Production passes write_connection_string: false and has no catalog here,
         # so this step must not run at all on that path.
@@ -688,8 +684,7 @@ class CommandWorkflowTests(unittest.TestCase):
         on the same Rock minor version. That condition failed on 2026-08-11 and put
         pr-3 on a permanent 500; a fallback nobody is told about is how it failed."""
         workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
-        steps = workflow["jobs"]["deploy"]["steps"]
-        step = next(s for s in steps if s.get("name") == "Report which catalog this deploy will use")
+        step = harness.step(workflow, "Report which catalog this deploy will use", job="deploy")
 
         self.assertIn("::warning::", step["run"])
         self.assertIn("shared sandbox catalog", step["run"])
@@ -1032,11 +1027,7 @@ class ProductionVersionGuardTests(unittest.TestCase):
 
     def _guard_step(self):
         workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
-        return next(
-            s
-            for s in workflow["jobs"]["resolve"]["steps"]
-            if s.get("name") == "Refuse a ref from a different Rock version"
-        )
+        return harness.step(workflow, "Refuse a ref from a different Rock version", job="resolve")
 
     def test_the_guard_runs_before_anything_is_built_or_approved(self):
         workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())

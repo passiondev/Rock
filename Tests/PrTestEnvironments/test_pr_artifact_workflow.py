@@ -76,9 +76,7 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         `exit $LASTEXITCODE` guards, and a trailing `exit 0` forced the step
         green, so a failed compile still packaged and deployed an artifact."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["package"]["steps"]
-
-        build_step = next(s for s in steps if s.get("name") == "Build Rock Projects (Dependency Order)")
+        build_step = harness.step(workflow, "Build Rock Projects (Dependency Order)", job="package")
 
         self.assertNotEqual(build_step.get("continue-on-error"), True)
         self.assertNotRegex(build_step["run"], r"(?m)^\s*exit 0\s*$")
@@ -101,9 +99,7 @@ class PrArtifactWorkflowTests(unittest.TestCase):
             step_names.index("Build Rock.JavaScript.Obsidian.Blocks"),
         )
 
-        verify_step = next(
-            s for s in workflow["jobs"]["package"]["steps"] if s.get("name") == "Verify Build Artifacts"
-        )
+        verify_step = harness.step(workflow, "Verify Build Artifacts", job="package")
         self.assertIn("*.obs.js", verify_step["run"])
 
     def test_verification_gates_on_every_assembly_the_site_serves(self):
@@ -111,9 +107,7 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         REST API, migrations, or block implementations -- each of which yields a
         site that boots and then fails on the first page load."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        verify_step = next(
-            s for s in workflow["jobs"]["package"]["steps"] if s.get("name") == "Verify Build Artifacts"
-        )
+        verify_step = harness.step(workflow, "Verify Build Artifacts", job="package")
 
         for assembly in [
             "Rock.dll",
@@ -162,9 +156,7 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         an explicit packages.config restore the folder every pointer names is
         never created and all of them fail to resolve."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        restore_step = next(
-            s for s in workflow["jobs"]["package"]["steps"] if s.get("name") == "NuGet Restore"
-        )
+        restore_step = harness.step(workflow, "NuGet Restore", job="package")
 
         self.assertIn("RockWeb\\packages.config", restore_step["run"])
         self.assertIn("-PackagesDirectory packages", restore_step["run"])
@@ -270,9 +262,7 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         during Application_Start, so its absence is a 500 on every request -- and
         the custom error page cannot render either, which hides the cause."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        verify_step = next(
-            s for s in workflow["jobs"]["package"]["steps"] if s.get("name") == "Verify Build Artifacts"
-        )
+        verify_step = harness.step(workflow, "Verify Build Artifacts", job="package")
 
         self.assertIn("Google.Protobuf.dll", verify_step["run"])
         self.assertIn("Google.Protobuf", ROCKWEB_PACKAGES_CONFIG.read_text())
@@ -306,8 +296,7 @@ class RefreshPointerResolutionTests(unittest.TestCase):
             # 18.4.1 line, which this workflow still builds for the pr-* fleet.
             self.assertIn("Rock.Frontend.Styles/package-lock.json", step.get("if", ""))
 
-        verify_step = next(s for s in steps if s.get("name") == "Verify Build Artifacts")
-        run = verify_step["run"]
+        run = harness.step(workflow, "Verify Build Artifacts", job="package")["run"]
         self.assertIn("tabler-icon.css", run)
         self.assertIn("styles-v2", run)
 
@@ -330,9 +319,8 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         """The gate is only worth anything while it names the file _rock-core.less
         imports. If a Rock upgrade renames or moves that import, the gate would keep
         passing on a file nothing reads."""
-        verify_step = next(
-            s for s in yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]["package"]["steps"]
-            if s.get("name") == "Verify Build Artifacts"
+        verify_step = harness.step(
+            yaml.safe_load(WORKFLOW_PATH.read_text()), "Verify Build Artifacts", job="package"
         )
         imports = re.findall(
             r'@import[^;]*"([^"]*styles-v2[^"]*)"', ROCK_CORE_LESS.read_text()
@@ -359,8 +347,8 @@ class StylesGateCompletenessTests(unittest.TestCase):
     STYLES_V2_SOURCE = REPO_ROOT / "Rock.Frontend.Styles" / "src" / "styles" / "styles-v2"
 
     def _verify_run(self):
-        steps = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]["package"]["steps"]
-        return next(s for s in steps if s.get("name") == "Verify Build Artifacts")["run"]
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+        return harness.step(workflow, "Verify Build Artifacts", job="package")["run"]
 
     def test_the_gate_does_not_treat_a_file_count_as_completeness(self):
         """The specific regression. A count is a property of the layout, not of the
@@ -455,10 +443,6 @@ class StylesGateCompletenessTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HandDeployBuildStaysCredentialFreeTests(harness.HarnessAssertions, unittest.TestCase):
     r"""`ptp-14803-build-artifact.yml` exists because it cannot reach anything.
 
@@ -531,14 +515,9 @@ class HandDeployBuildStaysCredentialFreeTests(harness.HarnessAssertions, unittes
 
         Divergence in the paths is correct here -- this build compiles two of the
         five. It is the shared key over those different paths that is the fault."""
-        def js_cache(workflow, job):
-            for step in workflow["jobs"][job]["steps"]:
-                if step.get("name") == "Cache JavaScript Dependencies":
-                    return step["with"]
-            self.fail("no JavaScript cache step")
-
-        mine = js_cache(self.workflow(), "build")
-        theirs = js_cache(harness.workflow(WORKFLOW_PATH.name), "package")
+        cache = "Cache JavaScript Dependencies"
+        mine = harness.step(self.workflow(), cache, job="build")["with"]
+        theirs = harness.step(harness.workflow(WORKFLOW_PATH.name), cache, job="package")["with"]
 
         self.assertNotEqual(
             sorted(mine["path"].split()),
@@ -593,3 +572,7 @@ class HandDeployBuildStaysCredentialFreeTests(harness.HarnessAssertions, unittes
             f"{len(shared)}. If a step diverged on purpose, say so; if it diverged by "
             "accident, the two builds no longer set up the same way.",
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

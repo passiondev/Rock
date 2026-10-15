@@ -32,11 +32,9 @@ These tests run the reader rather than matching its source. A shape assertion is
 what both guards already had, and what they had was two shapes.
 """
 
-import os
 import pathlib
 import re
 import shlex
-import subprocess
 import tempfile
 import unittest
 
@@ -110,24 +108,18 @@ def write_tree(root, props=None, attribute=None):
 def run_reader(script, cwd):
     """Source the reader and run `script`, the way both guard steps do.
 
-    `bash -euo pipefail` and `$GITHUB_WORKSPACE` are not decoration: they are what
-    the guards run under, and the reader has to behave under both -- a `| head -1`
-    inside it would fail a whole deploy on sed's SIGPIPE only when pipefail is set.
+    Pipefail and `$GITHUB_WORKSPACE` are not decoration: they are what the guards
+    run under, and the reader has to behave under both -- a `| head -1` inside it
+    would fail a whole deploy on sed's SIGPIPE only when pipefail is set. Neither
+    guard is given `-u`, so neither is this.
 
     Returns `(exit code, stdout, stdout + stderr)`. The split matters: the version
     is the stdout, and everything the run log shows is the combined stream.
     """
-    body = f'. "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"\n{script}\n'
-    env = dict(os.environ)
-    env["GITHUB_WORKSPACE"] = str(REPO_ROOT)
-    completed = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", body],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
+    result = harness.run_bash(
+        f'. "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"\n{script}\n', cwd=cwd
     )
-    return completed.returncode, completed.stdout.strip(), completed.stdout + completed.stderr
+    return result.returncode, result.stdout.strip(), result.output
 
 
 class ReaderAnswersTests(unittest.TestCase):
@@ -513,15 +505,9 @@ class BothGuardsReadThroughItTests(unittest.TestCase):
     }
 
     def guard_body(self, path, step_name):
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for job in workflow["jobs"].values():
-            for step in job.get("steps", []):
-                if step.get("name") == step_name:
-                    return step["run"]
-        raise AssertionError(
-            f"no step named {step_name!r} in {path.name}; that deploy no longer "
-            "guards the Rock version at all"
-        )
+        """A missing step fails in `harness.step` -- which, here, means that deploy no
+        longer guards the Rock version at all."""
+        return harness.step(yaml.safe_load(path.read_text(encoding="utf-8")), step_name)["run"]
 
     def test_each_guard_sources_the_reader(self):
         for name, (path, step_name) in self.GUARDS.items():

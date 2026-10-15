@@ -78,21 +78,26 @@ class OnePowerShellReaderTests(harness.HarnessAssertions, unittest.TestCase):
     not: it is the copy coming back.
     """
 
-    def test_no_test_file_defines_its_own_powershell_comment_stripper(self):
+    def test_no_test_file_defines_its_own_comment_stripper(self):
+        """Either language. `_without_comments` was one of the bash copies, which is
+        why `without` matches as well as `strip`. A test method is exempt because its
+        name describes a case rather than declaring a helper."""
         offenders = []
         for name, text in suite_sources():
             for node in ast.walk(ast.parse(text)):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and re.search(
-                    r"strip.*comment", node.name, re.IGNORECASE
-                ):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.name.startswith("test"):
+                    continue
+                if re.search(r"(strip|without).*comment", node.name, re.IGNORECASE):
                     offenders.append(f"{name}:{node.lineno} {node.name}")
 
         self.assertEqual(
             [],
             offenders,
-            "these declare their own PowerShell comment stripper instead of taking "
-            "the harness one, so a fix to the stripping reaches only the file it was "
-            "made in: " + ", ".join(offenders),
+            "these declare their own comment stripper instead of taking the harness "
+            "one, so a fix to the stripping reaches only the file it was made in: "
+            + ", ".join(offenders),
         )
 
     def test_the_harness_is_the_one_place_that_strips_them(self):
@@ -155,6 +160,186 @@ class OneContractReaderTests(harness.HarnessAssertions, unittest.TestCase):
         users = [name for name, text in suite_sources() if "command_contract" in text]
         self.assertNotVacuous(
             users, "no test file reads the contract table, so the ban above watches nothing"
+        )
+
+
+class OneStepLookupTests(harness.HarnessAssertions, unittest.TestCase):
+    """Sixteen places found a workflow step by name, in four spellings, and a missing
+    step meant something different depending on which one asked. Ten called
+    `next()`, which raises a bare StopIteration -- unittest reports it as an error,
+    and nothing in it names the step. Five failed an assertion of their own, each
+    worded differently. One returned None, so its callers had to remember an
+    `assertIsNotNone`; one of its three did not, and would have failed on
+    subscripting None.
+
+    A renamed step is the ordinary way this happens -- step names are prose, and
+    prose gets edited -- so the answer cannot depend on which spelling of the
+    lookup the test happened to use."""
+
+    WORKFLOW = {
+        "jobs": {
+            "build": {"steps": [{"name": "Compile", "run": "make"}, {"name": "Pack", "run": "zip"}]},
+            "deploy": {"steps": [{"name": "Pack", "run": "unzip"}, {"run": "true"}]},
+        }
+    }
+
+    def test_a_step_is_found_by_its_name(self):
+        self.assertEqual("make", harness.step(self.WORKFLOW, "Compile")["run"])
+
+    def test_naming_the_job_tells_two_same_named_steps_apart(self):
+        self.assertEqual("unzip", harness.step(self.WORKFLOW, "Pack", job="deploy")["run"])
+
+    def test_a_missing_step_fails_and_says_which_name_it_looked_for(self):
+        with self.assertRaisesRegex(AssertionError, r"'Publish'.*found 0"):
+            harness.step(self.WORKFLOW, "Publish")
+
+    def test_a_job_that_does_not_exist_fails_rather_than_finding_nothing(self):
+        with self.assertRaisesRegex(AssertionError, r"'Compile'.*'release'.*found 0"):
+            harness.step(self.WORKFLOW, "Compile", job="release")
+
+    def test_two_steps_with_one_name_fail_rather_than_picking_the_first(self):
+        """Taking the first match is how a test ends up asserting about the build's
+        copy of a step while the deploy's copy is the one that changed."""
+        with self.assertRaisesRegex(AssertionError, r"'Pack'.*found 2"):
+            harness.step(self.WORKFLOW, "Pack")
+
+    def test_a_composite_action_is_searched_too(self):
+        """An action's steps run inside the caller's job, so they are looked up the
+        same way rather than through `runs.steps` by hand."""
+        action = {"runs": {"using": "composite", "steps": [{"name": "Probe", "run": "curl"}]}}
+        self.assertEqual("curl", harness.step(action, "Probe")["run"])
+
+    def test_no_test_file_looks_a_step_up_by_name_for_itself(self):
+        # `\w+\.get` and not a bare `.get`: a job's `environment:` block also has a
+        # name, and `job["environment"].get("name")` is not a step lookup.
+        pattern = re.compile(r"\b\w+\.get\(\s*[\"']name[\"']\s*\)\s*==")
+        offenders = [
+            f"{name}:{harness.line_of(text, match.start())}"
+            for name, text in suite_sources()
+            for match in pattern.finditer(text)
+        ]
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these compare a step's name by hand instead of calling harness.step, so "
+            "a renamed step fails -- or passes -- however that file's spelling of the "
+            "lookup happens to behave: " + ", ".join(offenders),
+        )
+
+    def test_the_files_that_read_steps_use_it(self):
+        users = [name for name, text in suite_sources() if "harness.step(" in text]
+        self.assertNotVacuous(users, "no test file calls harness.step, so the ban above watches nothing")
+
+
+class OneBashRunnerTests(harness.HarnessAssertions, unittest.TestCase):
+    """Five files ran bash for themselves, and each rebuilt a different part of the
+    job around it. Two passed `-u`, which neither guard they ran is given in CI.
+    Two set GITHUB_STEP_SUMMARY and not GITHUB_OUTPUT, so a step that grew an
+    output would, inside CI, append it to the suite's own job. The point of running
+    a step rather than reading it is that the run is the one CI does, and five
+    approximations of that run are five places to be wrong about it."""
+
+    def test_a_step_runs_under_the_flags_actions_gives_a_bash_step(self):
+        """`shell: bash` is `bash --noprofile --norc -eo pipefail {0}`: a failing
+        stage of a pipe fails the step, and an unset variable does not."""
+        piped = harness.run_bash("false | true\necho reached")
+        self.assertNotEqual(0, piped.returncode, piped.output)
+        self.assertNotIn("reached", piped.stdout)
+
+        unset = harness.run_bash('echo "[${NOTHING_SETS_THIS_VARIABLE}]"')
+        self.assertEqual(0, unset.returncode, unset.output)
+        self.assertEqual("[]", unset.stdout.strip())
+
+    def test_outputs_are_read_back_in_both_of_the_forms_actions_accepts(self):
+        result = harness.run_bash(
+            'echo "version=19.4.4" >> "$GITHUB_OUTPUT"\n'
+            '{ echo "notes<<EOF"; echo "line one"; echo "line two"; echo "EOF"; } >> "$GITHUB_OUTPUT"'
+        )
+        self.assertEqual(0, result.returncode, result.output)
+        self.assertEqual({"version": "19.4.4", "notes": "line one\nline two"}, result.outputs)
+
+    def test_the_step_summary_is_read_back(self):
+        result = harness.run_bash('echo "| Check | Result |" >> "$GITHUB_STEP_SUMMARY"')
+        self.assertEqual("| Check | Result |\n", result.summary)
+
+    def test_a_stub_shadows_the_real_command(self):
+        result = harness.run_bash("gh api user", stubs={"gh": 'echo "stub gh: $*"\n'})
+        self.assertEqual(0, result.returncode, result.output)
+        self.assertEqual("stub gh: api user", result.stdout.strip())
+
+    def test_the_workspace_is_this_checkout_unless_the_caller_says_otherwise(self):
+        """Steps reach the repository's own scripts through $GITHUB_WORKSPACE, and
+        a fixture tree as the working directory is how these tests feed a step a
+        branch other than this one."""
+        result = harness.run_bash('echo "$GITHUB_WORKSPACE"')
+        self.assertEqual(str(harness.REPO_ROOT), result.stdout.strip())
+
+    def test_the_caller_environment_reaches_the_step(self):
+        result = harness.run_bash('echo "$HOST_NAME"', env={"HOST_NAME": "site.example.org"})
+        self.assertEqual("site.example.org", result.stdout.strip())
+
+    def test_no_test_file_starts_bash_for_itself(self):
+        pattern = re.compile(r"\[\s*[\"']bash[\"']\s*,")
+        offenders = [
+            f"{name}:{harness.line_of(text, match.start())}"
+            for name, text in suite_sources()
+            for match in pattern.finditer(text)
+        ]
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these start bash themselves instead of calling harness.run_bash, so each "
+            "decides on its own which flags and which Actions files the step gets: "
+            + ", ".join(offenders),
+        )
+
+    def test_the_files_that_run_bash_use_it(self):
+        users = [name for name, text in suite_sources() if "harness.run_bash(" in text]
+        self.assertNotVacuous(users, "no test file calls harness.run_bash, so the ban above watches nothing")
+
+
+class OneBashCommentStripperTests(harness.HarnessAssertions, unittest.TestCase):
+    """Two files read bash with its comments removed -- a deploy guard in one, a
+    repository script in the other -- because the comment explains the exact thing
+    the test scans for. Both dropped full-line comments only, since a `#` later in
+    a line can be `$#` or quoted text. The reasoning is the same in both, so it
+    lives once."""
+
+    def test_full_line_comments_go_and_line_numbers_stay(self):
+        script = 'set -e\n  # no DELETE here\necho "#1 of 2"\n'
+        self.assertEqual('set -e\n\necho "#1 of 2"', harness.strip_bash_comments(script))
+
+    def test_the_files_that_read_bash_guards_use_it(self):
+        users = [name for name, text in suite_sources() if "strip_bash_comments" in text]
+        self.assertNotVacuous(
+            users,
+            "no test file uses the bash stripper, so the stripper ban covers only PowerShell",
+        )
+
+
+class NoHandSlicedFunctionTests(harness.HarnessAssertions, unittest.TestCase):
+    """`text.split("function X")` hands back everything after the first mention of
+    the name, comments included, and an empty slice when the name is gone -- and
+    every `assertNotIn` over an empty slice passes. The deploy-script tests sliced
+    that way until their functions moved to Pester; the harness reader raises
+    instead, and this keeps the string slices from coming back."""
+
+    def test_no_test_file_slices_a_powershell_function_out_by_hand(self):
+        pattern = re.compile(r"\.(?:split|index|find|rfind|partition)\(\s*f?[\"'](?:\\n)?function\s")
+        offenders = [
+            f"{name}:{harness.line_of(text, match.start())}"
+            for name, text in suite_sources()
+            for match in pattern.finditer(text)
+        ]
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these cut a function body out of a script by string search instead of "
+            "harness.powershell_function, which raises when the function is gone: "
+            + ", ".join(offenders),
         )
 
 
@@ -255,6 +440,36 @@ class CollectionSafetyTests(harness.HarnessAssertions, unittest.TestCase):
             offenders,
             "these are module-level helpers whose names make pytest collect them as "
             "tests and call them with no arguments: " + "\n  ".join(offenders),
+        )
+
+    def test_a_main_block_is_the_last_thing_in_its_file(self):
+        """`python test_x.py` runs `unittest.main()` where the block sits, and that
+        call exits. Four files had it part-way down, so run on their own they ran
+        only the classes above it -- and passed, because nothing it skipped could
+        fail. Discovery imports the module and never reaches the block, which is why
+        CI never showed it."""
+        own_name = pathlib.Path(__file__).name
+        own_text = pathlib.Path(__file__).read_text(encoding="utf-8")
+        checked = [(own_name, own_text)] + suite_sources()
+
+        offenders = []
+        for name, text in checked:
+            body = ast.parse(text).body
+            for index, node in enumerate(body):
+                is_main_block = (
+                    isinstance(node, ast.If)
+                    and isinstance(node.test, ast.Compare)
+                    and isinstance(node.test.left, ast.Name)
+                    and node.test.left.id == "__name__"
+                )
+                if is_main_block and index != len(body) - 1:
+                    offenders.append(f"{name}:{node.lineno}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            "these files call unittest.main() before their last class, so running "
+            "the file directly skips everything below it: " + ", ".join(offenders),
         )
 
 

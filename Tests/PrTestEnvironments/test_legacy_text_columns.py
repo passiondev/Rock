@@ -333,10 +333,6 @@ class TypeMappingTests(unittest.TestCase):
             self.assertEqual(entry.group(1), "nvarchar(max)")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TheFinderCanActuallyBeRunTests(unittest.TestCase):
     """The runbook's procedure is only as real as the path that runs it.
 
@@ -441,3 +437,6 @@ class TheFinderCanActuallyBeRunTests(unittest.TestCase):
         self.assertIn(FINDER.name, agent)
         self.assertNotIn(CONVERTER.name, agent)
 
+
+if __name__ == "__main__":
+    unittest.main()

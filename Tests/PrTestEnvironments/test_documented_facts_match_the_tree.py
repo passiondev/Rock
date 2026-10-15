@@ -221,10 +221,6 @@ class ReferencedPathsExistTests(harness.HarnessAssertions, unittest.TestCase):
         self.assertGreater(found, 100, "the path scan matched almost nothing -- it has stopped working")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 PRODUCTION_UPGRADE_RUNBOOK = REPO_ROOT / "Documentation" / "Production-Upgrade-Runbook.md"
 COMMAND_QUEUE_AGENT = (
     REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
@@ -335,3 +331,7 @@ class RunbookHealthCheckNumbersMatchTheDeployScriptTests(
             "failures, and the runbook does not say so. Without it the recycle in "
             "the log reads as the deploy restarting itself.",
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

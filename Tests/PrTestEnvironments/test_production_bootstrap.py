@@ -262,15 +262,6 @@ class ProductionBootstrapWorkflowTests(unittest.TestCase):
             "scripts are published to production without a parse check",
         )
 
-    def _step(self, name):
-        """One named step of the bootstrap job, whole. Callers that want the shell
-        body take `["run"]`; the expressions a step reads can live in `env` instead,
-        so a helper that returned only the body would miss them."""
-        steps = self.parsed["jobs"]["bootstrap"]["steps"]
-        matching = [step for step in steps if step.get("name") == name]
-        self.assertEqual(len(matching), 1, f"expected exactly one step named {name!r}")
-        return matching[0]
-
     def test_the_startup_script_will_not_install_an_agent_that_cannot_write(self):
         """Staging the metadata is described as inert, and it is only inert because
         of this check. A startup script runs at every boot, so any reboot between
@@ -279,7 +270,9 @@ class ProductionBootstrapWorkflowTests(unittest.TestCase):
         the queue and cannot write a result, and the failed write aborts before the
         command object is deleted, so one queued production command would run again
         every minute for as long as the box stayed up."""
-        staging = self._step("Stage the startup script on the production VM")["run"]
+        staging = harness.step(
+            self.parsed, "Stage the startup script on the production VM", job="bootstrap"
+        )["run"]
 
         self.assertIn(
             "service-accounts/default/scopes",
@@ -308,7 +301,9 @@ class ProductionBootstrapWorkflowTests(unittest.TestCase):
         adds, and writing that back strips `logging.write` and `monitoring.write` --
         production's Ops Agent goes quiet on upgrade day. The read happens before
         `instances stop`, so refusing there costs nothing: production is still up."""
-        restart = self._step("Restart the production VM to apply it")["run"]
+        restart = harness.step(
+            self.parsed, "Restart the production VM to apply it", job="bootstrap"
+        )["run"]
 
         read = restart.index("gcloud compute instances describe")
         stop = restart.index("gcloud compute instances stop")
@@ -336,8 +331,12 @@ class ProductionBootstrapWorkflowTests(unittest.TestCase):
         script runs afterwards, on the box, reporting to nobody. Without a check the
         job is green whether the agent installed or not -- and the next thing anyone
         does with a green bootstrap is dispatch a production deploy into it."""
-        verify = self._step("Wait for the agent to report in")["run"]
-        staging = self._step("Stage the startup script on the production VM")["run"]
+        verify = harness.step(
+            self.parsed, "Wait for the agent to report in", job="bootstrap"
+        )["run"]
+        staging = harness.step(
+            self.parsed, "Stage the startup script on the production VM", job="bootstrap"
+        )["run"]
 
         self.assertIn(
             "get-serial-port-output",
@@ -363,7 +362,7 @@ class ProductionBootstrapWorkflowTests(unittest.TestCase):
         restart step's outcome, and those differ exactly when it matters: announcing
         a healthy agent over a failed restart is the one summary that would send
         somebody to dispatch a deploy at an instance that is still stopped."""
-        summary = self._step("Say what happened")
+        summary = harness.step(self.parsed, "Say what happened", job="bootstrap")
         # What the step is handed, and what it does with it. Both matter: reading
         # the outcome into `env` and then branching on the input would pass a check
         # of either half on its own.
@@ -412,7 +411,9 @@ class ProductionBootstrapWorkflowTests(unittest.TestCase):
             "production's restart now runs the shared fleet action, which stops "
             "the instance before its scope read can refuse -- see ADR-0008",
         )
-        restart = self._step("Restart the production VM to apply it")["run"]
+        restart = harness.step(
+            self.parsed, "Restart the production VM to apply it", job="bootstrap"
+        )["run"]
         self.assertIn("gcloud compute instances stop", restart)
         self.assertIn("gcloud compute instances start", restart)
 

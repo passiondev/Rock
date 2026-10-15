@@ -1,9 +1,7 @@
 import json
-import os
 import pathlib
 import re
 import shutil
-import subprocess
 import tempfile
 import unittest
 
@@ -22,25 +20,13 @@ VERSION_GUARD_STEP = "Refuse a ref from a different Rock version"
 
 def _resolve_steps():
     workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
-    return workflow["jobs"]["resolve"]["steps"]
+    return harness.steps(workflow, job="resolve")
 
 
-def _step_named(name):
-    for step in _resolve_steps():
-        if step.get("name") == name:
-            return step
-    return None
-
-
-def _without_comments(script):
-    """Only the lines bash actually executes. A guard's comment naturally quotes
-    the thing it is guarding against -- this one explains why it deliberately has
-    no `acknowledge_version_change` escape -- and a test that reads the comment
-    concludes the escape is present. Full-line comments only: a trailing `#` split
-    would cut into the quoted text of the `echo` lines below."""
-    return "\n".join(
-        line for line in script.splitlines() if not line.lstrip().startswith("#")
-    )
+def _resolve_step(name):
+    """One step of `resolve`, the job both guards live in."""
+    workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+    return harness.step(workflow, name, job="resolve")
 
 
 class ProductionRefGuardTests(unittest.TestCase):
@@ -55,13 +41,14 @@ class ProductionRefGuardTests(unittest.TestCase):
     standing between `develop` and production. This guard is the control."""
 
     def setUp(self):
-        self.step = _step_named(REF_GUARD_STEP)
-        self.assertIsNotNone(
-            self.step,
-            f"production-deploy.yml has no step named {REF_GUARD_STEP!r}; nothing stops a "
-            f"deploy from a branch that is not the trunk",
-        )
-        self.script = _without_comments(self.step.get("run", ""))
+        # A missing step means nothing stops a deploy from a branch that is not
+        # the trunk, and harness.step fails on it.
+        self.step = _resolve_step(REF_GUARD_STEP)
+        # Only the lines bash executes. The guard's comment quotes the thing it
+        # guards against -- it explains why it deliberately has no
+        # `acknowledge_version_change` escape -- and a test that read the comment
+        # would conclude the escape is present.
+        self.script = harness.strip_bash_comments(self.step.get("run", ""))
 
     def test_the_guard_compares_against_the_production_branch_pin(self):
         """The same oracle the version guard uses, and NOT the repository's default
@@ -204,8 +191,9 @@ class ProductionRefGuardTests(unittest.TestCase):
         """The two guards answer different questions -- 'is this the trunk' and 'is
         this the expected Rock minor' -- and a rollback can satisfy the first while
         failing the second. Neither replaces the other."""
-        self.assertIsNotNone(
-            _step_named(VERSION_GUARD_STEP),
+        self.assertIn(
+            VERSION_GUARD_STEP,
+            [step.get("name") for step in _resolve_steps()],
             "the Rock version guard is gone; a rollback to an older minor would now "
             "migrate the production database with nothing objecting",
         )
@@ -231,7 +219,7 @@ class ProductionVersionGuardRunTests(unittest.TestCase):
 
     def _run(self, ref_version, production_version, acknowledged=False):
         """Returns `(exit code, stdout + stderr)` for one run of the guard."""
-        script = _step_named(VERSION_GUARD_STEP)["run"]
+        script = _resolve_step(VERSION_GUARD_STEP)["run"]
         # What the runner substitutes before bash ever sees the text. Anything
         # left over would reach bash as a "bad substitution", so it is refused
         # here rather than passed through.
@@ -270,11 +258,7 @@ class ProductionVersionGuardRunTests(unittest.TestCase):
         # `gh api repos/<owner>/<repo>/contents/<path>?ref=<branch> --jq .content`
         # answers with the file's base64, the way the contents API does; a path
         # the branch does not carry is a 404 and a non-zero exit.
-        stub_dir = workdir / "bin"
-        stub_dir.mkdir()
-        stub = stub_dir / "gh"
-        stub.write_text(
-            "#!/usr/bin/env bash\n"
+        gh = (
             'endpoint="$2"\n'
             'path="${endpoint#*/contents/}"\n'
             'path="${path%%\\?*}"\n'
@@ -283,28 +267,20 @@ class ProductionVersionGuardRunTests(unittest.TestCase):
             'if [ ! -f "$served" ]; then echo "stub gh: 404 $ref:$path" >&2; exit 1; fi\n'
             'base64 < "$served"\n'
         )
-        stub.chmod(0o755)
 
-        env = dict(
-            os.environ,
-            PATH=f"{stub_dir}:{os.environ['PATH']}",
-            STUB_SERVED=str(served),
-            GITHUB_WORKSPACE=str(REPO_ROOT),
-            GITHUB_STEP_SUMMARY=str(workdir / "summary.md"),
-            GH_TOKEN="unused",
-            REF="the-ref",
-            REPOSITORY="passiondev/Rock",
-            DEFAULT_BRANCH=self.DEFAULT_BRANCH,
-        )
-        # The flags the runner gives a `shell: bash` step.
-        completed = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+        result = harness.run_bash(
+            script,
+            env={
+                "STUB_SERVED": str(served),
+                "GH_TOKEN": "unused",
+                "REF": "the-ref",
+                "REPOSITORY": "passiondev/Rock",
+                "DEFAULT_BRANCH": self.DEFAULT_BRANCH,
+            },
+            stubs={"gh": gh},
             cwd=checkout,
-            env=env,
-            capture_output=True,
-            text=True,
         )
-        return completed.returncode, completed.stdout + completed.stderr
+        return result.returncode, result.output
 
     def test_a_patch_change_within_the_production_minor_is_allowed(self):
         """A rollback, or a patch release on the minor production runs. Refusing
