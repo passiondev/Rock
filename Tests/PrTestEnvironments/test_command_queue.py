@@ -47,7 +47,7 @@ def _queued_verbs():
 
         for job in (parsed.get("jobs") or {}).values():
             for step in job.get("steps") or []:
-                if not str(step.get("uses", "")).endswith("queue-vm-command"):
+                if not str(step.get("uses", "")).endswith("run-vm-command"):
                     continue
 
                 command = str((step.get("with") or {}).get("command", ""))
@@ -140,15 +140,16 @@ class CommandQueueTests(unittest.TestCase):
     def test_workflows_upload_commands_and_poll_results_without_ssh(self):
         for path in [DEPLOY_WORKFLOW, LIFECYCLE_WORKFLOW]:
             text = path.read_text()
-            self.assertIn("./.github/actions/queue-vm-command", text)
+            self.assertIn("./.github/actions/run-vm-command", text)
             self.assertNotIn("sshpass", text)
             self.assertNotIn("Deploy over SSH", text)
 
-            # Both halves of the queue protocol moved into shared actions:
-            # queue-vm-command and await-vm-command. test_local_composite_actions.py
-            # asserts every producer uses both and that neither kept a private copy,
-            # which is a stronger claim than the strings this used to match. What is
-            # left here is the property the class is named for: no SSH.
+            # Both halves of the queue protocol moved into shared actions,
+            # queue-vm-command and await-vm-command, and run-vm-command calls the
+            # pair. test_local_composite_actions.py asserts every producer goes
+            # through it and that none kept a private copy, which is a stronger
+            # claim than the strings this used to match. What is left here is the
+            # property the class is named for: no SSH.
 
 if __name__ == "__main__":
     unittest.main()

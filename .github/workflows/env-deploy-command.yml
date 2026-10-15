@@ -99,7 +99,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      COMMAND_ID: deploy-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       ENVIRONMENT_NAME: ${{ inputs.environment_name }}
       HOST_NAME: ${{ inputs.host_name }}
@@ -196,12 +195,15 @@ jobs:
       #
       # toJSON, not a quoted interpolation: target_site_path is a Windows path and
       # a bare backslash is not a valid JSON escape.
-      - name: Queue deploy-environment command
-        uses: ./.github/actions/queue-vm-command
+      #
+      # The step keeps the wait's title because the production runbook sends an
+      # operator to it by name for the VM log.
+      - name: Wait for the VM to report the result
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
           queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: deploy-${{ inputs.environment_name }}
           command: deploy-environment
           payload: |
             {
@@ -215,14 +217,6 @@ jobs:
               "apply": ${{ env.APPLY == 'true' }}
             }
           secret-value: ${{ env.CONNECTION_STRING }}
-
-      - name: Wait for the VM to report the result
-        id: await
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.GCS_BUCKET }}
-          queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
           label: Deploy of ${{ env.ENVIRONMENT_NAME }}
           attempts: ${{ inputs.poll_attempts }}
 

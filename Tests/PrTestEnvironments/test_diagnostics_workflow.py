@@ -44,7 +44,7 @@ class DiagnoseCommandQueueWorkflowTests(unittest.TestCase):
         """
         text = WORKFLOW.read_text()
 
-        for action in ("queue-vm-command", "await-vm-command"):
+        for action in ("run-vm-command", "queue-vm-command", "await-vm-command"):
             with self.subTest(action=action):
                 self.assertNotIn(
                     f"./.github/actions/{action}",

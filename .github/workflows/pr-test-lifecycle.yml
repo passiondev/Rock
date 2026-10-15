@@ -127,15 +127,14 @@ jobs:
     if: needs.prepare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     env:
-      COMMAND_ID: lifecycle-${{ needs.prepare.outputs.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
       PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
       COMMAND: ${{ needs.prepare.outputs.command }}
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     steps:
-      # `uses: ./...` loads the action from the checkout, so it has to be on disk
-      # before the step below. Sparse and non-cone: this job wants one action.yml,
-      # not a clone of Rock.
-      - name: Check out the await action
+      # `uses: ./...` loads the actions from the checkout, so they have to be on
+      # disk before the step below. Sparse and non-cone: this job wants the actions
+      # directory, not a clone of Rock.
+      - name: Check out the queue actions
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
@@ -147,24 +146,18 @@ jobs:
         with:
           credentials-json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Queue PR environment lifecycle command
-        uses: ./.github/actions/queue-vm-command
-        with:
-          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
-          command: ${{ env.COMMAND }}
-          payload: |
-            {"prNumber": ${{ env.PR_NUMBER }}}
-
-      # Was sixty attempts at ten seconds, with no log download and no error
-      # message -- the most degraded of the six copies of this wait. A lifecycle
+      # The wait was sixty attempts at ten seconds, with no log download and no
+      # error message -- the most degraded of the six copies of it. A lifecycle
       # command that ran past ten minutes was reported as a timeout here and as a
       # success by the identical command queued from another workflow.
       - name: Wait for the VM to report the result
-        uses: ./.github/actions/await-vm-command
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: lifecycle-${{ needs.prepare.outputs.pr_number }}
+          command: ${{ env.COMMAND }}
+          payload: |
+            {"prNumber": ${{ env.PR_NUMBER }}}
           label: Lifecycle ${{ needs.prepare.outputs.command }} for PR #${{ needs.prepare.outputs.pr_number }}
           # 1800 seconds, matching pr-test-deploy.yml. Was 600, which is the defect
           # this conversion fixes: the same command queued from there waited three

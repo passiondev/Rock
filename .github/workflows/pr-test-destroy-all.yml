@@ -187,7 +187,6 @@ jobs:
       matrix:
         pr_number: ${{ fromJson(needs.plan.outputs.pr_numbers) }}
     env:
-      COMMAND_ID: destroy-all-${{ matrix.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
       PR_NUMBER: ${{ matrix.pr_number }}
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     steps:
@@ -203,20 +202,14 @@ jobs:
         with:
           credentials-json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Queue PR environment destroy command
-        uses: ./.github/actions/queue-vm-command
+      - name: Wait for the VM to report the result
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: destroy-all-${{ matrix.pr_number }}
           command: destroy
           payload: |
             {"prNumber": ${{ env.PR_NUMBER }}}
-
-      - name: Wait for the VM to report the result
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
           label: Teardown of PR #${{ env.PR_NUMBER }}
           # fail-fast is off, so a failure here is triaged after the whole fleet has
           # been through, and the reader needs to know the sweep carried on.

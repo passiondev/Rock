@@ -16,6 +16,9 @@ Card 02 of the 2026-08-21 architecture review moved six copies of the
 command-queue wait, and then six copies of the enqueue, into two actions. That
 took the number of local action references from two to fourteen. This module is
 what makes that safe to keep doing.
+
+A third action, run-vm-command, now calls those two, so every producer names one
+action per command and the pair is written down in one file instead of ten.
 """
 
 import pathlib
@@ -34,8 +37,13 @@ QUEUE_ACTION = "./.github/actions/queue-vm-command"
 QUEUE_ACTION_FILE = ACTIONS_DIR / "queue-vm-command" / "action.yml"
 QUEUE_ACTION_SCRIPT = ACTIONS_DIR / "queue-vm-command" / "Write-VmCommand.ps1"
 
-# Every workflow that queues a command onto the VM and waits for the answer. Both
-# halves are one action for all of them: queue-vm-command and await-vm-command.
+# The one action a workflow calls to do both: it queues through the first and
+# waits through the second, with one id, one bucket and one queue for the pair.
+RUN_ACTION = "./.github/actions/run-vm-command"
+RUN_ACTION_FILE = ACTIONS_DIR / "run-vm-command" / "action.yml"
+
+# Every workflow that queues a command onto the VM and waits for the answer. All
+# of them do both through one action, run-vm-command.
 #
 # Hand-written, because the claim each sweep below makes is that a *named*
 # workflow uses the shared action -- derived from the callers, that claim would
@@ -70,6 +78,24 @@ def _local_action_references(parsed):
             uses = step.get("uses") or ""
             if uses.startswith("./"):
                 yield job_name, index, uses
+
+
+def _run_calls(name):
+    """(job, step) for every call to run-vm-command in a workflow."""
+    calls = []
+    for job_name, job in (harness.workflow(name).get("jobs") or {}).items():
+        for step in job.get("steps") or []:
+            if (step.get("uses") or "") == RUN_ACTION:
+                calls.append((job_name, step))
+    return calls
+
+
+def _run_action_step(uses):
+    """The step of run-vm-command that calls `uses`, or None."""
+    for step in harness.action_steps(harness.composite_action("run-vm-command")):
+        if (step.get("uses") or "") == uses:
+            return step
+    return None
 
 
 def _checkouts_before(parsed, job_name, index):
@@ -212,19 +238,49 @@ class LocalActionCheckoutTests(harness.HarnessAssertions, unittest.TestCase):
                 )
 
 
-class AwaitActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
-    """Every producer waits the same way now."""
+class RunActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
+    """Every producer queues and waits through one action, and nothing else reaches
+    either half.
 
-    def test_every_queue_producer_waits_through_the_action(self):
+    The two halves have to agree on an id, a bucket and a queue. With a call to
+    each, ten jobs wrote all three down twice, and the only thing holding each pair
+    together was a test comparing one step with the next. Inside one action the
+    pair is written once, so a mismatch has nowhere to live.
+    """
+
+    def test_every_queue_producer_runs_its_commands_through_the_action(self):
         for name in QUEUE_PRODUCERS:
-            parsed = harness.workflow(name)
-            uses = [u for _, _, u in _local_action_references(parsed)]
-            self.assertIn(
-                AWAIT_ACTION,
-                uses,
-                f"{name} queues a command onto the VM but does not wait through "
-                "the shared action. That is how the six copies drifted the first time.",
+            self.assertTrue(
+                _run_calls(name),
+                f"{name} is listed as a queue producer but does not call "
+                f"`{RUN_ACTION}`. That is how the six copies drifted the first time.",
             )
+
+    def test_only_the_run_action_calls_either_half(self):
+        """A workflow calling queue-vm-command directly is a pair whose id, bucket
+        and queue are its own again, and a second action wrapping them is a second
+        place the pairing is written. Either is the drift this action removed."""
+        halves = (QUEUE_ACTION, AWAIT_ACTION)
+        offenders = []
+
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            for job_name, _, uses in _local_action_references(harness.workflow(path.name)):
+                if uses in halves:
+                    offenders.append(f"{path.name} job `{job_name}` -> {uses}")
+
+        for action in harness.composite_actions():
+            if action == "run-vm-command":
+                continue
+            for step in harness.action_steps(harness.composite_action(action)):
+                if (step.get("uses") or "") in halves:
+                    offenders.append(f"{action}/action.yml -> {step['uses']}")
+
+        self.assertEqual(
+            [],
+            offenders,
+            f"these call a half of the protocol directly; call `{RUN_ACTION}` "
+            "instead:\n  " + "\n  ".join(offenders),
+        )
 
     def test_no_producer_kept_its_own_poll_loop(self):
         for name in QUEUE_PRODUCERS:
@@ -240,24 +296,25 @@ class AwaitActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
                         "`await-vm-command`, so that a fix to it reaches every caller.",
                     )
 
-    def test_the_action_gets_a_bucket_and_a_command_id_from_every_caller(self):
-        # Both are `required: true`, which GitHub does not enforce for composite
-        # actions -- a missing input is the empty string, and an empty bucket makes
-        # every gsutil path `gs:///...`, which fails in a way that names nothing.
+    def test_every_call_names_a_bucket_a_prefix_a_verb_and_a_label(self):
+        # All four are `required: true`, which GitHub does not enforce for a
+        # composite action: a missing input is the empty string. An empty bucket
+        # makes every gsutil path `gs:///...`; an empty verb reaches the VM as a
+        # command the agent has no branch for; an empty prefix queues an id that
+        # starts with a hyphen and names no caller; an empty label makes the
+        # failure annotation name nothing. None of them fails where it was caused.
+        calls = []
         for name in QUEUE_PRODUCERS:
-            parsed = harness.workflow(name)
-            for job_name, job in (parsed.get("jobs") or {}).items():
-                for step in job.get("steps") or []:
-                    if (step.get("uses") or "") != AWAIT_ACTION:
-                        continue
-                    supplied = step.get("with") or {}
-                    for required in ("bucket", "command-id", "label"):
-                        value = str(supplied.get(required, "")).strip()
-                        self.assertTrue(
-                            value,
-                            f"{name} job `{job_name}` calls the await action without "
-                            f"`{required}`.",
-                        )
+            for job_name, step in _run_calls(name):
+                calls.append((name, job_name))
+                supplied = step.get("with") or {}
+                for required in ("bucket", "command-id-prefix", "command", "label"):
+                    self.assertTrue(
+                        str(supplied.get(required, "")).strip(),
+                        f"{name} job `{job_name}` runs a command without "
+                        f"`{required}`.",
+                    )
+        self.assertNotVacuous(calls, "no producer calls the run action")
 
 
 class WaitCeilingTests(harness.HarnessAssertions, unittest.TestCase):
@@ -289,15 +346,17 @@ class WaitCeilingTests(harness.HarnessAssertions, unittest.TestCase):
 
     def action_defaults(self):
         """The `attempts` and `interval-seconds` defaults the action declares."""
-        inputs = harness.composite_action("await-vm-command")["inputs"]
+        inputs = harness.composite_action("run-vm-command")["inputs"]
         return {name: inputs[name]["default"] for name in ("attempts", "interval-seconds")}
 
     def commands_and_ceilings(self):
-        """{command name: {workflow: ceiling}} over every job that queues and waits.
+        """{command name: {workflow: ceiling}} over every call that runs a command.
 
         A workflow's `command` dispatch input carries an `options:` list, which is
         the set of command names it can queue. That is how `pr-test-lifecycle.yml`
         is known to queue `destroy` even though the step passes an expression.
+        The verb and its wait are one step now, so nothing has to guess which wait
+        belongs to which enqueue.
         """
         defaults = self.action_defaults()
         found = {}
@@ -306,25 +365,13 @@ class WaitCeilingTests(harness.HarnessAssertions, unittest.TestCase):
             dispatch = (harness.triggers(parsed) or {}).get("workflow_dispatch") or {}
             options = (((dispatch.get("inputs") or {}).get("command") or {}).get("options")) or []
 
-            for job in (parsed.get("jobs") or {}).values():
-                steps = job.get("steps") or []
-                queued, ceilings = [], []
-                for step in steps:
-                    uses = step.get("uses") or ""
-                    block = step.get("with") or {}
-                    if uses == QUEUE_ACTION:
-                        named = str(block.get("command", ""))
-                        queued.extend(options if named.startswith("${{") else [named])
-                    elif uses == AWAIT_ACTION:
-                        ceilings.append(self.ceiling_seconds(block, defaults))
-                if not (queued and ceilings):
-                    continue
-                # One wait per job in every caller today; take the first so a second
-                # one added later does not silently pick up the wrong pairing.
-                seconds = ceilings[0]
+            for _, step in _run_calls(path.name):
+                block = step.get("with") or {}
+                named = str(block.get("command", ""))
+                seconds = self.ceiling_seconds(block, defaults)
                 if seconds is None:
                     continue
-                for command in queued:
+                for command in options if named.startswith("${{") else [named]:
                     found.setdefault(command, {})[path.name] = seconds
         return found
 
@@ -368,7 +415,19 @@ class DeclaredOutputTests(harness.HarnessAssertions, unittest.TestCase):
     Both were wrong in ways that reading them would have surfaced immediately, and
     both survived because nothing read them. Deleting is the fix; this stops the
     next one being added.
+
+    An output no step sets is exempt. Every defect above was a step output that a
+    script failed to populate on some path; an output the runner assembles from
+    `inputs` and `github` alone has no such path, because it is evaluated whether
+    or not any step ran. run-vm-command's `command-id` is the one there is: it is
+    exposed so a caller can name the command without rebuilding the id, and what
+    could go wrong with it is its value, which RunActionTests pins to the id both
+    halves are given.
     """
+
+    def is_set_by_a_step(self, definition):
+        """True when an output's value reads a step's output."""
+        return "steps." in str(definition.get("value") or "")
 
     def reads_of(self, name, declaring_action):
         """Every place outside the declaring action that reads `.outputs.<name>`.
@@ -392,7 +451,10 @@ class DeclaredOutputTests(harness.HarnessAssertions, unittest.TestCase):
     def test_every_declared_output_is_read_by_a_caller(self):
         declared, unread = [], []
         for action in harness.composite_actions():
-            for name in harness.composite_action(action).get("outputs") or {}:
+            outputs = harness.composite_action(action).get("outputs") or {}
+            for name, definition in outputs.items():
+                if not self.is_set_by_a_step(definition):
+                    continue
                 declared.append(f"{action}.{name}")
                 if not self.reads_of(name, action):
                     unread.append(f"{action}.{name}")
@@ -458,7 +520,7 @@ class GuardTests(unittest.TestCase):
         }
         paths = _sparse_paths(checkout)
         self.assertEqual(["Deployment/PrTestEnvironments"], paths)
-        self.assertFalse(any(AWAIT_ACTION[2:].startswith(entry) for entry in paths))
+        self.assertFalse(any(RUN_ACTION[2:].startswith(entry) for entry in paths))
 
     def test_a_non_sparse_checkout_covers_everything(self):
         self.assertIsNone(_sparse_paths({"uses": "actions/checkout@v4"}))
@@ -480,21 +542,10 @@ class QueueActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
     """
 
     def queue_steps(self, name):
-        """Every step in a workflow that calls the enqueue action."""
-        steps = []
-        for job_name, job in (harness.workflow(name).get("jobs") or {}).items():
-            for step in job.get("steps") or []:
-                if (step.get("uses") or "") == QUEUE_ACTION:
-                    steps.append((job_name, step))
-        return steps
-
-    def test_every_producer_queues_through_the_action(self):
-        for name in QUEUE_PRODUCERS:
-            self.assertTrue(
-                self.queue_steps(name),
-                f"{name} is listed as a queue producer but does not call "
-                f"`{QUEUE_ACTION}`.",
-            )
+        """Every step in a workflow that queues a command, which is every call to
+        run-vm-command: the payload and the verb are its inputs, passed through to
+        the enqueue unchanged."""
+        return _run_calls(name)
 
     def test_no_producer_kept_its_own_enqueue(self):
         """A leftover hand-rolled enqueue is not a duplicate, it is a second
@@ -509,24 +560,6 @@ class QueueActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
                         f"{name} job `{job_name}` step `{step.get('name')}` still "
                         "writes to the queue directly.",
                     )
-
-    def test_every_call_names_a_bucket_a_command_id_and_a_verb(self):
-        # `required: true` is not enforced for a composite action: a missing input
-        # arrives as the empty string, and an empty verb reaches the VM as a
-        # command the agent has no branch for, which it reports as a failure
-        # naming neither the workflow nor the field.
-        calls = []
-        for name in QUEUE_PRODUCERS:
-            for job_name, step in self.queue_steps(name):
-                calls.append((name, job_name))
-                supplied = step.get("with") or {}
-                for required in ("bucket", "command-id", "command"):
-                    self.assertTrue(
-                        str(supplied.get(required, "")).strip(),
-                        f"{name} job `{job_name}` queues a command without "
-                        f"`{required}`.",
-                    )
-        self.assertNotVacuous(calls, "no producer calls the queue action")
 
     def test_no_caller_passes_a_connection_string_inside_the_payload(self):
         """`secret-value` exists so a connection string never passes through an
@@ -573,13 +606,9 @@ class QueueActionAdoptionTests(harness.HarnessAssertions, unittest.TestCase):
         queuing = sorted(
             path.name
             for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml"))
-            if any(
-                (step.get("uses") or "") == QUEUE_ACTION
-                for job in (harness.workflow(path.name).get("jobs") or {}).values()
-                for step in (job.get("steps") or [])
-            )
+            if _run_calls(path.name)
         )
-        self.assertNotVacuous(queuing, "no workflow calls the queue action at all")
+        self.assertNotVacuous(queuing, "no workflow calls the run action at all")
         self.assertEqual(
             sorted(QUEUE_PRODUCERS),
             queuing,
@@ -855,54 +884,170 @@ class QueueActionBehaviourTests(harness.HarnessAssertions, unittest.TestCase):
         self.assertNotIn("-eq 'connectionString'", text)
 
 
-class CommandIdTests(harness.HarnessAssertions, unittest.TestCase):
-    """A re-run must not read the previous attempt's answer.
+class RunActionTests(harness.HarnessAssertions, unittest.TestCase):
+    """What a caller of run-vm-command is promised.
 
-    `github.run_id` holds still across a re-run and `github.run_attempt` counts up,
-    so an id built from the run alone repeats. Nothing deletes a result object, and
-    await-vm-command acts on the first `results/<id>.json` it can copy. Those three
-    facts together mean a re-run of a producer whose id omits the attempt finds the
-    last attempt's result waiting on the first poll, reports it, and never notices
-    the VM did no work. A failed deploy re-run reports the same failure. A fixed one
-    reports success it did not earn.
+    A re-run must not read the previous attempt's answer. `github.run_id` holds
+    still across a re-run and `github.run_attempt` counts up, so an id built from
+    the run alone repeats. Nothing deletes a result object, and await-vm-command
+    acts on the first `results/<id>.json` it can copy. Together that means a
+    re-run whose id omits the attempt finds the last attempt's result on the first
+    poll, reports it, and never notices the VM did no work. A failed deploy re-run
+    reports the same failure. A fixed one reports success it did not earn.
+
+    Each producer used to spell the attempt into its own COMMAND_ID, and a scan of
+    every producer's text was what held it there. The action appends it now, so a
+    caller supplies only the part that names it and cannot leave the attempt out.
     """
 
-    def test_every_producer_puts_the_attempt_in_its_command_id(self):
-        without = {}
-        for name in QUEUE_PRODUCERS:
-            text = (harness.WORKFLOWS_DIR / name).read_text()
-            for line in text.splitlines():
-                if "COMMAND_ID:" not in line:
+    # The suffix every id ends in, and the whole of what the action adds to the
+    # caller's prefix. Runbooks and operators search for ids of this shape, so the
+    # shape is the contract rather than a detail of how it is built.
+    RUN_SUFFIX = "-${{ github.run_id }}-${{ github.run_attempt }}"
+
+    def test_both_halves_and_the_output_carry_one_id(self):
+        """The enqueue and the wait are given the same id, and it is the id the
+        action reports. Three copies of one expression, so they are compared."""
+        expected = "${{ inputs.command-id-prefix }}" + self.RUN_SUFFIX
+        queue = _run_action_step(QUEUE_ACTION)
+        wait = _run_action_step(AWAIT_ACTION)
+        output = harness.composite_action("run-vm-command")["outputs"]["command-id"]
+
+        self.assertEqual(expected, str((queue.get("with") or {}).get("command-id")))
+        self.assertEqual(expected, str((wait.get("with") or {}).get("command-id")))
+        self.assertEqual(expected, str(output.get("value")))
+
+    def test_no_caller_puts_the_run_in_its_prefix(self):
+        """The action appends the run and the attempt. A prefix that carries them
+        too queues `deploy-1-2-1-2`, which no runbook search finds."""
+        prefixes = []
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            for job_name, step in _run_calls(path.name):
+                prefix = str((step.get("with") or {}).get("command-id-prefix", ""))
+                prefixes.append(prefix)
+                for context in ("github.run_id", "github.run_attempt"):
+                    self.assertNotIn(
+                        context,
+                        prefix,
+                        f"{path.name} job `{job_name}` puts `{context}` in its "
+                        "prefix; the action appends it already.",
+                    )
+        self.assertNotVacuous(prefixes, "no workflow calls the run action")
+
+    def test_every_input_of_either_half_is_forwarded_under_its_own_name(self):
+        """One input per input of the halves, same name, same default.
+
+        A default written in two files is two defaults, and the caller gets the
+        outer one without being told. The 140-attempt ceiling is the one that
+        matters: a mismatch here moves the timeout of every caller that leaves it
+        out. Derived from the halves, so an input added to either is covered
+        without editing this test, and fails until the run action forwards it.
+        """
+        own = harness.composite_action("run-vm-command")["inputs"]
+        compared = []
+
+        for half, uses in (("queue-vm-command", QUEUE_ACTION), ("await-vm-command", AWAIT_ACTION)):
+            supplied = _run_action_step(uses).get("with") or {}
+            for name, definition in harness.composite_action(half)["inputs"].items():
+                if name == "command-id":
                     continue
-                if "github.run_attempt" not in line:
-                    without.setdefault(name, []).append(line.strip())
+                compared.append(f"{half}.{name}")
+                self.assertIn(name, own, f"run-vm-command does not take `{name}` for {half}")
+                self.assertEqual(
+                    "${{ inputs." + name + " }}",
+                    str(supplied.get(name)),
+                    f"run-vm-command does not pass its own `{name}` to {half}",
+                )
+                self.assertEqual(
+                    definition.get("default"),
+                    own[name].get("default"),
+                    f"{half} defaults `{name}` to {definition.get('default')!r} and "
+                    f"run-vm-command to {own[name].get('default')!r}.",
+                )
 
-        self.assertEqual(
-            {},
-            without,
-            "a command id that omits github.run_attempt repeats on a re-run, and "
-            "the stale result from the previous attempt is what await-vm-command "
-            "reports:\n"
-            + "\n".join(
-                f"  {n}\n    " + "\n    ".join(lines) for n, lines in sorted(without.items())
-            ),
-        )
+        self.assertNotVacuous(compared, "neither half declares an input")
 
-    def test_every_producer_declares_a_command_id(self):
-        """The scan above passes trivially for a producer with no COMMAND_ID line at
-        all, so this holds the list honest as producers come and go."""
-        missing = [
-            name
-            for name in QUEUE_PRODUCERS
-            if "COMMAND_ID:" not in (harness.WORKFLOWS_DIR / name).read_text()
-        ]
+    def test_the_wait_does_not_run_after_a_failed_enqueue(self):
+        """Fail closed. A composite action skips the steps after a failure unless
+        they ask to run, so a wait with no `if:` is skipped when the upload fails.
+        One that ran anyway would poll for a command that was never queued and
+        report the VM as unresponsive after its full ceiling."""
+        steps = harness.action_steps(harness.composite_action("run-vm-command"))
+        uses = [step.get("uses") or "" for step in steps]
 
+        self.assertLess(uses.index(QUEUE_ACTION), uses.index(AWAIT_ACTION))
+        self.assertNotIn("if", _run_action_step(AWAIT_ACTION))
         self.assertEqual(
             [],
-            missing,
-            "these are listed as queue producers and declare no COMMAND_ID, so the "
-            "attempt check above says nothing about them: " + ", ".join(missing),
+            [step.get("name") for step in steps if "continue-on-error" in step],
+            "a step that continues on error turns a failed command into a green job",
         )
+
+    def summary_step(self):
+        """The step that writes the VM log into the job summary."""
+        for step in harness.action_steps(harness.composite_action("run-vm-command")):
+            if "GITHUB_STEP_SUMMARY" in (step.get("run") or ""):
+                return step
+        self.fail("run-vm-command has no step that writes the job summary")
+
+    def test_the_log_goes_in_the_summary_when_asked_including_on_failure(self):
+        """Off unless asked, because a deploy's summary is its own. When asked, a
+        failed command needs the log there more than a successful one does: for a
+        scan or a dry run it is the finding, and for a failure it is the reason."""
+        own = harness.composite_action("run-vm-command")["inputs"]
+        condition = str(self.summary_step().get("if") or "")
+
+        self.assertEqual("false", own["log-to-summary"]["default"])
+        self.assertIn("always()", condition)
+        self.assertIn("inputs.log-to-summary == 'true'", condition)
+        self.assertIn("steps.await.outputs.log-path != ''", condition)
+
+    def test_the_summary_carries_the_whole_log(self):
+        """Whole, not a tail. The callers that ask are the ones whose log is the
+        result -- a column list, a plan an approver signs off -- and a tail cuts
+        off the part somebody has to act on. The agent redacts before uploading.
+
+        The path arrives through `env:`; RunnerExpressionPlacementTests in
+        test_powershell_job.py holds why an expression does not go in the body."""
+        step = self.summary_step()
+        run = step.get("run") or ""
+        variables = [
+            variable
+            for variable, value in (step.get("env") or {}).items()
+            if str(value) == "${{ steps.await.outputs.log-path }}"
+        ]
+
+        self.assertEqual(1, len(variables), "the log path does not arrive through env:")
+        self.assertIn(f"Get-Content -LiteralPath $env:{variables[0]} -Raw", run)
+        self.assertNotIn("-Tail", run)
+
+    def test_a_job_behind_an_approval_follows_one_that_shows_its_plan(self):
+        """An approver decides against the plan job's summary. Without the log in
+        it, approving means opening the plan job's log and finding the command's
+        output in the middle of the poll loop -- or approving without reading.
+
+        Derived from the jobs: any job behind an `environment:` gate that needs a
+        job running a command makes that command's log the thing approved."""
+        checked = []
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            jobs = harness.workflow(path.name).get("jobs") or {}
+            for gated_name, gated in jobs.items():
+                if "environment" not in gated:
+                    continue
+                needs = gated.get("needs") or []
+                for needed in [needs] if isinstance(needs, str) else needs:
+                    for step in (jobs.get(needed) or {}).get("steps") or []:
+                        if (step.get("uses") or "") != RUN_ACTION:
+                            continue
+                        checked.append(f"{path.name}:{needed}")
+                        self.assertEqual(
+                            "true",
+                            str((step.get("with") or {}).get("log-to-summary")),
+                            f"{path.name} job `{gated_name}` is approved against "
+                            f"`{needed}`, whose command log stays out of the summary.",
+                        )
+
+        self.assertNotVacuous(checked, "no gated job follows a job that runs a command")
 
 
 class DotSourceGuardTests(harness.HarnessAssertions, unittest.TestCase):

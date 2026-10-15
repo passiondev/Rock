@@ -986,7 +986,7 @@ class CommandWorkflowTests(unittest.TestCase):
             step
             for job in (parsed.get("jobs") or {}).values()
             for step in (job.get("steps") or [])
-            if (step.get("uses") or "") == "./.github/actions/queue-vm-command"
+            if (step.get("uses") or "") == "./.github/actions/run-vm-command"
         ]
         self.assertEqual(
             1, len(steps), "expected exactly one queue step in the deploy command workflow"
@@ -1106,7 +1106,7 @@ class DeployScriptDriftTests(unittest.TestCase):
             workflow = yaml.safe_load(path.read_text()) or {}
             for job_name, job in (workflow.get("jobs") or {}).items():
                 for step in job.get("steps") or []:
-                    if "queue-vm-command" in str(step.get("uses", "")):
+                    if "run-vm-command" in str(step.get("uses", "")):
                         yield path, job_name, job, str((step.get("with") or {}).get("command", ""))
 
     def _deploy_jobs(self):
@@ -1218,7 +1218,7 @@ class DeployScriptDriftTests(unittest.TestCase):
             with self.subTest(workflow=path.name, job=job_name):
                 steps = job["steps"]
                 drift = next(i for i, s in enumerate(steps) if str(s.get("uses", "")) == self.DRIFT_ACTION)
-                queue = next(i for i, s in enumerate(steps) if "queue-vm-command" in str(s.get("uses", "")))
+                queue = next(i for i, s in enumerate(steps) if "run-vm-command" in str(s.get("uses", "")))
 
                 self.assertLess(drift, queue)
 

@@ -783,7 +783,7 @@ class KeepListIsReachableTests(unittest.TestCase):
             payloads = [
                 step["with"]["payload"]
                 for step in spec["jobs"][job]["steps"]
-                if step.get("uses", "").endswith("queue-vm-command")
+                if step.get("uses", "").endswith("run-vm-command")
             ]
             self.assertTrue(payloads, f"{job} queues no command")
             for payload in payloads:

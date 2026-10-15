@@ -137,7 +137,6 @@ jobs:
       run:
         shell: pwsh
     env:
-      COMMAND_ID: anonymize-plan-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       EXPECTED_CATALOG: ${{ inputs.expected_catalog }}
       KEEP_EMAIL_DOMAINS: ${{ inputs.keep_email_domains }}
@@ -195,12 +194,15 @@ jobs:
           $keep = if ($env:KEEP_EMAIL_DOMAINS) { "``$env:KEEP_EMAIL_DOMAINS``" } else { "_nothing -- everyone is anonymized_" }
           "| Domains kept | $keep |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Queue the dry run
-        uses: ./.github/actions/queue-vm-command
+      # The log goes in the summary whole, not as a tail. The counts ARE the output,
+      # and they are what the approver on the next job is being asked to approve.
+      - name: Wait for the VM to report the plan
+        id: await
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
           queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: anonymize-plan
           command: anonymize-staging
           # toJSON, not a quoted interpolation. Both of these are free-text
           # dispatch inputs, and a value carrying a double quote or a
@@ -215,27 +217,10 @@ jobs:
               "keepEmailDomains": ${{ toJSON(inputs.keep_email_domains) }}
             }
           secret-value: ${{ env.CONNECTION_STRING }}
-
-      - name: Wait for the VM to report the plan
-        id: await
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.GCS_BUCKET }}
-          queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
           label: The dry run
           attempts: ${{ env.POLL_ATTEMPTS }}
           interval-seconds: '10'
-
-      # Whole, not a tail. The counts ARE the output, and they are what the approver
-      # on the next job is being asked to approve.
-      - name: Put the plan in the job summary
-        if: always() && steps.await.outputs.log-path != ''
-        run: |
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          log-to-summary: 'true'
 
   apply:
     name: Apply
@@ -255,7 +240,6 @@ jobs:
       run:
         shell: pwsh
     env:
-      COMMAND_ID: anonymize-apply-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       EXPECTED_CATALOG: ${{ inputs.expected_catalog }}
       KEEP_EMAIL_DOMAINS: ${{ inputs.keep_email_domains }}
@@ -303,12 +287,12 @@ jobs:
           "| Approved by | ${{ github.actor }} |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Rollback | re-import the seeding .bak from GCS |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Queue the apply
-        uses: ./.github/actions/queue-vm-command
+      - name: Wait for the VM to finish
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
           queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: anonymize-apply
           command: anonymize-staging
           # toJSON, not a quoted interpolation. Both of these are free-text
           # dispatch inputs, and a value carrying a double quote or a
@@ -323,22 +307,7 @@ jobs:
               "keepEmailDomains": ${{ toJSON(inputs.keep_email_domains) }}
             }
           secret-value: ${{ env.CONNECTION_STRING }}
-
-      - name: Wait for the VM to finish
-        id: await
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.GCS_BUCKET }}
-          queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
           label: The anonymization
           attempts: ${{ env.POLL_ATTEMPTS }}
           interval-seconds: '10'
-
-      - name: Put the result in the job summary
-        if: always() && steps.await.outputs.log-path != ''
-        run: |
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          log-to-summary: 'true'

@@ -57,10 +57,9 @@ class CertificateRenewalTests(unittest.TestCase):
         self.assertNotIn("sshpass", text)
         self.assertNotIn("Deploy over SSH", text)
 
-        # Waiting for the result is .github/actions/await-vm-command and queueing is
-        # .github/actions/queue-vm-command, both shared with the other five
-        # producers; test_local_composite_actions.py asserts that this workflow uses
-        # them and how they behave.
+        # Queueing and waiting are .github/actions/run-vm-command, shared with the
+        # other producers; test_local_composite_actions.py asserts that this
+        # workflow uses it and how it and the two halves it calls behave.
 
 
 class CertificateBindResilienceTests(unittest.TestCase):

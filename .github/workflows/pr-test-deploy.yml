@@ -223,7 +223,6 @@ jobs:
     if: needs.prepare.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     env:
-      COMMAND_ID: deploy-${{ needs.prepare.outputs.pr_number }}-${{ github.run_id }}-${{ github.run_attempt }}
       PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
       HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
       HOST_NAME: ${{ needs.prepare.outputs.host_name }}
@@ -306,12 +305,12 @@ jobs:
 
       # The connection string goes through secret-value rather than the payload:
       # this is the producer that holds the sandbox password, and it is the reason
-      # the enqueue became an action. See the action's header.
-      - name: Queue PR environment deploy command
-        uses: ./.github/actions/queue-vm-command
+      # the enqueue became an action. See queue-vm-command's header.
+      - name: Wait for the VM to report the result
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: deploy-${{ needs.prepare.outputs.pr_number }}
           command: deploy
           payload: |
             {
@@ -322,12 +321,6 @@ jobs:
             }
           secret-field: sandboxConnectionString
           secret-value: ${{ env.SANDBOX_CONNECTION_STRING }}
-
-      - name: Wait for the VM to report the result
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
           label: Deploy of PR #${{ env.PR_NUMBER }}
           attempts: '120'
 
