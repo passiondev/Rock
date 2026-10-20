@@ -1701,6 +1701,70 @@ restart, like the bootstrap's scope change. Production's account still needs to 
 `commands-prod/` and `bootstrap/prod/`, and to write `processing/`, `results/` and `logs/` under
 its own queue. Then the test VM's account can be narrowed the same way as the fleet key.
 
+**Applied on 2026-10-20: everything except production's VM account, which waits on DevOps.**
+
+Production's key is `github-actions-rock-production@passioncitychurch-com.iam.gserviceaccount.com`.
+Its key was created 2026-10-20 at 13:22 UTC and lives in one place only: the `production`
+environment's `GCP_SA_KEY` secret. It shadows the repository secret of the same name for every
+job that declares the environment, and no other job can read it. Its bindings, all read back
+after they were applied:
+
+| Role | Where | Why |
+| --- | --- | --- |
+| `storage.objectAdmin` | Bucket, condition `production-queue-and-bootstrap`: objects under `pr-environments/commands-prod/` or `pr-environments/bootstrap/prod/` | The two prefixes production's agent reads |
+| `storage.objectViewer` | Bucket, condition `read-pr-environments`: objects under `pr-environments/` | Production's artifact, and the published scripts the drift report compares against |
+| `storage.legacyBucketReader` | Bucket, no condition | A listing is checked against the bucket, not an object, so an object-name condition never matches it |
+| `compute.instanceAdmin.v1` | `connect-srv-prod` only | The bootstrap stops, rescopes and starts it |
+| `compute.viewer` | Project | Resolving the VM by name |
+| `iam.serviceAccountUser` | The default compute account | `set-service-account` has to act as the account the VM runs as |
+
+The fleet key was narrowed at 15:57 UTC the same day. The repository's `GCP_SA_KEY` is
+`github-actions-rock-deploy@passioncitychurch-com.iam.gserviceaccount.com`. The grants below
+went on first and were read back, and then four project-wide roles came off: `storage.admin`,
+`storage.objectAdmin`, `compute.instanceAdmin.v1` and `iam.serviceAccountUser`. Those reached
+every bucket and every instance in the project, production's included. What it holds now:
+
+| Role | Where | Why |
+| --- | --- | --- |
+| `storage.objectAdmin` | Bucket, condition `fleet-pr-environments-except-production`: objects under `pr-environments/`, except `pr-environments/commands-prod/` and `pr-environments/bootstrap/prod/` | Artifacts, the test VM's queue, `bootstrap/latest/`, diagnostics, and `production/`, which the hash protects |
+| `storage.legacyBucketReader` | Bucket, no condition | Listings, and the `gsutil ls` that decides whether the bootstrap runs `gsutil mb` |
+| `compute.instanceAdmin.v1` | `connect-srv-test` only | The fleet's restarts: stop, start, rescope, startup script, serial output |
+| `compute.viewer` | Project | Resolving the VM, and waiting on zone operations |
+| `iam.serviceAccountUser` | The default compute account | `set-service-account` on the test VM |
+
+It was checked two ways. Each policy was read back. Then real runs used the key after the
+change: test bootstrap 39456185890 listed the bucket, uploaded the scripts, resolved the VM,
+staged its startup script, then stopped, rescoped and started it. PR #22's deploy and PR #21's
+lifecycle command finished on the narrowed key, and staging deploy 39456498954 built, published
+and queued under it. The negative, that the key can no longer write `commands-prod/`, rests on
+the read-back alone. Policy Troubleshooter is disabled in this project and was left disabled.
+
+To roll back, re-add the four project roles. The new bindings can stay.
+
+**Without production's own VM account, the pipeline still works.** Nothing it runs needs that
+step: every write and every approval above holds. What it leaves open is a second path to
+production that never touches `GCP_SA_KEY`:
+
+- **The test VM's metadata token is still the widest path to production.** PR code runs on that
+  VM, and the VM's token is the default compute account's: `roles/editor` on the project and
+  admin on the bucket. Nothing on this page narrows it.
+- **The fleet key can still reach that token, one step removed.** The fleet key keeps
+  `compute.instanceAdmin.v1` on `connect-srv-test` and `iam.serviceAccountUser` on the default
+  compute account, because the PR fleet restarts and rescopes that VM. Whoever holds the key can
+  set the test VM's startup script and run code as the account production runs as. The
+  narrowing removes the key's direct reach into production; it does not remove this indirect
+  one.
+- **A planted repackage base**, as described above. `force_build` closes it for one run.
+
+**The step DevOps may find easier: move the test VM, not production.** Giving `connect-srv-test`
+a service account of its own closes the first two gaps without a production restart: changing
+the account restarts the test VM only. The fleet key's `iam.serviceAccountUser` then moves to
+the test VM's new account, so the key loses its route to the default one too. Production keeps
+running as the default compute account, and that account is then used by production alone.
+Before the switch, someone has to inventory what the test VM uses its account for. From this
+repo, that means the agent's reads and writes under `pr-environments/`. Anything installed on
+the box outside this repo has to be checked on the box itself.
+
 ## P2 — hygiene
 
 ### 9. Stale branches — but two of them are not safe to delete
@@ -2365,6 +2429,9 @@ example: a build cannot verify what it never attempted, and nothing in the job e
 | The one failure in the other direction: the staging deploy reported "did not become healthy within 300 seconds" three times over while the site was serving Rock normally minutes later. ASP.NET caches an `Application_Start` failure for the lifetime of the app domain, so once one probe lands on a faulted domain, every later probe re-reads that same cached exception — retrying alone can never recover. 300 seconds also fits only about four probes at `-TimeoutSec 60` plus a 10-second sleep, which is not enough to distinguish "still running migrations" from "broken" | The window is 900 seconds (still under the queue agent's 1800s command timeout and the deploy job's 60 minutes), the probe recycles the app pool after 4 minutes of failures so a poisoned domain costs one interval instead of the whole window, each attempt logs its own error, and `SecurityProtocol` is pinned to TLS 1.2 so a protocol mismatch cannot masquerade as a dead site |
 | …and the widened window still could not pass, because the probe was aimed somewhere the VM cannot reach. `Test-EnvironmentHealth` requested the environment's **public** host name from **on the VM**, and this VM cannot reliably reach its own external address. `staging-deploy.yml` had therefore never once succeeded — 0 green in 8 runs — on deploys that were serving fine. The deploy's own diagnostics caught both sides at the same instant: on-box, `https://staging.rock-dev.connect.passion.team/` → *"The underlying connection was closed: An unexpected error occurred on a send"*; off-box, the same URL → **HTTP 302 in 0.115s**. Production CD would have hit this identically on its first real run, since both go through `env-deploy-command.yml` | The probe targets `https://127.0.0.1/` with the public name in the `Host` header — same IIS site, same app pool, same app domain, so it still answers the only question a deploy can be blamed for, without DNS or the route back in. That needs `HttpWebRequest` (`Invoke-WebRequest` refuses to set the restricted `Host` header) and `AllowAutoRedirect = $false` (Rock's 302 carries an absolute `Location`, and following it would leave the loopback for the very name being avoided). Reachability from the internet is now checked from the **GitHub runner**, which can see it. Diagnostics record both vantage points, labelled — loopback failing means the application is broken; loopback passing while the public name fails means the application is fine and the problem sits in front of it |
 | **A Rock upgrade moved a directory from committed to generated, and CI never noticed.** `RockWeb/Styles/styles-v2/` holds 178 tracked files on 18.4.1; on 19.3.4 its `.gitignore` is `*` and `Rock.Frontend.Styles` generates it. No workflow referenced that project, so the v19 artifact shipped without `styles-v2/icons/tabler-icon.css`. `_rock-core.less:243` imports it, so the LESS compile failed at startup and staging kept serving the 18.4.1 `theme.css` — 430,153 bytes, zero `ti-` rules — while the icon migration had already rewritten every `IconCssClass` in the database to Tabler. Login page fine, everything behind it unstyled | `pr-test-artifact.yml` builds `Rock.Frontend.Styles`, guarded on its lockfile so it no-ops on the 18.4.1 line. All three deploy paths share that workflow, so production's v19 cutover is covered (PR #19) |
+| **The first two `DedicatedSite` deploys through `Invoke-DedicatedSiteReplace` brought staging up and then failed** with "The property 'BackupPath' cannot be found on this object" (2026-10-20, runs 39429025335 and 39439884083). Two separate statements inside the function emitted, and each one's output joined the function's return value and made `$deployed` an array. In the first run it was the overlay helpers' robocopy calls: the quiet switches still print blank lines. In the second it was `Ensure-Website`'s last line, `$httpsBinding.AddSslCertificate(...)`, a method call whose return value goes to the caller. Every branch test stubbed the helpers, and the stubs were silent, so none of them saw it | Both robocopy calls pipe to `Write-Host`, as the in-place overlay's already did, and the binding call pipes to `Out-Null`. The replace also discards `Ensure-AppPool`'s and `Ensure-Website`'s output, because they drive the IIS provider and nothing off the box can test what it returns. Tests hold each helper to returning nothing and both deploy branches to returning exactly one hashtable, and the IIS stubs now emit so the boundary is tested too. The next two runs, 39448932589 and 39449841200, both reached "Done." on the box |
+| **The repackage path had never fetched a base.** `upload-cloud-storage` stores every artifact gzip-encoded. gsutil slices any download of 150 MB or more into ranged reads, and it cannot rebuild a gzip-encoded object from them, so every RockWeb zip failed with "Some components … were not downloaded successfully. Please retry". Its first real run, staging on 2026-10-20, failed that way twice | The store's download turns sliced downloads off (`sliced_object_download_threshold=0`). The same object then downloads cleanly, and its SHA-256 matches the build's recorded hash. Staging's next two runs, 39448932589 and 39449841200, were the first repackages ever to succeed, and each box log says "Artifact hash matches the build's" |
+| **The smoke check failed every healthy staging deploy on 2026-10-20**, saying "/Login returned 200 (3443 chars) … no `__VIEWSTATE` … Something else is answering for this site". The same page fetched from off the box was 98 KB of Rock with `__VIEWSTATE` in it. `Invoke-SiteContentProbe` read the body with one `StreamReader.Read`, which returns what has arrived so far rather than filling the buffer. Rock's login page opens with a large inline script, so the first chunk ended before `__VIEWSTATE`. The smoke check's own tests mock the probe, so none of them read a real stream | `ReadBlock`, which reads to the cap or the end of the stream. A Pester test serves a page over a loopback socket in two chunks with a pause between them, the first 3443 bytes as staging's was; it returned exactly 3443 before the change |
 
 The `startup_failure` one is worth remembering specifically: a called workflow can only
 **narrow** the caller's `GITHUB_TOKEN`, never widen it. If a callee's `permissions:` requests
