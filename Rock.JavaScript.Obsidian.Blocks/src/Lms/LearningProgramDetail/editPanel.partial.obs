@@ -51,6 +51,7 @@
                             <RadioButtonList
                                              v-model="configurationMode"
                                              label="Configuration Mode"
+                                             help="You'll likely use On-Demand configuration. Academic mode is intended for organizations that have residency/university programs."
                                              horizontal
                                              rules="required"
                                              :items="configurationModes" />
