@@ -11,7 +11,7 @@
     running: it says the log tail slices without an error, and says nothing about
     which sixty lines it takes.
 
-    The four functions below are the parts with a wrong answer available to
+    The five functions below are the parts with a wrong answer available to
     them. Tests/PrTestEnvironments/Pester/AwaitCommand.Tests.ps1 executes them,
     and CommandQueuePass.Tests.ps1 reads the VM agent's results back through
     Read-CommandResult, so the two ends of the queue are tested against each
@@ -183,6 +183,43 @@ function Read-CommandResult {
     }
 }
 
+function Get-NoResultMessage {
+    <#
+    .SYNOPSIS
+        What to say when the wait runs out with no result object.
+    .DESCRIPTION
+        No result at all usually means the queue worker never ran: the VM is off,
+        the scheduled task is missing, or its service account lost bucket access.
+        It says so, because "timed out" alone sends people to the wrong place.
+
+        It names the command id, because that is the file name of every object
+        the command left behind, and a run that dispatched several commands
+        otherwise leaves the reader guessing which one this was. It names the
+        claim as well: since the agent began claiming commands, a command in
+        processing/ was taken and never reported, and nothing will run it
+        again. It says nothing about pending/. An agent from before the claim
+        runs a command in place there, so on such a host pending/ cannot tell a
+        command nobody took from one still running.
+    .OUTPUTS
+        The message, without the ::error:: prefix.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][int]$Seconds,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Bucket,
+        [Parameter(Mandatory = $true)][string]$Queue,
+        [Parameter(Mandatory = $true)][string]$CommandId
+    )
+
+    return ("No result for $Label (command $CommandId) after $Seconds seconds. " +
+        "Check that $Bucket is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running " +
+        "on the target VM against queue '$Queue'. If pr-environments/$Queue/processing/$CommandId.json exists, the " +
+        "agent took the command and stopped before reporting it; nothing will run it again, so read the VM before " +
+        "removing that object.")
+}
+
 # Dot-sourcing this file to test the functions must not start polling. action.yml
 # sets AWAIT_INVOKED to a literal; a Pester run does not.
 #
@@ -232,8 +269,7 @@ for ($i = 0; $i -lt $attempts; $i++) {
     Start-Sleep -Seconds $interval
 }
 
-# No result object at all means the queue worker never ran: the VM is off, the
-# scheduled task is missing, or its service account lost bucket access. Say so,
-# because "timed out" alone sends people to the wrong place.
-Write-Host "::error::No result for $label after $($attempts * $interval) seconds. Check that $bucket is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running on the target VM against queue '$($env:AWAIT_QUEUE)'."
+$noResult = Get-NoResultMessage -Label $label -Seconds ($attempts * $interval) -Bucket $bucket `
+    -Queue $env:AWAIT_QUEUE -CommandId $env:AWAIT_COMMAND_ID
+Write-Host "::error::$noResult"
 exit 1

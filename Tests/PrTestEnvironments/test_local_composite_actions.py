@@ -625,12 +625,12 @@ class AwaitActionBehaviourTests(unittest.TestCase):
         self.assertIn("/pr-environments/$($env:AWAIT_QUEUE)/results/", text)
         self.assertNotIn("/pr-environments/commands/results/", text)
 
-    def test_the_timeout_message_names_the_actual_cause(self):
-        """A missing result object means the queue worker never ran. 'Timed out'
-        alone sent three months of failures to the wrong place."""
-        text = AWAIT_ACTION_SCRIPT.read_text()
-
-        self.assertIn("scheduled task is running on the target VM", text)
+    # That the timeout message names the actual cause -- a missing result object
+    # means the queue worker never ran, and "timed out" alone sent three months
+    # of failures to the wrong place -- used to be a string match here. The
+    # message is now Get-NoResultMessage, and Pester/AwaitCommand.Tests.ps1 runs
+    # it: it names the scheduled task, the queue and the bucket, the command id,
+    # and the claim a stranded command leaves in processing/.
 
     def test_a_failure_is_annotated_rather_than_only_logged(self):
         """Without the annotation the reason sits somewhere in a poll loop's
