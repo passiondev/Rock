@@ -36,21 +36,23 @@ the authority on it.
 Prefer **trunk** in prose. Keep `baseBranch`, `default branch` and
 `productionBranch` where they name a concrete key or setting.
 
-**The declared version** is the Rock version a checkout says it is: `19.4.4`.
-Its **line** is the major alone, `19`. Its **minor** is the first two parts,
-`19.4`. **The pinned version** is the version declared by the branch that a pin
-names. Both deploy guards compare the declared version with a pinned version,
-because Rock migrates its database on the first request after a deploy and a
-mismatch is not reversible. They do not compare the same part of it:
+**The declared version** is the Rock version a checkout says it is: `19.4.4`,
+always two or three numbers. Its **line** is the major alone, `19`. Its
+**minor** is the first two parts, `19.4`. **The pinned version** is the version
+declared by the branch that a pin names. Both deploy guards compare the minor of
+the declared version with the minor of a pinned version, because Rock migrates
+its database on the first request after a deploy, ships migrations in minor
+releases, and a mismatch is not reversible:
 
 | Guard | Pinned version from | Compares | Override |
 |---|---|---|---|
 | `production-deploy.yml` | the production branch | the minor | `acknowledge_version_change` |
-| `staging-deploy.yml` | the branch the `pr-*` fleet is pinned to | the line | none |
+| `staging-deploy.yml` | the branch the `pr-*` fleet is pinned to | the minor, and only while staging has no catalog of its own | none |
 
-So a trunk on 19.5 deploys to staging while the fleet is pinned to 19.4, and the
-same pair would stop at production. Whether staging should compare the minor as
-well is an open question for the team, recorded beside the staging guard.
+Staging compared the line until 2026-10-20, so a trunk on 19.5 could deploy to
+staging while the fleet was pinned to 19.4. Since staging has its own catalog
+(`STAGING_DB_NAME`), its guard refuses only a catalog collision and reads no
+version at all.
 
 Where the declared version is read from moves at a major upgrade -- an assembly
 attribute in `Rock.Version/AssemblySharedInfo.cs` through 18.x, `<Version>` in
@@ -59,8 +61,8 @@ script, `.github/scripts/rock-version.sh`. They read it themselves until
 2026-09-15, probing the two files in opposite orders, and agreed only because a
 checkout carries one of the two. Which file answers first is the whole of what
 that order decides, and the argument for it lives with the script. The script
-also owns the split: `rock_line_of_version` and `rock_minor_of_version`, so the
-two guards cannot disagree about where a line ends.
+also owns the split, `rock_minor_of_version`, so the two guards cannot disagree
+about where a minor ends.
 
 ## Environments
 

@@ -38,7 +38,7 @@ BUILD_PROPS = REPO_ROOT / "Directory.Build.props"
 ASSEMBLY_INFO = REPO_ROOT / "Rock.Version" / "AssemblySharedInfo.cs"
 LAYOUTS = ("props", "assemblyinfo")
 
-GUARD_STEP_NAME = "Refuse a Rock line change on the shared catalog"
+GUARD_STEP_NAME = "Refuse a Rock minor change on the shared catalog"
 
 
 def _guard_script():
@@ -114,20 +114,34 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
                 code, output = _run_guard("18.4.1", "passion-18.4.1", "", layout)
                 self.assertEqual(code, 0, f"a same-minor staging deploy was refused:\n{output}")
 
-    def test_a_minor_bump_within_the_pinned_line_is_allowed(self):
-        """18.4.1 -> 18.5.0 crosses a minor and stays on the 18 line. The guard
-        compares the line, so this is allowed, and this is the test that pins it.
+    def test_a_patch_bump_within_the_pinned_minor_is_allowed(self):
+        """18.4.1 -> 18.4.2 stays on the 18.4 minor. Blocking it would make the
+        guard a blanket freeze on staging, and a guard that stops ordinary work
+        gets switched off."""
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
+                code, output = _run_guard("18.4.2", "passion-18.4.1", "", layout)
+                self.assertEqual(code, 0, f"a same-minor staging deploy was refused:\n{output}")
 
-        It was written as a patch bump "within the pinned minor", which it is not;
-        the reasoning then was that blocking it would make the guard a blanket
-        freeze on staging, and a guard that stops ordinary work gets switched off.
-        Whether staging should compare the minor instead is an open question
-        recorded beside the guard. Answering it "minor" flips this case to a
-        refusal, so this test changes with that answer."""
+    def test_a_minor_bump_within_the_pinned_line_is_refused(self):
+        """18.4.1 -> 18.5.0 crosses a minor and stays on the 18 line.
+
+        This case was allowed until 2026-10-20, pinned by a test written as a patch
+        bump "within the pinned minor", which it is not: the guard compared the
+        line, 18, while production's compared the minor. Rock ships schema
+        migrations in minor releases, so a minor bump on a shared catalog is the
+        same hazard as the 2026-08-18 line change, only smaller. Staging moved to
+        the minor on 2026-10-20, and this is the test that flipped."""
         for layout in LAYOUTS:
             with self.subTest(layout=layout):
                 code, output = _run_guard("18.5.0", "passion-18.4.1", "", layout)
-                self.assertEqual(code, 0, f"an in-line staging deploy was refused:\n{output}")
+                self.assertNotEqual(
+                    code,
+                    0,
+                    f"an 18.5 artifact was allowed onto the shared 18.4 catalog:\n{output}",
+                )
+                self.assertIn("18.5", output)
+                self.assertIn("18.4", output)
 
     def test_a_minor_change_on_the_shared_catalog_is_refused(self):
         """The 2026-08-18 deploy, exactly. This is the case the guard exists for."""
@@ -260,6 +274,53 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
             "the guard reported a version mismatch it never established, because it "
             f"compared against an empty pin:\n{output}",
         )
+
+    def test_no_version_is_read_once_staging_owns_its_catalog(self):
+        """The comparison only protects the shared catalog, so it is only made
+        there. Staging has owned a catalog since 2026-08-24, and a guard that still
+        read both versions first refused every staging deploy whenever either one
+        could not be read -- a trunk pinned to passion-19.4.4-hotfix, say -- for a
+        comparison whose answer it was about to throw away."""
+        for pinned_branch in ("", "passion-19.4.4-hotfix"):
+            with self.subTest(pinned_branch=pinned_branch):
+                code, output = _run_guard(
+                    "19.4.4",
+                    pinned_branch,
+                    "RockStaging20260824",
+                    fleet_db_name="RockStaging",
+                )
+                self.assertEqual(
+                    code,
+                    0,
+                    f"staging was refused a deploy onto its own catalog over a pin it "
+                    f"does not need:\n{output}",
+                )
+
+        # No `cwd`, so no version file either.
+        result = harness.run_bash(
+            _guard_script(),
+            env={
+                "PINNED_BASE_BRANCH": "passion-19.4.4",
+                "STAGING_DB_NAME": "RockStaging20260824",
+                "PR_TEST_DB_NAME": "RockStaging",
+            },
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"staging was refused a deploy onto its own catalog over a version it "
+            f"does not need:\n{result.output}",
+        )
+
+    def test_a_collision_is_refused_even_when_the_pin_is_unreadable(self):
+        """The collision check needs no version, so it runs before any is read. A
+        pin that cannot be read must not be what reports a deploy that would put
+        staging and the fleet on one catalog -- the operator would go and fix the
+        pin and come straight back to the real refusal."""
+        code, output = _run_guard("19.4.4", "", "RockStaging", fleet_db_name="RockStaging")
+        self.assertNotEqual(code, 0, f"a shared catalog was allowed:\n{output}")
+        self.assertIn("would run on one catalog", output)
+        self.assertNotIn("pinned Rock version", output)
 
     def test_the_guard_reads_a_version_this_repository_actually_declares(self):
         """_run_guard fabricates the version file, so every test above would still

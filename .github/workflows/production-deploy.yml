@@ -327,7 +327,7 @@ jobs:
             exit 1
           fi
 
-          # The minor -- 19.4 of 19.4.4 -- not the line the staging guard compares.
+          # The minor -- 19.4 of 19.4.4 -- the same part the staging guard compares.
           # A patch or a rollback on the same minor passes; anything else is the
           # migration this step exists to stop. Each call refuses with its own
           # annotation when what it is handed is not a version ("19." or "19..4",
@@ -344,12 +344,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$ref_minor" = "$expected_minor" ]; then
-            echo "Rock $ref_version is on the expected $expected_minor line."
+            echo "Rock $ref_version is on the expected $expected_minor minor."
             exit 0
           fi
 
           if [ "${{ inputs.acknowledge_version_change }}" = "true" ]; then
-            echo "::warning::Deploying Rock $ref_version against an expected $expected_minor line. Acknowledged by @${{ github.actor }} -- migrations will run on the first request after this deploy."
+            echo "::warning::Deploying Rock $ref_version against an expected $expected_minor minor. Acknowledged by @${{ github.actor }} -- migrations will run on the first request after this deploy."
             echo "| Version change | **acknowledged by @${{ github.actor }}** |" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi

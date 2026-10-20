@@ -210,10 +210,11 @@ class ProductionVersionGuardRunTests(unittest.TestCase):
     refuses every production deploy, and no text match would notice.
 
     These pin the half of the comparison that is production's own: it compares
-    the *minor*. 19.4.4 against 19.5.0 is one line, so the staging guard would
-    let it through; production must not. The stub serves files per branch, so the
-    expected version is only found where the guard should look for it -- on the
-    branch `productionBranch` names, read from the default branch's config."""
+    the *minor*. 19.4.4 against 19.5.0 is one line and two minors, and the staging
+    guard let that through until 2026-10-20; production never has. The stub serves
+    files per branch, so the expected version is only found where the guard should
+    look for it -- on the branch `productionBranch` names, read from the default
+    branch's config."""
 
     DEFAULT_BRANCH = "trunk"
 
@@ -289,10 +290,11 @@ class ProductionVersionGuardRunTests(unittest.TestCase):
         code, output = self._run("19.4.1", "19.4.4")
 
         self.assertEqual(0, code, f"a same-minor production deploy was refused:\n{output}")
+        self.assertSaysMinorNotLine(output)
 
     def test_a_minor_change_within_the_line_is_refused(self):
-        """The case that tells production's guard apart from staging's: one line,
-        two minors. Staging lets this through; production compares the minor."""
+        """One line, two minors. The case that told production's guard apart from
+        staging's until staging moved to the minor too."""
         code, output = self._run("19.5.0", "19.4.4")
 
         self.assertNotEqual(0, code, f"a 19.5 ref was allowed onto a 19.4 production:\n{output}")
@@ -310,6 +312,15 @@ class ProductionVersionGuardRunTests(unittest.TestCase):
 
         self.assertEqual(0, code, f"an acknowledged version change was still refused:\n{output}")
         self.assertIn("::warning::", output, output)
+        self.assertSaysMinorNotLine(output)
+
+    def assertSaysMinorNotLine(self, output):
+        """The guard compares the minor, and both messages it passes with named
+        19.4 "the expected 19.4 line" -- the word this pipeline uses for the major
+        alone. An operator reading "line" next to a deploy that crosses 19.4 ->
+        19.5 has every reason to think the guard compared 19 and 19."""
+        self.assertIn("19.4 minor", output, output)
+        self.assertNotRegex(output, r"\bline\b", output)
 
 
 if __name__ == "__main__":
