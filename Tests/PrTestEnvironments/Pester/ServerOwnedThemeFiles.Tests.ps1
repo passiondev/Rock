@@ -528,8 +528,9 @@ Describe 'Resolve-SharedAssetSource' {
         The Get-Command guard is the part worth testing here. -ErrorAction does not
         suppress a missing cmdlet: CommandNotFoundException is raised before any
         parameter is bound. Without the guard this function throws on any machine
-        without the IIS module, which is every machine these tests run on, and the
-        dry run now calls it.
+        without the IIS module, which is every machine these tests run on. The dry
+        run no longer calls it: only Invoke-DedicatedSiteReplace does, and the
+        InPlace plan has no shared-asset source to report.
     #>
 
     It 'returns the configured path when one is given' {

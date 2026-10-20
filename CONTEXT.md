@@ -199,7 +199,7 @@ repackage path, but the job and the step summary say **repackage**.
 |---|---|
 | **DedicatedSite** | The mode that owns its whole directory. Every PR environment and staging. |
 | **InPlace** | The mode that updates files inside an existing site it does not own. Production. |
-| **overlay plan** | What an InPlace deploy will do, as one record: where (`SitePath`, `ExtractPath`, `BackupDirectory`), what it keeps (the preserved and server-owned lists, the theme overrides it found), and the robocopy exclusions built from those. `Get-InPlaceOverlayPlan` makes it once, before the dry-run fork. A dry run prints it; `Invoke-InPlaceOverlay` carries it out. |
+| **overlay plan** | What an InPlace deploy will do, as one record: where (`SitePath`, `ExtractPath`, `BackupDirectory`), what it keeps (the preserved and server-owned lists, the theme overrides it found), and the robocopy exclusions built from those. `Get-InPlaceOverlayPlan` makes it once, before the dry-run fork. On a dry run `Write-InPlaceOverlayPlan` prints it; `Invoke-InPlaceOverlay` carries it out. |
 
 The mode decides which of `Deploy-RockEnvironment.ps1`'s parameters apply, and
 whether the shared-asset overlay runs at all. It is the single most consequential
