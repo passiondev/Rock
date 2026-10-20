@@ -2541,6 +2541,118 @@ function Get-InPlaceOverlayPlan {
     }
 }
 
+function Write-InPlaceOverlayPlan {
+    <#
+    .SYNOPSIS
+        Tell the operator what an in-place deploy would do, and do none of it.
+
+    .DESCRIPTION
+        The dry run. Production's runbook has an operator read these lines and
+        then tick apply, so they are what that approval is given against. They
+        used to be printed by a block of top-level script, which no Pester suite
+        can run: the plan an operator approves was covered only by tests that
+        read its source. As a function it can be run against a plan and a site,
+        and held to what it prints.
+
+        Every line goes through Write-DeployStep rather than Write-Host, because
+        this plan is the whole point of a dry run. It is step 6 of the production
+        runbook -- the step that proves the agent is alive -- and the operator
+        reads these lines to check the backup root and the site path before
+        ticking apply. Write-Host is what the staging rehearsal proved can vanish
+        on the way back to the bucket, and a dry run whose plan went missing has
+        proved only half of what it was run for. The one Write-Host left is the
+        blank line that sets the plan apart on the console.
+
+        Read-only, like the plan it prints. It reads the live web.config and
+        writes nothing, so the script body can call it and return with the site
+        exactly as it found it. The return stays in the script body, because
+        only the script body can end the deploy.
+
+    .PARAMETER Plan
+        The record Get-InPlaceOverlayPlan returned. The apply run hands the same
+        record to Invoke-InPlaceOverlay, which is what makes this a preview of
+        that run rather than a second account of it.
+
+    .PARAMETER SiteName
+        Printed and nothing else. The script accepts -TargetSiteName '' and this
+        has always printed it as given, so the empty string is allowed through
+        rather than turning a dry run into a refusal.
+
+    .PARAMETER ServerOwnedAppSettings
+        appSettings keys this server owns by exact name: the list the apply run's
+        merge carries. The plan reports which of them the live web.config has.
+
+    .PARAMETER ServerOwnedAppSettingPrefixes
+        appSettings key families this server owns by prefix, reported the same way.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Plan,
+        [Parameter(Mandatory = $true)][string]$AppPoolName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SiteName,
+        [Parameter(Mandatory = $true)][string]$HostName,
+        # No default. The script always passes its own, and a second copy of it
+        # here is one more for ScriptDefaults.Tests.ps1 to hold in step.
+        [Parameter(Mandatory = $true)][int]$HealthCheckTimeoutSeconds,
+        [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedAppSettings = @(),
+        [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedAppSettingPrefixes = @()
+    )
+
+    # Unpacked under the name the script body used, so every line below prints
+    # exactly what it printed when this was top-level script.
+    $SitePath = $Plan.SitePath
+
+    Write-Host ""
+    Write-DeployStep "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
+    Write-DeployStep "Would back up $($Plan.SitePath) to $(Join-Path $Plan.BackupDirectory '<timestamp>')."
+    Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
+    # Read off the overlay plan, and never off the script's lists directly.
+    # These four lines are the promise the operator approves, and the plan
+    # is what Invoke-InPlaceOverlay turns into robocopy exclusions, so a
+    # list the copy ignores cannot appear here as if it were kept.
+    #
+    # InPlace only, like the whole of this function. The dedicated-site branch
+    # replaces the directory wholesale and keeps none of these; a line that
+    # said otherwise used to sit in an arm here that could never run.
+    Write-DeployStep "Would preserve directories: $($Plan.PreservedDirectories -join ', ')"
+    Write-DeployStep "Would preserve files: $($Plan.PreservedFiles -join ', ')"
+    Write-DeployStep "Would leave server-owned paths untouched: $($Plan.ServerOwnedDirectories -join ', ')"
+    Write-DeployStep "Would keep this site's own theme override files: $(if ($Plan.ThemeOverrides.Count -gt 0) { $Plan.ThemeOverrides -join ', ' } else { 'none found' })"
+    # Asked of the merge rather than worked out again here. A dry run returns
+    # before the artifact is downloaded, so there is no incoming file yet to
+    # merge against -- but which server-owned settings this site has is the
+    # read half of that merge, and it is the half the plan is about.
+    #
+    # The operator reads this line to check that the values the site depends on
+    # are the ones the deploy has found. A production plan that reports "none
+    # found" for PasswordKey is the signal to stop. Worked out twice, the two
+    # answers drifted, and the one the operator reads was the wrong one.
+    $plannedWebConfigPath = Join-Path $SitePath 'web.config'
+    if (Test-Path $plannedWebConfigPath) {
+        $planned = Get-ServerOwnedWebConfigSettings `
+            -ExistingWebConfig (Get-Content -Raw -Path $plannedWebConfigPath) `
+            -AppSettingKeys $ServerOwnedAppSettings `
+            -AppSettingKeyPrefixes $ServerOwnedAppSettingPrefixes
+
+        $plannedCarry = @($planned.OwnedKeys)
+        if (![string]::IsNullOrWhiteSpace($planned.MachineKey)) { $plannedCarry += 'machineKey' }
+        Write-DeployStep "Would carry this site's own web.config settings across: $(if ($plannedCarry.Count -gt 0) { $plannedCarry -join ', ' } else { 'none found' })"
+
+        # Candidates, not a promise. Each one is carried only where the
+        # artifact registers no prefix of its own, and the artifact is not here
+        # yet -- so this line names what will be considered, and the apply run's
+        # own line names what was carried.
+        $plannedPrefixes = @($planned.Registrations.Keys)
+        Write-DeployStep "Would consider carrying this site's control registrations, for any the artifact does not register itself: $(if ($plannedPrefixes.Count -gt 0) { $plannedPrefixes -join ', ' } else { 'none found' })"
+    }
+    else {
+        Write-DeployStep "Would carry this site's own web.config settings across: there is no web.config at $plannedWebConfigPath."
+    }
+    Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
+    Write-DeployStep "Would set compilation debug=false and executionTimeout=600 in the deployed web.config."
+    Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
+}
+
 function Invoke-InPlaceOverlay {
     <#
     .SYNOPSIS
@@ -2856,62 +2968,18 @@ try {
     }
 
     if ($Mode -eq 'InPlace' -and -not $Apply) {
-        # Through Write-DeployStep rather than Write-Host, because this plan is the
-        # whole point of a dry run. It is step 6 of the production runbook -- the
-        # step that proves the agent is alive -- and the operator reads these lines
-        # to check the backup root and the site path before ticking apply. Write-Host
-        # is what the staging rehearsal proved can vanish on the way back to the
-        # bucket, and a dry run whose plan went missing has proved only half of what
-        # it was run for.
-        Write-Host ""
-        Write-DeployStep "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
-        Write-DeployStep "Would back up $($overlayPlan.SitePath) to $(Join-Path $overlayPlan.BackupDirectory '<timestamp>')."
-        Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
-        # Read off the overlay plan, and never off the script's lists directly.
-        # These four lines are the promise the operator approves, and the plan
-        # is what Invoke-InPlaceOverlay turns into robocopy exclusions, so a
-        # list the copy ignores cannot appear here as if it were kept.
-        #
-        # InPlace only, like the whole of this block. The dedicated-site branch
-        # replaces the directory wholesale and keeps none of these; a line that
-        # said otherwise used to sit in an arm here that could never run.
-        Write-DeployStep "Would preserve directories: $($overlayPlan.PreservedDirectories -join ', ')"
-        Write-DeployStep "Would preserve files: $($overlayPlan.PreservedFiles -join ', ')"
-        Write-DeployStep "Would leave server-owned paths untouched: $($overlayPlan.ServerOwnedDirectories -join ', ')"
-        Write-DeployStep "Would keep this site's own theme override files: $(if ($overlayPlan.ThemeOverrides.Count -gt 0) { $overlayPlan.ThemeOverrides -join ', ' } else { 'none found' })"
-        # Asked of the merge rather than worked out again here. A dry run returns
-        # before the artifact is downloaded, so there is no incoming file yet to
-        # merge against -- but which server-owned settings this site has is the
-        # read half of that merge, and it is the half the plan is about.
-        #
-        # The operator reads this line to check that the values the site depends on
-        # are the ones the deploy has found. A production plan that reports "none
-        # found" for PasswordKey is the signal to stop. Worked out twice, the two
-        # answers drifted, and the one the operator reads was the wrong one.
-        $plannedWebConfigPath = Join-Path $SitePath 'web.config'
-        if (Test-Path $plannedWebConfigPath) {
-            $planned = Get-ServerOwnedWebConfigSettings `
-                -ExistingWebConfig (Get-Content -Raw -Path $plannedWebConfigPath) `
-                -AppSettingKeys $ServerOwnedAppSettings `
-                -AppSettingKeyPrefixes $ServerOwnedAppSettingPrefixes
-
-            $plannedCarry = @($planned.OwnedKeys)
-            if (![string]::IsNullOrWhiteSpace($planned.MachineKey)) { $plannedCarry += 'machineKey' }
-            Write-DeployStep "Would carry this site's own web.config settings across: $(if ($plannedCarry.Count -gt 0) { $plannedCarry -join ', ' } else { 'none found' })"
-
-            # Candidates, not a promise. Each one is carried only where the
-            # artifact registers no prefix of its own, and the artifact is not here
-            # yet -- so this line names what will be considered, and the apply run's
-            # own line names what was carried.
-            $plannedPrefixes = @($planned.Registrations.Keys)
-            Write-DeployStep "Would consider carrying this site's control registrations, for any the artifact does not register itself: $(if ($plannedPrefixes.Count -gt 0) { $plannedPrefixes -join ', ' } else { 'none found' })"
-        }
-        else {
-            Write-DeployStep "Would carry this site's own web.config settings across: there is no web.config at $plannedWebConfigPath."
-        }
-        Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
-        Write-DeployStep "Would set compilation debug=false and executionTimeout=600 in the deployed web.config."
-        Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
+        # The plan is printed by a function so that Pester can run it; see
+        # Write-InPlaceOverlayPlan. The return stays here, because a function
+        # can only return from itself, and this return is what keeps a dry run
+        # away from everything below it.
+        Write-InPlaceOverlayPlan `
+            -Plan $overlayPlan `
+            -AppPoolName $AppPoolName `
+            -SiteName $SiteName `
+            -HostName $HostName `
+            -HealthCheckTimeoutSeconds $HealthCheckTimeoutSeconds `
+            -ServerOwnedAppSettings $ServerOwnedAppSettings `
+            -ServerOwnedAppSettingPrefixes $ServerOwnedAppSettingPrefixes
         return
     }
 

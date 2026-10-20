@@ -34,10 +34,18 @@
         robocopy was actually given -- the one comparison nothing made while the
         two were worked out separately.
 
-    Both hand back one record with the same two fields. That is asserted here
-    directly: it is what lets the deploy body ask "is there a backup" instead of
-    asking which branch ran, and a stray emitter anywhere inside either function
-    would break it silently -- robocopy's job summary alone is forty lines.
+    Write-InPlaceOverlayPlan
+        The dry run that prints that plan, which the operator reads before
+        ticking apply. It was a block of top-level script, and the only coverage
+        it had was a regex over the source that counted lines naming
+        Write-DeployStep. Here it runs, and what it prints is held line for line,
+        because those lines are what the operator approves.
+
+    The two branches hand back one record with the same two fields. That is
+    asserted here directly: it is what lets the deploy body ask "is there a
+    backup" instead of asking which branch ran, and a stray emitter anywhere
+    inside either function would break it silently -- robocopy's job summary
+    alone is forty lines.
 
     The last Describe runs nothing. It reads the script for calls to the three
     commands that are right only on a site this pipeline built. A stray call in
@@ -50,15 +58,16 @@ BeforeAll {
 
     $script:DeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
 
-    # The two branches and the in-place plan under test, and the two helpers they
-    # call that are cheap and honest to run for real. Everything else is stubbed
-    # below, because the question is what order it was called in and not what it
-    # did -- and -Supplied is that list, held against what the lifted bodies
-    # actually reach for. A stub the deploy script has stopped calling fails here
-    # rather than going on passing.
+    # The two branches, the in-place plan and the dry run that prints it, and the
+    # three helpers they call that are cheap and honest to run for real.
+    # Everything else is stubbed below, because the question is what order it
+    # was called in and not what it did -- and -Supplied is that list, held
+    # against what the lifted bodies actually reach for. A stub the deploy script
+    # has stopped calling fails here rather than going on passing.
     . (Import-ScriptFunction -Path $script:DeployScript -Name `
             'Invoke-DedicatedSiteReplace', 'Get-InPlaceOverlayPlan', 'Invoke-InPlaceOverlay', `
-            'Ensure-Directory', 'ConvertTo-NativePath' `
+            'Write-InPlaceOverlayPlan', 'Ensure-Directory', 'ConvertTo-NativePath', `
+            'Get-ServerOwnedWebConfigSettings' `
         -Supplied `
             'Write-DeployStep', 'Resolve-SharedAssetSource', 'Sync-SharedSiteAssets', `
             'Get-ServerOwnedThemeFilePaths', 'Sync-ServerOwnedAssets', `
@@ -673,6 +682,175 @@ Describe 'Get-InPlaceOverlayPlan' {
         # nothing.
         & $script:PlanFor | Out-Null
 
+        Script:IndexOf 'robocopy' | Should -Be -1
+        Test-Path $script:BackupRoot | Should -BeFalse -Because 'the backup directory belongs to the apply run'
+    }
+}
+
+Describe 'Write-InPlaceOverlayPlan' {
+
+    BeforeAll {
+        # Shaped like production's web.config where it matters here: one named
+        # key present and one absent, a member of the OldPasswordKey family, a
+        # setting nobody owns, a machineKey, and a control registration the
+        # artifact has never shipped.
+        $script:ServerWebConfig = @'
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <appSettings>
+    <add key="PasswordKey" value="SERVER-PASSWORD-KEY" />
+    <add key="OldPasswordKey1" value="SERVER-OLD-PASSWORD-KEY" />
+    <add key="UnrelatedSetting" value="left to the artifact" />
+  </appSettings>
+  <system.web>
+    <machineKey validationKey="SERVERVALIDATION" decryptionKey="SERVERDECRYPTION" validation="SHA1" decryption="AES" />
+    <pages>
+      <controls>
+        <add tagPrefix="Passion" namespace="Passion.Web.UI.Controls" assembly="Passion" />
+      </controls>
+    </pages>
+  </system.web>
+</configuration>
+'@
+    }
+
+    BeforeEach {
+        Script:Reset-Fixture
+
+        # The real one would print the spacer into the test output. It is
+        # counted below, so it is mocked rather than left alone.
+        Mock Write-Host { }
+
+        # Made when the dry run is run rather than here, for the reason the
+        # overlay's is: an It that changes what discovery finds gets a plan that
+        # found it. The plan is the real one, because the plan the operator
+        # reads is the plan the apply run carries out.
+        $script:DryRun = {
+            $script:Plan = Get-InPlaceOverlayPlan `
+                -SitePath $script:SitePath `
+                -ExtractPath $script:ExtractPath `
+                -EnvironmentName 'production' `
+                -BackupRoot $script:BackupRoot `
+                -PreservedDirectories @('Content', 'Uploads') `
+                -PreservedFiles @('web.ConnectionStrings.config') `
+                -ServerOwnedDirectories @('Assets/Fonts/FontAwesome') `
+                -ServerOwnedThemeFiles @('_variables.less')
+
+            # Making the plan records its theme discovery. Cleared so that what
+            # the Its read is what the dry run itself did and said.
+            $script:Calls = @()
+            $script:Arguments = @{}
+            $script:Steps = @()
+
+            $splat = @{
+                Plan                          = $script:Plan
+                AppPoolName                   = 'RockProdPool'
+                SiteName                      = 'Rock'
+                HostName                      = 'rock.example.org'
+                HealthCheckTimeoutSeconds     = 900
+                ServerOwnedAppSettings        = @('PasswordKey', 'DataEncryptionKey')
+                ServerOwnedAppSettingPrefixes = @('OldPasswordKey')
+            }
+            return Write-InPlaceOverlayPlan @splat
+        }
+    }
+
+    It 'reports the plan line for line, in the order the operator reads it, and hands nothing back' {
+        # The operator approves these lines before ticking apply on production.
+        # This function used to be a block of top-level script, and moving it out
+        # was meant to change nothing an operator sees. This is everything an
+        # operator sees, so it is held whole. Anything returned would land in the
+        # script's success stream, where the block that was here put nothing.
+        Set-Content -Path (Join-Path $script:SitePath 'web.config') -Value $script:ServerWebConfig
+
+        $returned = & $script:DryRun
+
+        $expected = @(
+            'DRY RUN -- no changes will be made. Re-run with -Apply to deploy.'
+            "Would back up $($script:SitePath) to $(Join-Path (Join-Path $script:BackupRoot 'production') '<timestamp>')."
+            "Would stop app pool 'RockProdPool', copy the artifact over $($script:SitePath), then restart it."
+            'Would preserve directories: Content, Uploads'
+            'Would preserve files: web.ConnectionStrings.config'
+            'Would leave server-owned paths untouched: Assets/Fonts/FontAwesome'
+            "Would keep this site's own theme override files: none found"
+            "Would carry this site's own web.config settings across: PasswordKey, OldPasswordKey1, machineKey"
+            "Would consider carrying this site's control registrations, for any the artifact does not register itself: Passion"
+            "Would set app pool 'RockProdPool' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site 'Rock'."
+            'Would set compilation debug=false and executionTimeout=600 in the deployed web.config.'
+            'Would health check https://rock.example.org/ for up to 900 seconds.'
+        )
+        ($script:Steps -join "`n") | Should -BeExactly ($expected -join "`n")
+        @($returned).Count | Should -Be 0
+    }
+
+    It 'names the theme override files the plan found on the live site' {
+        # Production's brand is in these files. The operator checks this line to
+        # see that the files are named before the artifact's empty copies arrive.
+        # The line is read off the plan, so the files it names are the files
+        # robocopy is told to leave alone.
+        $script:DiscoveredThemeFiles = @('Themes/Rock/Styles/_variables.less', 'Themes/Passion/Styles/_css-overrides.less')
+
+        & $script:DryRun | Out-Null
+
+        $line = "Would keep this site's own theme override files: Themes/Rock/Styles/_variables.less, Themes/Passion/Styles/_css-overrides.less"
+        ($script:Steps -ccontains $line) | Should -BeTrue -Because "the dry run said:`n$($script:Steps -join "`n")"
+    }
+
+    It 'says none found when the web.config owns none of the settings' {
+        # The stop signal. "None found" for PasswordKey on production means the
+        # apply run would ship the artifact's stock key, and every staff login
+        # would fail. The line only works as a signal if it reports what the
+        # file holds, not what the script asked about.
+        Set-Content -Path (Join-Path $script:SitePath 'web.config') -Value '<configuration><appSettings><add key="UnrelatedSetting" value="x" /></appSettings></configuration>'
+
+        & $script:DryRun | Out-Null
+
+        $carry = "Would carry this site's own web.config settings across: none found"
+        $consider = "Would consider carrying this site's control registrations, for any the artifact does not register itself: none found"
+        ($script:Steps -ccontains $carry) | Should -BeTrue -Because "the dry run said:`n$($script:Steps -join "`n")"
+        ($script:Steps -ccontains $consider) | Should -BeTrue -Because "the dry run said:`n$($script:Steps -join "`n")"
+    }
+
+    It 'says where it looked when the site has no web.config, and offers no registrations' {
+        # A first deploy onto an empty site. Naming the path lets the operator
+        # see a wrong -TargetSitePath here, before apply, instead of after it.
+        & $script:DryRun | Out-Null
+
+        $line = "Would carry this site's own web.config settings across: there is no web.config at $(Join-Path $script:SitePath 'web.config')."
+        ($script:Steps -ccontains $line) | Should -BeTrue -Because "the dry run said:`n$($script:Steps -join "`n")"
+        @($script:Steps | Where-Object { $_ -clike 'Would consider carrying*' }).Count | Should -Be 0
+    }
+
+    It 'writes the plan through Write-DeployStep, and only a blank spacer through Write-Host' {
+        # The production runbook uses a dry run to prove that the agent is
+        # alive before anybody deploys. The operator reads this plan to confirm
+        # the backup root and the site path before ticking apply. The staging
+        # rehearsal of 2026-08-25 proved that Write-Host output can vanish
+        # between the job and the bucket, so the plan must not depend on it.
+        # This used to be a regex over the script body in DeployStepLog.Tests.ps1.
+        # Here the function runs, so a plan line sent to Write-Host is counted,
+        # whatever its spelling.
+        & $script:DryRun | Out-Null
+
+        @($script:Steps).Count | Should -BeGreaterThan 4
+        Should -Invoke Write-Host -Times 1 -Exactly -Because 'the spacer is the one line with nothing to lose'
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { [string]::IsNullOrEmpty($Object) }
+    }
+
+    It 'changes nothing, because a dry run promises that' {
+        # The operator runs this on production on the promise that it touches
+        # nothing. Reading the live web.config is the one thing it does to the
+        # site, and reading must stay the only thing.
+        $webConfigPath = Join-Path $script:SitePath 'web.config'
+        Set-Content -Path $webConfigPath -Value $script:ServerWebConfig
+        $webConfigBefore = Get-Content -Raw -Path $webConfigPath
+        $before = @(Get-ChildItem -Path $script:Root -Recurse -Force | ForEach-Object { $_.FullName } | Sort-Object)
+
+        & $script:DryRun | Out-Null
+
+        $after = @(Get-ChildItem -Path $script:Root -Recurse -Force | ForEach-Object { $_.FullName } | Sort-Object)
+        ($after -join "`n") | Should -BeExactly ($before -join "`n")
+        (Get-Content -Raw -Path $webConfigPath) | Should -BeExactly $webConfigBefore
         Script:IndexOf 'robocopy' | Should -Be -1
         Test-Path $script:BackupRoot | Should -BeFalse -Because 'the backup directory belongs to the apply run'
     }

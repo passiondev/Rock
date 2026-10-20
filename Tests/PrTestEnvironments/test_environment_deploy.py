@@ -290,45 +290,85 @@ class EnvironmentDeployScriptTests(unittest.TestCase):
         here is the guard: a change that lifted the promise out of the InPlace block,
         or wrote it for both modes, would bring the reversed plan back.
 
-        Whether the promise is kept is asked of the code that keeps it rather than of
-        this file's text. DeployBranch.Tests.ps1 holds the overlay plan the dry run
-        prints against the robocopy arguments Invoke-InPlaceOverlay hands over.
+        The plan is now printed by Write-InPlaceOverlayPlan, and what it prints is
+        asked of the function itself: DeployBranch.Tests.ps1 runs it against a real
+        overlay plan and compares the report line for line. What Pester cannot run is
+        the script body, which decides when the function is called, so that is what
+        this holds. The promise is made only inside that function; the function is
+        called once, under the InPlace guard and not from an else arm; and a return
+        follows the call in the same block. Without that return a dry run prints its
+        plan and then goes on to deploy, and nothing held it before the lift either.
         """
-        lines = DEPLOY_SCRIPT.read_text().splitlines()
+        text = DEPLOY_SCRIPT.read_text()
+        # Comments blanked, line numbers kept. The script body explains the call in
+        # a comment that names the function, and that is not a second call.
+        lines = harness.strip_powershell_comments(text).splitlines()
         message = "Would preserve directories:"
+        printer = "Write-InPlaceOverlayPlan"
+        body_start, body_end = harness.powershell_function_lines(text, printer)
 
         occurrences = [index for index, line in enumerate(lines) if message in line]
         self.assertTrue(occurrences, f'the dry run no longer says "{message}" at all')
         for index in occurrences:
-            # Walk out to the innermost block containing the line, follow any else
-            # back to its if, and read the mode off that condition. A line moved to
-            # the top level has no opener; one moved under a condition that does not
-            # name a mode is reported for both.
-            opener = _enclosing_opener(lines, index)
-            self.assertIsNotNone(
-                opener,
-                f'"{message}" at line {index + 1} sits at the top level of the script, '
-                "where no branch can be guarding it",
+            self.assertTrue(
+                body_start <= index < body_end,
+                f'"{message}" at line {index + 1} is outside {printer}, so it is printed '
+                "by code this test does not know is guarded",
             )
-            condition_index = _chained_if(lines, opener)
-            condition = lines[condition_index]
-            match = re.search(r"\$Mode\s+-eq\s+'(\w+)'", condition)
-            self.assertIsNotNone(
-                match,
-                f'"{message}" at line {index + 1} is inside `{condition.strip()}`, which does '
-                "not branch on $Mode -- so it is reported for both modes",
-            )
-            arm = match.group(1)
-            if opener != condition_index:
-                # An else arm, so the line runs for the mode the condition rejects.
-                # Two modes in the ValidateSet, so rejecting one selects the other.
-                arm = "InPlace" if arm == "DedicatedSite" else "DedicatedSite"
-            self.assertEqual(
-                arm,
-                "InPlace",
-                f'"{message}" at line {index + 1} is reported for {arm}, which replaces the '
-                "site wholesale and keeps none of those directories",
-            )
+
+        calls = [
+            index
+            for index, line in enumerate(lines)
+            if re.search(rf"\b{printer}\b", line) and not line.lstrip().startswith("function ")
+        ]
+        self.assertEqual(
+            1,
+            len(calls),
+            f"{printer} is called at lines {[index + 1 for index in calls]}; the dry run "
+            "should print its plan from exactly one place",
+        )
+        call = calls[0]
+
+        # Walk out to the innermost block containing the call and read the mode off
+        # its condition. A call moved to the top level has no opener; one moved into
+        # an else arm runs for whatever the condition rejects.
+        opener = _enclosing_opener(lines, call)
+        self.assertIsNotNone(
+            opener,
+            f"{printer} at line {call + 1} sits at the top level of the script, where "
+            "no branch can be guarding it",
+        )
+        self.assertEqual(
+            opener,
+            _chained_if(lines, opener),
+            f"{printer} at line {call + 1} is called from an else arm, so it runs for "
+            "the case its condition rejects",
+        )
+        condition = lines[opener]
+        self.assertRegex(
+            condition,
+            r"\$Mode\s+-eq\s+'InPlace'",
+            f"{printer} at line {call + 1} is inside `{condition.strip()}`, which does "
+            "not select InPlace -- so the plan is printed for the mode that keeps none of it",
+        )
+        self.assertRegex(
+            condition,
+            r"-not\s+\$Apply",
+            f"{printer} at line {call + 1} is inside `{condition.strip()}`, which does "
+            "not exclude -Apply -- so the plan is printed on a run that deploys",
+        )
+
+        following = next(
+            (index for index in range(call + 1, len(lines)) if lines[index].strip() == "return"),
+            None,
+        )
+        self.assertIsNotNone(following, f"nothing returns after {printer} at line {call + 1}")
+        self.assertEqual(
+            opener,
+            _enclosing_opener(lines, following),
+            f"the first return after {printer} (line {following + 1}) is not in the "
+            f"block that calls it (line {opener + 1}), so a dry run goes on to deploy",
+        )
 
     def test_production_connection_string_on_disk_is_left_alone_when_none_supplied(self):
         """CI has no production database credentials by design. With no connection
