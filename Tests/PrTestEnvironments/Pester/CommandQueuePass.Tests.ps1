@@ -51,7 +51,7 @@ BeforeAll {
             'Get-StepLogPath', 'Get-CommandLogText', 'Get-RedactedText', 'Get-CommandSecrets', `
             'Get-SecretFieldNamePattern', 'Get-PasswordValuePattern', `
             'Get-CommandBindingKind', 'Get-CommandContractSection', 'Get-CommandContract', `
-            'Split-CommandList', 'Resolve-CommandArguments')
+            'Split-CommandList', 'Resolve-CommandArguments', 'Get-QueueAllowedCommands')
 
     # The producer and the reader, from the two actions every dispatching workflow
     # calls.
@@ -63,6 +63,7 @@ BeforeAll {
 
     $script:QueueRoot = 'pr-environments/commands-prod/'
     $script:PendingPrefix = "$($script:QueueRoot)pending/"
+    $script:ProcessingPrefix = "$($script:QueueRoot)processing/"
     $script:ResultsPrefix = "$($script:QueueRoot)results/"
     $script:LogsPrefix = "$($script:QueueRoot)logs/"
     $script:BootstrapPrefix = 'pr-environments/bootstrap/prod/'
@@ -102,8 +103,30 @@ BeforeAll {
         Remove = {
             param([string]$ObjectName)
 
+            if ($script:FailingRemovePrefix -and $ObjectName.StartsWith($script:FailingRemovePrefix)) {
+                throw "simulated GCS 503 deleting $ObjectName"
+            }
             $script:Events.Add("remove $ObjectName")
             $script:Store.Remove($ObjectName)
+        }
+        # The conditional copy GCS makes for ifGenerationMatch=0: it lands only
+        # where nothing exists yet, and only while there is something to copy.
+        # Losing either way is an answer, not an error.
+        Claim  = {
+            param([string]$ObjectName, [string]$ClaimedObjectName)
+
+            if ($script:ClaimFails) {
+                throw "simulated GCS 503 copying $ObjectName"
+            }
+            $script:Events.Add("claim $ObjectName")
+            if (-not $script:Store.Contains($ObjectName)) {
+                return $false
+            }
+            if ($script:Store.Contains($ClaimedObjectName)) {
+                return $false
+            }
+            $script:Store[$ClaimedObjectName] = $script:Store[$ObjectName]
+            return $true
         }
     }
 
@@ -126,6 +149,14 @@ BeforeAll {
         if ($script:TimelineText -and $Arguments.ContainsKey('StepLogPath')) {
             New-Item -ItemType Directory -Path (Split-Path $Arguments['StepLogPath'] -Parent) -Force | Out-Null
             Set-Content -Path $Arguments['StepLogPath'] -Value $script:TimelineText
+        }
+
+        # Whatever else is meant to happen while this command is running -- a
+        # second agent starting, say. Taken once, so it cannot recurse.
+        if ($script:DuringFirstRun) {
+            $duringRun = $script:DuringFirstRun
+            $script:DuringFirstRun = $null
+            & $duringRun
         }
 
         if ($script:RunnerThrows) {
@@ -181,8 +212,10 @@ BeforeAll {
             -DeployRoot $script:DeployRoot `
             -BootstrapPrefix $script:BootstrapPrefix `
             -PendingPrefix $script:PendingPrefix `
+            -ProcessingPrefix $script:ProcessingPrefix `
             -ResultsPrefix $script:ResultsPrefix `
             -LogsPrefix $script:LogsPrefix `
+            -AllowedCommands $script:AllowedCommands `
             -CompletionRetryDelaySeconds 0 `
             -WarningVariable passWarnings `
             -WarningAction SilentlyContinue 6>$null | Out-Null
@@ -230,12 +263,20 @@ Describe 'A poll pass' {
         $script:RunnerThrows = ''
         $script:RefreshFails = $false
         $script:FailingWritePrefix = ''
+        $script:FailingRemovePrefix = ''
+        $script:ClaimFails = $false
+        $script:DuringFirstRun = $null
         $script:TimelineText = ''
         $script:DeployRoot = Join-Path $TestDrive ('RockDeploy-' + [guid]::NewGuid().ToString('N'))
 
         # Asked of the agent's own table rather than written out here, so a change
         # to the row moves this suite with it.
         $script:StopContract = Get-CommandContract -Command 'stop'
+
+        # Every verb, as the test VM's agent accepts. The queue under test is named
+        # for production so the prefixes read like the real ones; the Its about
+        # what production accepts ask for production's list themselves.
+        $script:AllowedCommands = @((Get-CommandContract).Keys)
     }
 
     Context 'a command that runs' {
@@ -411,6 +452,132 @@ Describe 'A poll pass' {
         }
     }
 
+    Context 'the claim' {
+
+        It 'takes a command out of pending/ before it runs it' {
+            # pending/ means "nobody has started this". Left there while it runs, a
+            # second agent cannot tell a running command from a waiting one.
+            $pending = Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}'
+
+            Invoke-TestPass
+
+            $claim = $script:Events.IndexOf("claim $pending")
+            $retire = $script:Events.IndexOf("remove $pending")
+            $run = $script:Events.IndexOf("run $($script:StopContract.Script)")
+
+            $claim | Should -BeGreaterOrEqual 0
+            $retire | Should -BeGreaterThan $claim
+            $run | Should -BeGreaterThan $retire
+        }
+
+        It 'leaves nothing in processing/ once the command is reported' {
+            Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}' | Out-Null
+
+            Invoke-TestPass
+
+            (Read-TestResult -CommandId 'stop-1234-1').HasSucceeded | Should -BeTrue
+            @($script:Store.Keys | Where-Object { $_.StartsWith($script:ProcessingPrefix) }).Count | Should -Be 0
+        }
+
+        It 'skips a command another pass has claimed, and leaves it exactly as it was' {
+            # Neither run nor reported: the pass holding the claim does both.
+            $pending = Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}'
+            $claimed = "$($script:ProcessingPrefix)stop-1234-1.json"
+            $script:Store[$claimed] = $script:Store[$pending]
+
+            Invoke-TestPass
+
+            $script:Runs.Count | Should -Be 0
+            $script:Store.Contains("$($script:ResultsPrefix)stop-1234-1.json") | Should -BeFalse
+            $script:Store.Contains($pending) | Should -BeTrue
+            $script:Store.Contains($claimed) | Should -BeTrue
+        }
+
+        It 'runs a command once when a second agent finds it while the first is still running it' {
+            # 2026-08-11: the startup script's inline run and the scheduled task both
+            # listed a staging deploy, and the second reported the working deploy as
+            # a lock timeout. Here the pending delete fails, so the second pass still
+            # lists the command and only the claim stands between it and a second run.
+            $script:FailingRemovePrefix = $script:PendingPrefix
+            $script:DuringFirstRun = { Invoke-TestPass }
+            Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}' | Out-Null
+
+            Invoke-TestPass
+
+            $script:Runs.Count | Should -Be 1
+            (Read-TestResult -CommandId 'stop-1234-1').HasSucceeded | Should -BeTrue
+        }
+
+        It 'keeps the claim when the command cannot be taken out of pending/, so it never runs again' {
+            # Removing the claim would hand the command straight back to the next
+            # pass. Kept, it turns every later pass into a skip until somebody
+            # removes both objects by hand.
+            $script:FailingRemovePrefix = $script:PendingPrefix
+            $pending = Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}'
+
+            Invoke-TestPass
+            Invoke-TestPass
+
+            $script:Runs.Count | Should -Be 1
+            $script:Store.Contains($pending) | Should -BeTrue
+            $script:Store.Contains("$($script:ProcessingPrefix)stop-1234-1.json") | Should -BeTrue
+        }
+
+        It 'leaves a command it could not claim in pending/ for the next pass' {
+            # A claim that errored is not a claim lost: nobody holds it. Running
+            # anyway would give up the one guarantee the claim exists for.
+            $script:ClaimFails = $true
+            $pending = Add-QueuedCommand -CommandId 'stop-1234-1' -Command 'stop' -Payload '{"prNumber":"1234"}'
+
+            Invoke-TestPass
+
+            $script:Runs.Count | Should -Be 0
+            $script:Store.Contains($pending) | Should -BeTrue
+            $script:Store.Contains("$($script:ResultsPrefix)stop-1234-1.json") | Should -BeFalse
+            ($script:Warnings -join ' ') | Should -Match 'claim'
+        }
+    }
+
+    Context 'the verbs a queue accepts' {
+
+        BeforeEach {
+            $script:AllowedCommands = Get-QueueAllowedCommands -QueueName 'commands-prod'
+        }
+
+        It 'refuses a verb the queue does not accept, without running it, and says what it does accept' {
+            $pending = Add-QueuedCommand -CommandId 'destroy-1234-1' -Command 'destroy' -Payload '{"prNumber":"1234"}'
+
+            Invoke-TestPass
+
+            $script:Runs.Count | Should -Be 0
+            $outcome = Read-TestResult -CommandId 'destroy-1234-1'
+            $outcome.HasSucceeded | Should -BeFalse -Because 'a refusal has to reach the workflow as a failure, not as a timeout'
+            $outcome.Error | Should -Match "'destroy' is not accepted"
+            $outcome.Error | Should -Match 'deploy-environment'
+            $script:Store.Contains($pending) | Should -BeFalse
+        }
+
+        It 'runs a verb the queue accepts' {
+            Add-QueuedCommand -CommandId 'deploy-production-1' -Command 'deploy-environment' `
+                -Payload '{"environmentName":"production","sha":"abc1234","artifactGcsPath":"gs://bucket/artifact.zip","hostName":"rock.example.org"}' | Out-Null
+
+            Invoke-TestPass
+
+            $script:Runs.Count | Should -Be 1
+            (Read-TestResult -CommandId 'deploy-production-1').HasSucceeded | Should -BeTrue
+        }
+
+        It 'still calls a verb with no contract unknown' {
+            # The more specific reason wins: "not accepted here" would send somebody
+            # looking for the queue that does accept it.
+            Add-QueuedCommand -CommandId 'reboot-1' -Command 'reboot-everything' | Out-Null
+
+            Invoke-TestPass
+
+            (Read-TestResult -CommandId 'reboot-1').Error | Should -Match 'Unknown command'
+        }
+    }
+
     Context 'the script refresh' {
 
         It 'refreshes the scripts before it lists the queue, so a fix reaches the command about to run' {
@@ -500,6 +667,49 @@ Describe 'A poll pass' {
             $outcome.LogObject | Should -Be '' -Because 'a result must not point at a log that was never written'
             ($script:Warnings -join ' ') | Should -Match 'Could not upload'
         }
+    }
+}
+
+Describe 'The verbs each queue accepts' {
+    # Every workflow holding the repository's storage key can write a command into
+    # any queue, so the production approval guards the workflow and not the queue.
+    # What production's agent will run is the one limit that holds either way.
+
+    BeforeAll {
+        $script:EveryVerb = @((Get-CommandContract).Keys)
+        $script:ProductionAccepts = @(Get-QueueAllowedCommands -QueueName 'commands-prod')
+    }
+
+    It 'gives the test VM every verb in the table' {
+        # The default for any queue without a list, so nothing the test VM does
+        # today stops working.
+        (@(Get-QueueAllowedCommands -QueueName 'commands') -join ',') | Should -Be ($script:EveryVerb -join ',')
+    }
+
+    It 'keeps the fleet''s commands off production' {
+        foreach ($verb in 'deploy', 'stop', 'destroy', 'renew-certificate') {
+            $script:ProductionAccepts | Should -Not -Contain $verb -Because "nothing in production's own workflows sends $verb"
+        }
+        $script:ProductionAccepts | Should -Contain 'deploy-environment'
+    }
+
+    It 'names only verbs the agent has a contract for' {
+        # A misspelt entry would quietly refuse the command it meant to allow,
+        # and nothing would say so until that command was needed.
+        foreach ($verb in $script:ProductionAccepts) {
+            $script:EveryVerb | Should -Contain $verb
+        }
+    }
+
+    It 'restricts the queue the production bootstrap installs against' {
+        # The list is keyed by queue name, so it only protects production while the
+        # bootstrap installs production's agent under the name the list is kept for.
+        $workflow = Get-Content -Raw -Path (Get-RepositoryPath '.github/workflows/production-bootstrap-command-queue.yml')
+        $match = [regex]::Match($workflow, '(?m)^\s*PRODUCTION_QUEUE_NAME:\s*(\S+)\s*$')
+        $match.Success | Should -BeTrue -Because 'the production bootstrap names the queue it installs against'
+
+        $installed = @(Get-QueueAllowedCommands -QueueName $match.Groups[1].Value)
+        ($installed -join ',') | Should -Be ($script:ProductionAccepts -join ',')
     }
 }
 

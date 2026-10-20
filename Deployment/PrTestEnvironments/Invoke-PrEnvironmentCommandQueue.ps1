@@ -316,6 +316,34 @@ function Get-CommandSecrets {
     return $secrets
 }
 
+function Get-GcsErrorStatusCode {
+    <#
+    .SYNOPSIS
+        The HTTP status a failed GCS request came back with, or $null.
+
+    .DESCRIPTION
+        Read through PSObject: Set-StrictMode -Version Latest makes a missing
+        property a terminating error, and the exception shape differs between
+        Windows PowerShell 5.1, which the scheduled task runs under, and the
+        PowerShell 7 this is tested on.
+
+    .PARAMETER ErrorRecord
+        The error a GCS call threw.
+    #>
+    param([Parameter(Mandatory = $true)][System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $responseProperty = $ErrorRecord.Exception.PSObject.Properties['Response']
+    if (-not $responseProperty -or -not $responseProperty.Value) {
+        return $null
+    }
+
+    $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
+    if (-not $statusProperty -or $null -eq $statusProperty.Value) {
+        return $null
+    }
+    return [int]$statusProperty.Value
+}
+
 function Remove-GcsObject {
     <#
     .SYNOPSIS
@@ -343,30 +371,66 @@ function Remove-GcsObject {
         # that a command is about to run again, when there is no longer an object
         # left to run it from -- a false alarm at the exact moment somebody is
         # already reading warnings carefully.
-        #
-        # Read through PSObject: Set-StrictMode -Version Latest makes a missing
-        # property a terminating error, and the exception shape differs between
-        # Windows PowerShell 5.1, which the scheduled task runs under, and the
-        # PowerShell 7 this is tested on.
-        $statusCode = $null
-        $responseProperty = $_.Exception.PSObject.Properties['Response']
-        if ($responseProperty -and $responseProperty.Value) {
-            $statusProperty = $responseProperty.Value.PSObject.Properties['StatusCode']
-            if ($statusProperty -and $null -ne $statusProperty.Value) {
-                $statusCode = [int]$statusProperty.Value
-            }
-        }
-
-        if ($statusCode -ne 404) {
+        if ((Get-GcsErrorStatusCode -ErrorRecord $_) -ne 404) {
             throw
         }
+    }
+}
+
+function Copy-GcsObjectIfAbsent {
+    <#
+    .SYNOPSIS
+        Copy one object to a name nothing is using yet. Return whether this call
+        made the copy.
+
+    .DESCRIPTION
+        This is the claim. ifGenerationMatch=0 makes GCS refuse the copy if
+        anything already exists at the destination, so of two passes racing to
+        copy one command into processing/, exactly one wins. GCS decides it, in
+        one request, which is why it holds across two processes on one box and
+        across two boxes alike.
+
+        Losing comes back as $false rather than as an error, in both of its
+        shapes: 412 when the other pass's copy already exists, and 404 when that
+        pass has already taken the command out of pending/. Anything else throws,
+        because then nobody holds the claim, and the command has to be left
+        where the next pass will find it.
+
+    .PARAMETER ObjectName
+        The command in pending/.
+
+    .PARAMETER DestinationObjectName
+        Its claim in processing/.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ObjectName,
+        [Parameter(Mandatory = $true)][string]$DestinationObjectName
+    )
+
+    $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
+    $encodedDestinationObjectName = [System.Uri]::EscapeDataString($DestinationObjectName)
+    $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName/copyTo/b/$BucketName/o/$encodedDestinationObjectName`?ifGenerationMatch=0"
+
+    try {
+        # The body is metadata for the destination, and there is none to set.
+        # Whatever content type the claim ends up with, Read-GcsObjectText reads
+        # it back as text.
+        Invoke-GcsRequest -Uri $uri -Method POST -Body '{}' | Out-Null
+        return $true
+    }
+    catch {
+        $statusCode = Get-GcsErrorStatusCode -ErrorRecord $_
+        if ($statusCode -eq 412 -or $statusCode -eq 404) {
+            return $false
+        }
+        throw
     }
 }
 
 function New-GcsQueueTransport {
     <#
     .SYNOPSIS
-        The four things a poll pass does to the bucket, bound to GCS.
+        The five things a poll pass does to the bucket, bound to GCS.
 
     .DESCRIPTION
         The pass used to call the GCS functions above by name, from script scope.
@@ -377,11 +441,12 @@ function New-GcsQueueTransport {
         matching its source text. Handing it these four operations instead is what
         lets a suite hand it a dictionary.
 
-        Four and no more, because that is everything the pass and
+        Five and no more, because that is everything the pass and
         Complete-QueuedCommand do to a queue: list a prefix, read an object, write
-        an object, delete one. Sync-DeploymentScripts still calls GCS directly. It
-        reads a different prefix for a different reason, and the suites already
-        reach it at the network edge.
+        an object, delete one, and claim one -- copy it to a name only if nothing
+        is there yet. Sync-DeploymentScripts still calls GCS directly. It reads a
+        different prefix for a different reason, and the suites already reach it
+        at the network edge.
 
         Plain scriptblocks, not closures. Each one resolves the function it calls,
         and the $BucketName that function reads, when it runs rather than when it
@@ -392,7 +457,7 @@ function New-GcsQueueTransport {
         first call rather than binding a value to the wrong slot.
 
     .OUTPUTS
-        A hashtable of List, Read, Write and Remove.
+        A hashtable of List, Read, Write, Remove and Claim.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -421,6 +486,10 @@ function New-GcsQueueTransport {
         Remove = {
             param([string]$ObjectName)
             Remove-GcsObject -ObjectName $ObjectName
+        }
+        Claim  = {
+            param([string]$ObjectName, [string]$ClaimedObjectName)
+            Copy-GcsObjectIfAbsent -ObjectName $ObjectName -DestinationObjectName $ClaimedObjectName
         }
     }
 }
@@ -475,9 +544,9 @@ function Complete-QueuedCommand {
         Report a command's result and make sure that command cannot run again.
 
     .DESCRIPTION
-        The object in pending/ is the only record of a command being outstanding.
-        The agent lists that prefix every sixty seconds and takes whatever it finds,
-        so a command is retired by being deleted and by nothing else.
+        The object in pending/ is the record of a command being outstanding. The
+        agent lists that prefix every sixty seconds and claims whatever it finds,
+        so a command is retired by being deleted from there and by nothing else.
 
         This used to be two bare statements, the write first, under an
         $ErrorActionPreference of 'Stop'. Any failure of the write skipped the
@@ -491,14 +560,24 @@ function Complete-QueuedCommand {
         with no result: a false red on work that ran exactly once, recoverable by
         reading a log. The behaviour it replaces is recoverable by nothing.
 
-        The proper fix is a claim marker -- move the object to processing/ before
-        running it, which is what the unused $ProcessingPrefix was reserved for.
-        That changes the contract shared with the enqueue and wait actions, so it is
-        deliberately not being done days before a production cutover.
+        The claim the pass makes before running a command is the third object
+        here, and the order of the deletes is what keeps it safe. The pass has
+        already tried to take the command out of pending/; this tries again, and
+        removes the claim in processing/ only once that worked. A claim removed
+        while the command is still pending hands it straight to the next pass to
+        run again. Kept, it makes every later pass skip the command, which is a
+        stuck object for somebody to clear rather than a deploy that repeats.
 
     .PARAMETER Transport
         The queue transport -- see New-GcsQueueTransport. Only Write and Remove
         are used here.
+
+    .PARAMETER CommandObjectName
+        The command in pending/. Usually gone already; a delete of an object that
+        is not there succeeds.
+
+    .PARAMETER ClaimObjectName
+        The pass's claim on it in processing/.
 
     .PARAMETER Attempts
         Applied to each half separately. A failing report does not spend the
@@ -507,6 +586,7 @@ function Complete-QueuedCommand {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Transport,
         [Parameter(Mandatory = $true)][string]$CommandObjectName,
+        [Parameter(Mandatory = $true)][string]$ClaimObjectName,
         [Parameter(Mandatory = $true)][string]$ResultObjectName,
         [Parameter(Mandatory = $true)][string]$ResultJson,
         [Parameter(Mandatory = $false)][int]$Attempts = 3,
@@ -524,6 +604,13 @@ function Complete-QueuedCommand {
         & $Transport.Remove -ObjectName $CommandObjectName | Out-Null
     }
 
+    $claimError = $null
+    if (-not $removeError) {
+        $claimError = Invoke-WithRetry -Attempts $Attempts -RetryDelaySeconds $RetryDelaySeconds -Action {
+            & $Transport.Remove -ObjectName $ClaimObjectName | Out-Null
+        }
+    }
+
     if ($writeError) {
         Write-Warning ("Could not write the result object $ResultObjectName after $Attempts attempts: $writeError. " +
             "The command has been retired regardless, so it ran exactly once; the workflow that dispatched it will " +
@@ -531,10 +618,16 @@ function Complete-QueuedCommand {
     }
 
     if ($removeError) {
-        # The one outcome this function cannot fix, and the only one that is still
-        # getting worse while nobody is looking.
+        # The one outcome this function cannot fix. The claim it leaves behind is
+        # what keeps it from getting worse.
         Write-Warning ("Could not delete $CommandObjectName after $Attempts attempts: $removeError. " +
-            "THIS COMMAND WILL RUN AGAIN on the next poll, once a minute, until the object is removed by hand.")
+            "The claim $ClaimObjectName has been kept, so this command will not run again, but every pass will skip " +
+            "it until both objects are removed by hand.")
+    }
+
+    if ($claimError) {
+        Write-Warning ("Could not delete the claim $ClaimObjectName after $Attempts attempts: $claimError. " +
+            "The command ran once and is out of pending/, so nothing will run it again; the claim can be removed by hand.")
     }
 }
 
@@ -1003,6 +1096,49 @@ function Get-CommandContract {
     return $contracts[$Command]
 }
 
+function Get-QueueAllowedCommands {
+    <#
+        .SYNOPSIS
+        The verbs the agent polling one queue will run.
+
+        .DESCRIPTION
+        Every workflow holding the repository's storage key can write a command
+        into any queue, and that key is not kept behind the production approval.
+        So the approval guards the workflows that write to production's queue, not
+        the queue. Without this, production's agent ran anything in the contract
+        table: a destroy or a fleet deploy written straight into commands-prod/
+        would have run on the production VM, and so would every verb added to the
+        table after it.
+
+        Production's list is what its own workflows send: production-deploy.yml,
+        and the db-* workflows whose queue_name input exists to reach that VM. A
+        queue without a list accepts every verb, so the test VM is unchanged.
+
+        Keyed by queue name rather than passed in as an argument because the
+        scheduled task's command line is the only way to pass one, Windows caps
+        a task command installed the way this one is at 261 characters, and
+        production's was 249 on 2026-10-20.
+
+        .PARAMETER QueueName
+        The queue this agent polls.
+
+        .OUTPUTS
+        The accepted verbs.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory = $true)][string]$QueueName)
+
+    $restrictedQueues = @{
+        'commands-prod' = @('deploy-environment', 'set-theme-customization', 'find-legacy-text-columns', 'anonymize-staging')
+    }
+
+    if ($restrictedQueues.ContainsKey($QueueName)) {
+        return $restrictedQueues[$QueueName]
+    }
+    return @((Get-CommandContract).Keys)
+}
+
 function Split-CommandList {
     <#
         .SYNOPSIS
@@ -1288,8 +1424,15 @@ function Invoke-CommandQueuePass {
           about to run, and a refresh that fails is a warning, never a reason to
           stop draining the queue.
 
-          A command the agent will not run -- an unknown verb, a missing field --
-          comes back as a failed result naming why, and the runner never starts.
+          A command is claimed before it is read, by copying it into processing/
+          where nothing exists yet, and then taken out of pending/. A command
+          another pass has claimed is skipped untouched. A claim that errors
+          leaves the command in pending/ for the next pass. See
+          Copy-GcsObjectIfAbsent.
+
+          A command the agent will not run -- an unknown verb, a verb this queue
+          does not accept, a missing field -- comes back as a failed result
+          naming why, and the runner never starts.
 
           The log is written before the result, because the workflow stops polling
           the moment the result appears.
@@ -1297,13 +1440,17 @@ function Invoke-CommandQueuePass {
           Every command is retired, whether or not its result could be written;
           see Complete-QueuedCommand.
 
-        Commands are not claimed before they run, so two passes that overlap both
-        run whatever both of them listed. That is open item 19 in
-        Documentation/Training/DevOps-Open-Items-Rock-CICD.md, and the transport is
-        where a claim would go.
+        The claim makes a command run at most once, not at least once. A pass that
+        dies part way through -- the VM restarting under a deploy -- leaves its
+        claim in processing/ and nothing in pending/, so nothing runs it again and
+        the dispatching workflow times out. Before the claim, two passes that
+        overlapped both ran whatever both had listed; open item 19 in
+        Documentation/Training/DevOps-Open-Items-Rock-CICD.md has the night that
+        happened.
 
     .PARAMETER Transport
-        The queue transport: List, Read, Write and Remove. See New-GcsQueueTransport.
+        The queue transport: List, Read, Write, Remove and Claim. See
+        New-GcsQueueTransport.
 
     .PARAMETER Runner
         Runs one contract script. Takes DeployRoot, ScriptName, Arguments and
@@ -1323,11 +1470,17 @@ function Invoke-CommandQueuePass {
     .PARAMETER PendingPrefix
         The queue. Every .json object the transport lists under it is a command.
 
+    .PARAMETER ProcessingPrefix
+        Where a command is claimed, under the same file name, while it runs.
+
     .PARAMETER ResultsPrefix
         Where each result is written, under the same file name as its command.
 
     .PARAMETER LogsPrefix
         Where each command's redacted output is written, before its result.
+
+    .PARAMETER AllowedCommands
+        The verbs this queue accepts. See Get-QueueAllowedCommands.
 
     .PARAMETER CompletionAttempts
         Passed to Complete-QueuedCommand as Attempts.
@@ -1343,8 +1496,10 @@ function Invoke-CommandQueuePass {
         [Parameter(Mandatory = $true)][string]$DeployRoot,
         [Parameter(Mandatory = $true)][string]$BootstrapPrefix,
         [Parameter(Mandatory = $true)][string]$PendingPrefix,
+        [Parameter(Mandatory = $true)][string]$ProcessingPrefix,
         [Parameter(Mandatory = $true)][string]$ResultsPrefix,
         [Parameter(Mandatory = $true)][string]$LogsPrefix,
+        [Parameter(Mandatory = $true)][string[]]$AllowedCommands,
         [Parameter(Mandatory = $false)][int]$CompletionAttempts = 3,
         [Parameter(Mandatory = $false)][int]$CompletionRetryDelaySeconds = 5
     )
@@ -1363,6 +1518,31 @@ function Invoke-CommandQueuePass {
     $commands = & $Transport.List -Prefix $PendingPrefix | Where-Object { $_ -like '*.json' }
     foreach ($commandObject in $commands) {
         $fileName = Split-Path $commandObject -Leaf
+        $claimObject = "$ProcessingPrefix$fileName"
+
+        try {
+            $isClaimed = [bool](& $Transport.Claim -ObjectName $commandObject -ClaimedObjectName $claimObject)
+        }
+        catch {
+            Write-Warning "Could not claim ${commandObject}: $($_.Exception.Message). It stays in pending/ for the next pass."
+            continue
+        }
+        if (-not $isClaimed) {
+            Write-Host "Skipping ${commandObject}: another pass has claimed it."
+            continue
+        }
+
+        # Out of pending/ as soon as it is ours, so that pending/ means "nobody
+        # has started this". A delete that fails here is not reported: the claim
+        # already stops a second run, and Complete-QueuedCommand deletes it again,
+        # with retries, and says so if that fails too.
+        try {
+            & $Transport.Remove -ObjectName $commandObject | Out-Null
+        }
+        catch {
+            Write-Host "Could not take $commandObject out of pending/ yet: $($_.Exception.Message)"
+        }
+
         $resultObject = "$ResultsPrefix$fileName"
         $commandId = $fileName
         $result = $null
@@ -1371,7 +1551,7 @@ function Invoke-CommandQueuePass {
         $commandSecrets = @()
 
         try {
-            $commandJson = & $Transport.Read -ObjectName $commandObject
+            $commandJson = & $Transport.Read -ObjectName $claimObject
             $command = $commandJson | ConvertFrom-Json
             $commandId = $command.commandId
             Write-Host "Processing PR environment command ${CommandId}: $($command.command)"
@@ -1379,6 +1559,12 @@ function Invoke-CommandQueuePass {
             # Unknown verbs are refused here rather than inside the job, so the result
             # says "Unknown command" instead of reporting that a job failed.
             $timeoutSeconds = [int](Get-CommandContract -Command ([string]$command.command)).TimeoutSeconds
+
+            # After the contract, so a verb nobody has heard of is called unknown
+            # rather than sending somebody looking for a queue that accepts it.
+            if ($AllowedCommands -notcontains [string]$command.command) {
+                throw "Command '$($command.command)' is not accepted on $PendingPrefix. It accepts: $($AllowedCommands -join ', ')."
+            }
             if (($command.PSObject.Properties.Name -contains 'timeoutSeconds') -and $command.timeoutSeconds) {
                 $timeoutSeconds = [int]$command.timeoutSeconds
             }
@@ -1443,6 +1629,7 @@ function Invoke-CommandQueuePass {
             $resultJson = $result | ConvertTo-Json -Depth 10
             Complete-QueuedCommand -Transport $Transport `
                 -CommandObjectName $commandObject `
+                -ClaimObjectName $claimObject `
                 -ResultObjectName $resultObject `
                 -ResultJson $resultJson `
                 -Attempts $CompletionAttempts `
@@ -1463,5 +1650,7 @@ Invoke-CommandQueuePass -Transport $transport `
     -DeployRoot $DeployRoot `
     -BootstrapPrefix $BootstrapPrefix `
     -PendingPrefix $PendingPrefix `
+    -ProcessingPrefix $ProcessingPrefix `
     -ResultsPrefix $ResultsPrefix `
-    -LogsPrefix $LogsPrefix
+    -LogsPrefix $LogsPrefix `
+    -AllowedCommands (Get-QueueAllowedCommands -QueueName $QueueName)

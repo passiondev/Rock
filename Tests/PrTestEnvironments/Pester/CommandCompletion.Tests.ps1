@@ -22,9 +22,15 @@
     result: a false red on work that ran exactly once, which is recoverable by
     reading a log. The behaviour it replaces is not recoverable by anything.
 
+    The claim changed what "retired" means without changing why. A command now
+    leaves pending/ for processing/ before it runs, and the processing/ object is
+    what stops a second pass from claiming it. So the claim may only go once the
+    command is out of pending/: removed while the command is still listed, it
+    hands that command straight back to the next pass.
+
     These tests call the real function with the queue handed to it as a
-    transport -- the same four-operation hashtable New-GcsQueueTransport builds
-    over GCS -- because the distinction being asserted, did the delete still
+    transport -- the same hashtable New-GcsQueueTransport builds over GCS --
+    because the distinction being asserted, did the delete still
     happen, is invisible to a test that reads source text. They used to shadow
     Write-GcsObjectText and Remove-GcsObject by name; the transport is that same
     edge, passed in rather than shadowed. CommandQueuePass.Tests.ps1 covers the
@@ -39,17 +45,18 @@ BeforeAll {
             -Name 'Invoke-WithRetry', 'Complete-QueuedCommand')
 
     $script:CommandObject = 'pr-environments/commands-prod/pending/abc123.json'
+    $script:ClaimObject = 'pr-environments/commands-prod/processing/abc123.json'
     $script:ResultObject = 'pr-environments/commands-prod/results/abc123.json'
 
     # Defined once here and steered by the script-scoped counters below. Redefining
     # a stand-in inside an It leaks it into every It after it, which is its own way
     # of going green while asserting nothing.
     $script:WriteFailuresRemaining = 0
-    $script:RemoveFailuresRemaining = 0
+    $script:RemoveFailuresRemaining = @{}
     $script:Written = @()
     $script:Removed = @()
     $script:WriteAttempts = 0
-    $script:RemoveAttempts = 0
+    $script:RemoveAttempts = @()
 
     # Only the two operations Complete-QueuedCommand uses. If it started reaching
     # for List or Read, the call would fail here on a missing key, which is the
@@ -65,12 +72,14 @@ BeforeAll {
             }
             $script:Written += $ObjectName
         }
+        # Failures are counted per object, because the two deletes have to be
+        # told apart: which one failed decides whether the other may happen.
         Remove = {
             param([string]$ObjectName)
 
-            $script:RemoveAttempts++
-            if ($script:RemoveFailuresRemaining -gt 0) {
-                $script:RemoveFailuresRemaining--
+            $script:RemoveAttempts += $ObjectName
+            if ($script:RemoveFailuresRemaining.ContainsKey($ObjectName) -and $script:RemoveFailuresRemaining[$ObjectName] -gt 0) {
+                $script:RemoveFailuresRemaining[$ObjectName]--
                 throw "simulated GCS 503 on delete"
             }
             $script:Removed += $ObjectName
@@ -79,11 +88,17 @@ BeforeAll {
 
     function script:Reset-Counters {
         $script:WriteFailuresRemaining = 0
-        $script:RemoveFailuresRemaining = 0
+        $script:RemoveFailuresRemaining = @{}
         $script:Written = @()
         $script:Removed = @()
         $script:WriteAttempts = 0
-        $script:RemoveAttempts = 0
+        $script:RemoveAttempts = @()
+    }
+
+    function script:Get-RemoveAttemptCount {
+        param([string]$ObjectName)
+
+        return @($script:RemoveAttempts | Where-Object { $_ -eq $ObjectName }).Count
     }
 
     # RetryDelaySeconds 0 throughout: the backoff is real in production and there is
@@ -91,13 +106,18 @@ BeforeAll {
     function script:Complete-TestCommand {
         param([int]$Attempts = 3)
 
+        $completionWarnings = @()
         Complete-QueuedCommand -Transport $script:Transport `
             -CommandObjectName $script:CommandObject `
+            -ClaimObjectName $script:ClaimObject `
             -ResultObjectName $script:ResultObject `
             -ResultJson '{"status":"success"}' `
             -Attempts $Attempts `
             -RetryDelaySeconds 0 `
+            -WarningVariable completionWarnings `
             -WarningAction SilentlyContinue
+
+        $script:Warnings = @($completionWarnings)
     }
 }
 
@@ -112,7 +132,15 @@ Describe 'Completing a queued command' {
 
         $script:Written | Should -Contain $script:ResultObject
         $script:Removed | Should -Contain $script:CommandObject
+        $script:Removed | Should -Contain $script:ClaimObject
         $script:WriteAttempts | Should -Be 1 -Because 'a write that worked should not be repeated'
+    }
+
+    It 'removes the claim only after the command is out of pending/' {
+        Complete-TestCommand
+
+        [array]::IndexOf($script:Removed, $script:ClaimObject) |
+            Should -BeGreaterThan ([array]::IndexOf($script:Removed, $script:CommandObject))
     }
 
     It 'retries a write that fails and then succeeds' {
@@ -134,59 +162,57 @@ Describe 'Completing a queued command' {
 
         $script:Written | Should -BeNullOrEmpty
         $script:Removed | Should -Contain $script:CommandObject -Because 'a command that cannot be reported must still not run a second time'
+        $script:Removed | Should -Contain $script:ClaimObject
     }
 
     It 'retries a delete that fails and then succeeds' {
         # The delete is the safety-critical half, so a transient failure there is
         # worth more than one attempt.
-        $script:RemoveFailuresRemaining = 2
+        $script:RemoveFailuresRemaining[$script:CommandObject] = 2
 
         Complete-TestCommand
 
-        $script:RemoveAttempts | Should -Be 3
+        Get-RemoveAttemptCount -ObjectName $script:CommandObject | Should -Be 3
         $script:Removed | Should -Contain $script:CommandObject
+        $script:Removed | Should -Contain $script:ClaimObject
     }
 
-    It 'says so loudly when the command could not be retired' {
-        # The one outcome the agent cannot fix by itself. It has to reach a human,
-        # because what happens next is the command running again on the next poll.
-        $script:RemoveFailuresRemaining = 99
+    It 'keeps the claim, and says so, when the command could not be taken out of pending/' {
+        # The one outcome the agent cannot fix by itself. Kept, the claim makes
+        # every later pass skip the command; removed, it would hand the command
+        # to the next pass to run again. Either way somebody has to clear it.
+        $script:RemoveFailuresRemaining[$script:CommandObject] = 99
 
-        $warnings = @()
-        Complete-QueuedCommand -Transport $script:Transport `
-            -CommandObjectName $script:CommandObject `
-            -ResultObjectName $script:ResultObject `
-            -ResultJson '{"status":"success"}' `
-            -Attempts 2 `
-            -RetryDelaySeconds 0 `
-            -WarningVariable warnings `
-            -WarningAction SilentlyContinue
+        Complete-TestCommand -Attempts 2
 
-        $warnings | Should -Not -BeNullOrEmpty
-        ($warnings -join ' ') | Should -Match 'run again'
+        $script:Removed | Should -Not -Contain $script:ClaimObject
+        Get-RemoveAttemptCount -ObjectName $script:ClaimObject | Should -Be 0
+        ($script:Warnings -join ' ') | Should -Match 'will not run again'
+        ($script:Warnings -join ' ') | Should -Match 'by hand'
+    }
+
+    It 'says so when the claim could not be removed, though the command is retired' {
+        $script:RemoveFailuresRemaining[$script:ClaimObject] = 99
+
+        Complete-TestCommand -Attempts 2
+
+        $script:Removed | Should -Contain $script:CommandObject
+        ($script:Warnings -join ' ') | Should -Match ([regex]::Escape($script:ClaimObject))
     }
 
     It 'does not report a result it failed to write' {
         $script:WriteFailuresRemaining = 99
 
-        $warnings = @()
-        Complete-QueuedCommand -Transport $script:Transport `
-            -CommandObjectName $script:CommandObject `
-            -ResultObjectName $script:ResultObject `
-            -ResultJson '{"status":"success"}' `
-            -Attempts 2 `
-            -RetryDelaySeconds 0 `
-            -WarningVariable warnings `
-            -WarningAction SilentlyContinue
+        Complete-TestCommand -Attempts 2
 
-        ($warnings -join ' ') | Should -Match 'result'
+        ($script:Warnings -join ' ') | Should -Match 'result'
     }
 }
 
 Describe 'Removing the command object' {
 
     BeforeAll {
-        . (Import-ScriptFunction -Path $script:AgentScript -Name 'Remove-GcsObject' `
+        . (Import-ScriptFunction -Path $script:AgentScript -Name 'Remove-GcsObject', 'Get-GcsErrorStatusCode' `
                 -Supplied 'Invoke-GcsRequest', 'BucketName')
 
         $script:BucketName = 'connect-file-storage'
@@ -234,6 +260,81 @@ Describe 'Removing the command object' {
 
         { Remove-GcsObject -ObjectName 'pr-environments/commands-prod/pending/flaky.json' } |
             Should -Throw
+    }
+}
+
+Describe 'Claiming the command object' {
+    # The one GCS call that makes the claim exclusive. A copy to processing/ that
+    # only lands where nothing exists yet, so of two passes racing for one
+    # command exactly one gets it. A lost race is an answer, not an error; only
+    # a call that failed for some other reason is.
+
+    BeforeAll {
+        . (Import-ScriptFunction -Path $script:AgentScript -Name 'Copy-GcsObjectIfAbsent', 'Get-GcsErrorStatusCode' `
+                -Supplied 'Invoke-GcsRequest', 'BucketName')
+
+        $script:BucketName = 'connect-file-storage'
+        $script:Requests = @()
+        $script:NextStatusCode = 0
+
+        function script:Invoke-GcsRequest {
+            param([string]$Uri, [string]$Method, $Body, [string]$ContentType)
+
+            $script:Requests += [pscustomobject]@{ Uri = $Uri; Method = $Method }
+            if ($script:NextStatusCode -eq 0) { return $null }
+
+            $exception = [System.Exception]::new("simulated HTTP $script:NextStatusCode")
+            $exception | Add-Member -NotePropertyName Response `
+                -NotePropertyValue ([pscustomobject]@{ StatusCode = $script:NextStatusCode }) -Force
+            throw $exception
+        }
+
+        function script:Copy-TestClaim {
+            Copy-GcsObjectIfAbsent -ObjectName 'pr-environments/commands-prod/pending/abc123.json' `
+                -DestinationObjectName 'pr-environments/commands-prod/processing/abc123.json'
+        }
+    }
+
+    BeforeEach {
+        $script:Requests = @()
+        $script:NextStatusCode = 0
+    }
+
+    It 'copies only where nothing exists yet, and says it won' {
+        Copy-TestClaim | Should -BeTrue
+
+        $script:Requests.Count | Should -Be 1
+        $script:Requests[0].Method | Should -Be 'POST'
+        $script:Requests[0].Uri | Should -BeLike '*/b/connect-file-storage/o/pr-environments%2Fcommands-prod%2Fpending%2Fabc123.json/copyTo/b/connect-file-storage/o/pr-environments%2Fcommands-prod%2Fprocessing%2Fabc123.json*'
+        $script:Requests[0].Uri | Should -Match 'ifGenerationMatch=0' -Because 'without the precondition both passes win'
+    }
+
+    It 'reports a claim another pass already holds as lost' {
+        $script:NextStatusCode = 412
+
+        Copy-TestClaim | Should -BeFalse
+    }
+
+    It 'reports a command that is already gone as lost' {
+        # Claimed and taken out of pending/ by another pass between this one's
+        # list and its copy.
+        $script:NextStatusCode = 404
+
+        Copy-TestClaim | Should -BeFalse
+    }
+
+    It 'reports a copy that was refused' {
+        # 403 is a scope or IAM problem: nobody holds the claim, so the command
+        # has to stay pending rather than be skipped as somebody else's.
+        $script:NextStatusCode = 403
+
+        { Copy-TestClaim } | Should -Throw
+    }
+
+    It 'does not read a server error as a lost race' {
+        $script:NextStatusCode = 503
+
+        { Copy-TestClaim } | Should -Throw
     }
 }
 

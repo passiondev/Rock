@@ -92,6 +92,25 @@ Describe 'The scheduled task command line' {
         Get-ScriptParameterNames -Path $script:InstallerScript |
             Should -Contain 'BootstrapPrefix' -Because 'the installer cannot forward a value nobody can give it'
     }
+
+    It 'fits in the 261 characters schtasks accepts, with production''s arguments' {
+        # schtasks refuses a longer /TR outright. The bootstrap does not check the
+        # installer's exit code, so the refusal would leave production on whatever
+        # task it had before, under a log line saying the agent was installed.
+        # Production's line was 249 characters on 2026-10-20, which is why the
+        # agent keys its list of accepted verbs by queue name rather than taking
+        # the list as one more argument here.
+        $DeployRoot = 'C:\RockDeploy'
+        $scriptPath = "$DeployRoot\$(Split-Path $script:AgentScript -Leaf)"
+        $BucketName = 'connect-file-storage'
+        $QueueName = 'commands-prod'
+        $BootstrapPrefix = 'pr-environments/bootstrap/prod/'
+
+        $taskCommand = & ([scriptblock]::Create((Get-TaskCommandLine)))
+
+        $taskCommand | Should -Match 'commands-prod' -Because 'the line has to be built from the values above to measure anything'
+        $taskCommand.Length | Should -BeLessOrEqual 261
+    }
 }
 
 Describe 'The agent bootstrap prefix guard' {

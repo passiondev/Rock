@@ -623,7 +623,8 @@ mask this, and neither is a fix:
   minutes it throws "Timed out waiting for deployment lock" and writes a *failed* result for a
   command that actually succeeded.
 
-**Status: confirmed in production on 2026-08-11, trigger removed, root fix still open.**
+**Status: confirmed in production on 2026-08-11, trigger removed; fixed in code 2026-10-20, live
+on each host only after its bootstrap is dispatched (item 25).**
 
 It was caught in the act within the hour:
 
@@ -652,11 +653,26 @@ overlapping *itself*, that inline run was the only way to get two agents at once
 a pending command is now picked up by the task within 60 seconds instead. That closes the
 observed failure, and it is a mitigation, not the fix.
 
-**The fix is still the claim that was designed and never written:** copy the object to
-`processing/` and delete it from `pending/` *before* running it, with the move made conditional
-(`ifGenerationMatch`) so exactly one run wins. Until that exists, any second agent process from
-any source reintroduces this. It also makes item 16's heartbeat cheaper, because `processing/`
-would finally mean what its name says.
+**Fixed in code 2026-10-20: the claim that was designed and never written now exists.** Before
+it reads a command, `Invoke-CommandQueuePass` copies the object into `processing/` with
+`ifGenerationMatch=0`, so GCS lets exactly one copy succeed and every other run gets `412` and
+skips the command. The winner removes the `pending/` object before running it, runs from the
+claim, and removes the claim only after the result is written and the `pending/` object is
+confirmed gone. Two consequences to know:
+
+- **At most once, not at least once.** An agent that dies mid-command leaves its claim in
+  `processing/`, nothing re-runs it, and the producer's wait times out. That is the right
+  trade for deploys — a duplicate deploy is what this item is about — but it means a command
+  stranded in `processing/` is cleared by hand, after reading its log.
+- **The VM needs `objects.create` under `processing/`.** It already writes `results/` and
+  `logs/` with the same service account, and no IAM condition in the repo narrows that by
+  prefix, so this is expected to work as-is. Not verified against live IAM on 2026-10-20.
+
+Neither host runs this until its bootstrap is dispatched — the agent refreshes its own script
+from the bootstrap prefix, so for the test VM that is the next `pr-test-bootstrap-command-queue`
+run, and for production the next `production-bootstrap-command-queue` run (a VM restart, with
+approval). `processing/` now means what its name says, which also makes item 16's heartbeat
+cheaper: a command in `processing/` is running or stranded, never merely waiting.
 
 > **The diagnostic lesson is worth more than the bug.** On the night of 2026-08-10 this same
 > "command sitting in `pending/`" observation was read as *the agent is dead*, and the response

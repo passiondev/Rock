@@ -112,8 +112,10 @@ staging catalog only. It never reads or writes the shared catalog. Its terms:
 
 | Term | Means |
 |---|---|
-| **command** | One JSON object naming work for the VM: `deploy`, `destroy`, `renew-certificate`, `find-legacy-text-columns`. |
-| **the queue** | The GCS prefix the commands travel through: `pending/` then `results/`. A `processing/` prefix is declared and unused -- the agent runs a command in place under `pending/`, so there is no claim marker and no middle state. |
+| **command** | One JSON object naming work for the VM: `deploy`, `deploy-environment`, `stop`, `destroy`, `renew-certificate`, `find-legacy-text-columns`, `anonymize-staging`, `set-theme-customization`. The agent's command contract table is the list. |
+| **the queue** | The GCS prefix the commands travel through: `pending/`, then `processing/` while it runs, then `results/`. |
+| **the claim** | The copy of a command into `processing/` made with `ifGenerationMatch=0`, so exactly one agent run wins it and the rest skip it. Taken before the command is read; removed only once its result is written and its `pending/` object is gone. At most once: a run that dies mid-command leaves its claim behind and nothing re-runs it. |
+| **accepted verbs** | The verbs an agent will run from its queue, keyed by queue name inside the agent: `commands-prod` takes only `deploy-environment`, `set-theme-customization`, `find-legacy-text-columns` and `anonymize-staging`; any other queue takes every verb in the contract. Kept out of the task's command line, which Windows caps at 261 characters. |
 | **producer** | A workflow that writes a command. |
 | **the agent** | `Invoke-PrEnvironmentCommandQueue.ps1`, the scheduled task on the VM that consumes them. |
 | **enqueue** / **poll** | Writing a command, and waiting for its result. The two halves of the protocol. |
@@ -121,9 +123,9 @@ staging catalog only. It never reads or writes the shared catalog. Its terms:
 | **the payload** | The fields a particular verb adds on top of the envelope. A field whose value is blank is dropped rather than sent empty. |
 | **command id prefix** | The part of a `commandId` the producer chooses, such as `deploy-pr-123`. `run-vm-command` appends `-<run_id>-<run_attempt>`, so a re-run never collides with the result of the run before it. |
 | **wait ceiling** | The longest a producer waits for a result: (attempts − 1) × interval, because the last look happens before the final sleep. It must be longer than the verb's own timeout on the VM plus a margin, or the producer reports a timeout while the command is still running. |
-| **queue transport** | What the agent reads and writes the queue through: List, Read, Write and Remove. `New-GcsQueueTransport` is the real one; the Pester suite passes an in-memory one. |
+| **queue transport** | What the agent reads and writes the queue through: List, Read, Write, Remove and Claim. `New-GcsQueueTransport` is the real one; the Pester suite passes an in-memory one. |
 | **command runner** | `Invoke-CommandJob`: runs one command's script in a background job with a timeout, and returns its output, whether it timed out, and its failure. |
-| **poll pass** | `Invoke-CommandQueuePass`: one run of the agent. It refreshes its scripts, then drains `pending/` -- run, write the log, write the result, remove. A failed refresh never stops the drain. |
+| **poll pass** | `Invoke-CommandQueuePass`: one run of the agent. It refreshes its scripts, then drains `pending/` -- claim, remove from `pending/`, check the verb is accepted, run, write the log, write the result, remove the claim. A failed refresh never stops the drain. |
 
 A producer calls one composite action, `.github/actions/run-vm-command`, which
 enqueues, waits, and can copy the command's log into the job summary.

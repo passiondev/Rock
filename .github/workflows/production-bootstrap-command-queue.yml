@@ -265,9 +265,9 @@ jobs:
           }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy' -QueueName '$queueName' -BootstrapPrefix '$prefix'
           # Not running the agent inline, for the reason written out in the staging
-          # bootstrap: nothing claims a command, so a second agent re-runs whatever
-          # the scheduled task is already running and then reports the working
-          # deploy as a lock timeout. The task fires within 60 seconds anyway.
+          # bootstrap: a second agent is what once re-ran a working deploy and
+          # reported it as a lock timeout. The agent now claims each command, so a
+          # second one would only skip it, and the task fires within 60 seconds.
           Write-Host "ROCK-BOOTSTRAP: installed the command queue agent for queue $queueName."
           "@
 
