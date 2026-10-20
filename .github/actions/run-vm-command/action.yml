@@ -74,10 +74,6 @@ outputs:
       without rebuilding it. Assembled here rather than by a step, so it is set
       even when the command fails.
     value: ${{ inputs.command-id-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
-  log-path:
-    description: >
-      Workspace path of the downloaded VM log, empty when the VM reported none.
-    value: ${{ steps.await.outputs.log-path }}
 
 # Ten jobs in eight workflows called queue-vm-command and then await-vm-command,
 # and each wrote the bucket, the queue and the command id twice. The halves only

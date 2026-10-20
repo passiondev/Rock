@@ -131,8 +131,6 @@ jobs:
     name: Dry run
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    outputs:
-      log-path: ${{ steps.await.outputs.log-path }}
     defaults:
       run:
         shell: pwsh

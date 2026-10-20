@@ -598,6 +598,43 @@ class DeclaredOutputTests(harness.HarnessAssertions, unittest.TestCase):
             + ", ".join(unread),
         )
 
+    def test_every_job_output_is_read_by_another_job(self):
+        """The same rule one level up, and the reason the test above needs it.
+
+        db-anonymize-staging's dry run exported run-vm-command's `log-path` as a
+        job output that no job read. It could not have been read usefully: the
+        value is a path on the dry run's runner, and the apply job runs on a
+        fresh one where nothing is at that path. It also counted as the only
+        caller of run-vm-command's own `log-path`, so the test above passed on a
+        read that went nowhere.
+
+        A job output is read through `needs.<job>.outputs` by a later job, or
+        through `jobs.<job>.outputs` by a reusable workflow's own outputs."""
+        declared, unread = [], []
+        for path in sorted(harness.WORKFLOWS_DIR.glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            jobs = harness.workflow(path.name).get("jobs") or {}
+            for job_name, job in jobs.items():
+                for output_name in job.get("outputs") or {}:
+                    declared.append(f"{path.name}:{job_name}.{output_name}")
+                    pattern = re.compile(
+                        r"\b(?:needs|jobs)\."
+                        + re.escape(job_name)
+                        + r"\.outputs\."
+                        + re.escape(output_name)
+                        + r"\b"
+                    )
+                    if not pattern.search(text):
+                        unread.append(f"{path.name}:{job_name}.{output_name}")
+
+        self.assertNotVacuous(declared, "no workflow job declares an output")
+        self.assertEqual(
+            [],
+            unread,
+            "these job outputs are declared and no job reads them: "
+            + ", ".join(unread),
+        )
+
 
 class AwaitActionBehaviourTests(unittest.TestCase):
     """The wait's own behaviour, asserted once.
