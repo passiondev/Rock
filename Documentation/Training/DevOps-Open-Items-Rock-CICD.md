@@ -182,11 +182,21 @@ Two independent defects, and the first one is the interesting one:
   at `C:\RockTestEnvs\staging\env.json` and the walk of `C:\RockTestEnvs` finds it. That left
   production's manifest, `C:\RockBackups\production\env.json`, as the only thing under the
   old default — and the production bootstrap ships the renewal script, and production's queue
-  agent accepts `renew-certificate`. One such command would have stopped `W3SVC` on
-  production and rebound its https binding. The parameter stays for a by-hand run on the
-  test VM; `Pester/ManifestContract.Tests.ps1` fails if the default reaches the backup root
-  again. A stale `C:\RockBackups\staging\env.json` from the InPlace days may still sit on
-  the test VM; it is harmless (renewal no longer reads that root) and can be deleted.
+  agent accepted `renew-certificate`. One such command would have stopped `W3SVC` on
+  production and rebound its https binding. (Since 2026-10-20 production's agent accepts only
+  the four verbs its own workflows send, and `renew-certificate` is not one of them — once
+  production's bootstrap has been re-run. The empty default still matters: it is what protects
+  production until then, and it should not depend on that list staying narrow.) The parameter
+  stays for a by-hand run on the test VM; `Pester/ManifestContract.Tests.ps1` fails if the
+  default reaches the backup root again.
+  **Left on the test VM: a stale `C:\RockBackups\staging\env.json`** from the InPlace days.
+  It is harmless, because renewal no longer reads that root, and nothing in the pipeline will
+  ever delete it. Remove it by hand the next time somebody is on the box. `gcloud compute ssh`
+  does not reach `connect-srv-test` (sshd does not answer there), so that means RDP. Open the
+  file first and confirm it names `staging` and `InPlace`, and delete that file only: the
+  timestamped directories beside it are the old site backups described above, which are a
+  separate decision. Not done remotely on 2026-10-20, because nothing established reaches the
+  test VM's disk without a reboot.
 
 **Still open — the reporting gap that hid all of this for months.** `succeeded` does not mean
 a certificate was issued. The script returns early with a clean exit when it finds no
@@ -1589,6 +1599,63 @@ write down that it is VM-owned and how to restore it. What is not an option is l
 undecided, because the failure mode is a deploy that succeeds and a site that comes back missing
 something nobody listed.
 
+### 33. Every workflow can write to production's queue, so the approval guards the workflows and not production
+
+**Recorded 2026-10-20. Needs the team: it is GCP IAM and GitHub environment settings, plus
+workflow changes that have to land before either.**
+
+Every workflow authenticates through `.github/actions/gcp-session` with one repository secret,
+`GCP_SA_KEY`. The key a PR deploy uses to write into `pr-environments/commands/` can write
+just as well into:
+
+- `pr-environments/commands-prod/`, which production's agent runs;
+- `pr-environments/bootstrap/prod/`, which production's startup script installs from and its
+  agent refreshes from — the agent itself included;
+- `pr-environments/production/`, where production's artifact sits between the build and the
+  deploy that unpacks it over the live site.
+
+Item 2's reviewers and branch policy gate the jobs that declare `environment: production`.
+They do not gate the key. Anyone with write access can push a branch whose workflow reads
+`GCP_SA_KEY` and writes straight into any of the three, with no approval and from any ref.
+
+**What 2026-10-20 narrowed, and what it did not.** Production's agent now accepts only the
+four verbs its own workflows send (`Get-QueueAllowedCommands` in
+`Invoke-PrEnvironmentCommandQueue.ps1`), so a `destroy`, a `stop` or a fleet `deploy` written
+into `commands-prod/` comes back refused instead of running. That takes effect only after
+production's bootstrap is re-run. It limits what an unapproved command can do to what an
+approved one can, and an approved one includes `deploy-environment` with whatever artifact the
+command names.
+
+**The fix is two halves, and the order is what matters.**
+
+1. **A production service account, held by the `production` environment.** Store its key as an
+   environment secret on `production`. A job that declares the environment then gets that key,
+   and no other job can read it. Before this helps, every job that writes a production object
+   has to declare the environment, and today only `production-bootstrap-command-queue.yml`'s
+   `bootstrap` job does. The others:
+   - `env-deploy-command.yml`'s `deploy` job, which `production-deploy.yml` calls with
+     `queue_name: commands-prod`. The `approve` job in front of it holds the environment; the
+     job that writes the command does not.
+   - The `plan` jobs of `db-anonymize-staging.yml` and `db-set-theme-customization.yml`, and
+     `db-find-legacy-text-columns.yml`'s `find` job, whenever `queue_name` is `commands-prod`.
+     Their apply jobs declare `staging-anonymize` and `database-write`, not `production`.
+   - The build that `production-deploy.yml` runs through `pr-test-artifact.yml`, which uploads
+     production's artifact with no environment at all. Either it builds under the production
+     key, or the deploy checks the artifact against a hash recorded by a job that holds it. That
+     choice is the team's.
+2. **Then narrow the fleet account.** An IAM condition on `GCP_SA_KEY`'s service account that
+   leaves it everything under `pr-environments/` except the three prefixes above. Uniform
+   bucket-level access is on (item 17), so a condition on `resource.name` is available.
+
+In the other order — the IAM change first — every production deploy, bootstrap and db-* run
+against `commands-prod` fails at its first write, because those jobs still authenticate with
+the fleet key. The workflow changes for step 1 are not in the repository yet, so nothing here
+can be applied until they are written, merged and pushed.
+
+Production's VM has its own service account, and this does not touch it: it still needs to
+read `commands-prod/` and `bootstrap/prod/`, and to write `processing/`, `results/` and `logs/`
+under its own queue.
+
 ## P2 — hygiene
 
 ### 9. Stale branches — but two of them are not safe to delete
@@ -2355,6 +2422,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     the script-refresh work that needs the same thing. The cutover itself no longer waits on it:
     the deploy timeline is written to disk and read back, so a production log covers the offline
     window whatever the stream does
+20. Item 33 — give production its own credential before production's queue carries routine
+    traffic. Write the workflow changes first, then the environment secret, then narrow the
+    fleet key; in the other order production deploys fail at their first write
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that

@@ -32,10 +32,13 @@ param(
     # Deploy-RockEnvironment.ps1 puts it precisely so renewal will not find it.
     #
     # And this script runs on production too. The production bootstrap publishes
-    # every script in this directory, and production's queue agent accepts
-    # renew-certificate like any other verb. With the old default, one such
-    # command would have found production's manifest, stopped W3SVC for the
-    # HTTP-01 challenge, and rebound production's https binding.
+    # every script in this directory, and production's queue agent accepted
+    # renew-certificate like any other verb until Get-QueueAllowedCommands
+    # narrowed it. With the old default, one such command would have found
+    # production's manifest, stopped W3SVC for the HTTP-01 challenge, and rebound
+    # production's https binding. The default stays empty all the same: the
+    # narrower list reaches production only with its next bootstrap, and this
+    # guard should not depend on that list staying narrow.
     #
     # Kept as a parameter for an operator running this by hand on the test VM
     # who knows which root they mean. The queue cannot pass it: the
