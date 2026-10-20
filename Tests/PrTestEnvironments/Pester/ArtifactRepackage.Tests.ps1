@@ -289,13 +289,20 @@ Describe 'Invoke-ArtifactRepackage' {
             $script:Objects[$address.RecordPath] = [System.IO.File]::ReadAllBytes($recordPath)
         }
 
-        # What the repackage job's upload does with a run's zip and record:
-        # puts them at the target's address, where a later run finds them.
+        # What the repackage job's uploads do with the last run's zip and
+        # record: put each, under its own file name, at the destination the
+        # run wrote -- split as upload-cloud-storage splits it, at the first
+        # slash, into the bucket and a prefix. A later run finds them only if
+        # that lands them at the target's address.
         function Publish-CheckoutArtifact {
-            param([Parameter(Mandatory = $true)][string]$Sha)
-            $address = Get-ArtifactAddress -Slug 'staging' -Sha $Sha
-            $script:Objects[$address.ObjectPath] = [System.IO.File]::ReadAllBytes((Join-Path $script:Checkout $address.Name))
-            $script:Objects[$address.RecordPath] = [System.IO.File]::ReadAllBytes((Join-Path $script:Checkout $address.RecordName))
+            $output = @(Get-Content -Path $script:OutputFile)
+            $name = ($output | Where-Object { $_ -like 'artifact_name=*' } | Select-Object -Last 1) -replace '^artifact_name=', ''
+            $destination = ($output | Where-Object { $_ -like 'artifact_gcs_destination=*' } | Select-Object -Last 1) -replace '^artifact_gcs_destination=', ''
+            $bucket, $prefix = $destination -split '/', 2
+            $bucket | Should -BeExactly $script:Bucket -Because 'the run names the bucket its uploads go to'
+            foreach ($file in @($name, 'pr-test-artifact.json')) {
+                $script:Objects["$prefix/$file"] = [System.IO.File]::ReadAllBytes((Join-Path $script:Checkout $file))
+            }
         }
 
         # A staging repackage of TargetSha from BaseSha's artifact, against the
@@ -363,6 +370,8 @@ Describe 'Invoke-ArtifactRepackage' {
             Should -Be '1111111111111111111111111111111111111111'
         Get-Content -Path $script:OutputFile |
             Should -Contain 'artifact_gcs_object_path=pr-environments/staging/2222222222222222222222222222222222222222/RockWeb-staging-2222222.zip'
+        Get-Content -Path $script:OutputFile |
+            Should -Contain 'artifact_gcs_destination=rock-pr-env/pr-environments/staging/2222222222222222222222222222222222222222'
         @(Get-Content -Path $script:SummaryFile) | Should -Be @(
             '### Repackaged artifact'
             ''
@@ -377,7 +386,7 @@ Describe 'Invoke-ArtifactRepackage' {
         # build of 2 ever made.
         Add-StoredArtifact -Sha '1111111111111111111111111111111111111111'
         Invoke-Repackage -BaseSha '1111111111111111111111111111111111111111' -TargetSha '2222222222222222222222222222222222222222'
-        Publish-CheckoutArtifact -Sha '2222222222222222222222222222222222222222'
+        Publish-CheckoutArtifact
 
         Invoke-Repackage -BaseSha '2222222222222222222222222222222222222222' -TargetSha '3333333333333333333333333333333333333333'
 

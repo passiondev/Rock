@@ -194,20 +194,52 @@ Describe 'the artifact record' {
 }
 
 Describe 'Write-ArtifactOutput' {
-    It 'hands on the five outputs pr-test-artifact.yml returns from whichever job packaged' {
-        $outputPath = Join-Path $TestDrive 'github-output.txt'
-        Remove-Item -Path $outputPath -ErrorAction SilentlyContinue
+    BeforeEach {
+        $script:OutputPath = Join-Path $TestDrive 'github-output.txt'
+        Remove-Item -Path $script:OutputPath -ErrorAction SilentlyContinue
+    }
+
+    It 'hands on the five outputs pr-test-artifact.yml returns, then where its own uploads go' {
         $address = Get-ArtifactAddress -Slug 'pr-42' -Sha ('b' * 40)
 
-        Write-ArtifactOutput -Address $address -PrNumber '42' -HostName 'pr-42.rock-dev.example' -Path $outputPath
+        Write-ArtifactOutput -Address $address -Bucket 'rock-pr-env' -PrNumber '42' -HostName 'pr-42.rock-dev.example' -Path $script:OutputPath
 
-        (Get-Content -Path $outputPath) -join "`n" | Should -BeExactly (@(
+        (Get-Content -Path $script:OutputPath) -join "`n" | Should -BeExactly (@(
             'artifact_name=RockWeb-pr-42-bbbbbbb.zip'
             "artifact_gcs_object_path=pr-environments/pr-42/$('b' * 40)/RockWeb-pr-42-bbbbbbb.zip"
             'host_name=pr-42.rock-dev.example'
             'pr_number=42'
             "sha=$('b' * 40)"
+            "artifact_gcs_destination=rock-pr-env/pr-environments/pr-42/$('b' * 40)"
         ) -join "`n")
+    }
+
+    It 'names the destination the uploads spelled out for themselves before it' {
+        # They were `${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}`,
+        # and every artifact in the bucket was uploaded there. Both packaging
+        # steps hand the module those three values -- test_artifact_reuse.py
+        # holds them to it -- so this is that expression, evaluated.
+        $bucket = 'rock-pr-env'
+        $slug = 'staging'
+        $sha = '0123456789abcdef0123456789abcdef01234567'
+
+        Write-ArtifactOutput -Address (Get-ArtifactAddress -Slug $slug -Sha $sha) -Bucket $bucket -PrNumber '' -HostName '' -Path $script:OutputPath
+
+        Get-Content -Path $script:OutputPath | Should -Contain "artifact_gcs_destination=$bucket/pr-environments/$slug/$sha"
+    }
+
+    It 'puts the zip and its record at the object paths the deploy and the plan read' {
+        # As upload-cloud-storage reads its destination input: the bucket up to
+        # the first slash, a prefix after it, and each object named prefix/file.
+        $address = Get-ArtifactAddress -Slug 'pr-42' -Sha ('c' * 40)
+
+        Write-ArtifactOutput -Address $address -Bucket 'rock-pr-env' -PrNumber '42' -HostName '' -Path $script:OutputPath
+
+        $destination = (Get-Content -Path $script:OutputPath | Where-Object { $_ -like 'artifact_gcs_destination=*' }) -replace '^artifact_gcs_destination=', ''
+        $bucket, $prefix = $destination -split '/', 2
+        $bucket | Should -BeExactly 'rock-pr-env'
+        "$prefix/$($address.Name)" | Should -BeExactly $address.ObjectPath
+        "$prefix/pr-test-artifact.json" | Should -BeExactly $address.RecordPath
     }
 }
 
@@ -269,6 +301,7 @@ Describe 'packaging a built RockWeb' {
             'host_name=pr-42.rock-dev.example'
             'pr_number=42'
             "sha=$sha"
+            "artifact_gcs_destination=rock-pr-env/pr-environments/pr-42/$sha"
         ) -join "`n")
     }
 

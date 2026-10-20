@@ -13,11 +13,16 @@
     it once, and ConvertFrom-ArtifactObjectPath reads it back by composing again
     and comparing, so the two directions cannot drift apart.
 
-    The uploads in pr-test-artifact.yml still name the folder themselves, from
-    the job's env. A step output cannot replace them: the repackage job runs the
-    target's own script, and a target older than a new output would hand the
-    upload an empty folder. test_artifact_reuse.py holds both jobs' uploads to
-    one destination instead.
+    The uploads in pr-test-artifact.yml take their destination from it too:
+    Write-ArtifactOutput hands on artifact_gcs_destination, and each upload uses
+    it whole. The repackage job runs its target's own script, and a target from
+    before that output writes none. So the output carries the bucket as well as
+    the folder: a missing one is an empty destination, which the action refuses,
+    rather than `bucket/` with nothing after it, which uploads to the bucket's
+    root. The plan never chooses a repackage for such a target: it asks this
+    function for -Bucket and builds when it is missing. The repackage job stops
+    on an empty output too, as the net under that. test_artifact_reuse.py holds
+    the uploads to the output.
 
     The record is pr-test-artifact.json. The deploy never reads it -- it is
     handed the object path as an output -- but a later repackage does, to learn
@@ -264,13 +269,21 @@ function Read-ArtifactRecord {
 function Write-ArtifactOutput {
     <#
         .SYNOPSIS
-        Hands an artifact to the rest of the workflow: the five outputs both packaging jobs set.
+        Hands an artifact to the rest of the workflow: the outputs both packaging jobs set.
 
         .DESCRIPTION
-        pr-test-artifact.yml returns each of its outputs from whichever packaging
-        job ran, so the package job and the repackage job have to write the same
+        pr-test-artifact.yml returns five of them from whichever packaging job
+        ran, so the package job and the repackage job have to write the same
         five names. artifact_gcs_object_path is the one the deploy acts on; an
         empty one sends it to gs:///, minutes later and far from the cause.
+
+        The sixth, artifact_gcs_destination, is where the job's own uploads put
+        the zip and its record: Bucket, a slash, then the address's Folder.
+        upload-cloud-storage splits that at the first slash into a bucket and a
+        prefix and names each object prefix/file, so the zip lands at
+        ObjectPath and the record at RecordPath. It stays a step output rather
+        than one of the workflow's: the bucket's name can be built from a
+        secret, and GitHub drops a job output that carries one.
 
         Path is GITHUB_OUTPUT, passed in rather than read here so a test can
         hand it a file of its own.
@@ -278,6 +291,7 @@ function Write-ArtifactOutput {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]$Address,
+        [Parameter(Mandatory = $true)][string]$Bucket,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PrNumber,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$HostName,
         [Parameter(Mandatory = $true)][string]$Path
@@ -289,6 +303,7 @@ function Write-ArtifactOutput {
         "host_name=$HostName"
         "pr_number=$PrNumber"
         "sha=$($Address.Sha)"
+        "artifact_gcs_destination=$Bucket/$($Address.Folder)"
     ) | Out-File -FilePath $Path -Append
 }
 

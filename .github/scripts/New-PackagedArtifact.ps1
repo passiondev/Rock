@@ -24,7 +24,8 @@
     This run's artifact folder: pr-<number>, staging or production.
 
 .PARAMETER Bucket
-    The deployment bucket, for the gs:// path the record carries.
+    The deployment bucket, for the gs:// path the record carries and the
+    destination the job's uploads take.
 
 .PARAMETER PrNumber
     Recorded in the metadata and handed on as an output.
@@ -34,8 +35,9 @@
 
 .OUTPUTS
     The zip and pr-test-artifact.json in the working directory, and
-    artifact_name, artifact_gcs_object_path, host_name, pr_number and sha in
-    GITHUB_OUTPUT -- the outputs the repackage job writes too.
+    artifact_name, artifact_gcs_object_path, host_name, pr_number, sha and
+    artifact_gcs_destination in GITHUB_OUTPUT -- the outputs the repackage job
+    writes too.
 #>
 [CmdletBinding()]
 param(
@@ -59,4 +61,4 @@ $hash = (Get-FileHash -Path $address.Name -Algorithm SHA256).Hash
 
 $record = New-ArtifactRecord -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName -Sha256 $hash
 Write-ArtifactRecord -Record $record -Path $address.RecordName
-Write-ArtifactOutput -Address $address -PrNumber $PrNumber -HostName $HostName -Path $env:GITHUB_OUTPUT
+Write-ArtifactOutput -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName -Path $env:GITHUB_OUTPUT

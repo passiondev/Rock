@@ -36,7 +36,8 @@
     The commit this run packages.
 
 .PARAMETER Bucket
-    The deployment bucket.
+    The deployment bucket, for the base's download, the gs:// paths the record
+    carries and the destination the job's uploads take.
 
 .PARAMETER ArtifactSlug
     This run's artifact folder: pr-<number>, staging or production.
@@ -49,8 +50,9 @@
 
 .OUTPUTS
     The zip and pr-test-artifact.json in the working directory, and
-    artifact_name, artifact_gcs_object_path, host_name, pr_number and sha in
-    GITHUB_OUTPUT -- the outputs the package job writes.
+    artifact_name, artifact_gcs_object_path, host_name, pr_number, sha and
+    artifact_gcs_destination in GITHUB_OUTPUT -- the outputs the package job
+    writes.
 #>
 [CmdletBinding()]
 param(
@@ -280,7 +282,7 @@ function Invoke-ArtifactRepackage {
     $record = New-ArtifactRecord -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName `
         -Sha256 (Get-FileHash -Path $artifactPath -Algorithm SHA256).Hash -BuiltFromSha $builtFromSha -BaseObjectPath $BaseObjectPath
     Write-ArtifactRecord -Record $record -Path (Join-Path $CheckoutPath $address.RecordName)
-    Write-ArtifactOutput -Address $address -PrNumber $PrNumber -HostName $HostName -Path $OutputPath
+    Write-ArtifactOutput -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName -Path $OutputPath
 
     $patched = @($change | Where-Object { $_.Class -eq 'patch' })
     @(

@@ -61,6 +61,33 @@ class ThePlanDecidesWhichJobPackagesTests(harness.HarnessAssertions, unittest.Te
         self.assertEqual("!cancelled() && needs.plan.outputs.mode != 'repackage'", self._condition(package))
         self.assertIs(True, self.jobs["plan"].get("continue-on-error"))
 
+    def test_a_target_that_cannot_name_its_upload_destination_builds(self):
+        """The repackage job runs the target's own scripts. A commit from between
+        artifact reuse and artifact_gcs_destination repackages a zip with no
+        destination, so the plan has to send it to the build -- the way it
+        already does a commit from before artifact reuse -- rather than hand
+        the repackage job a run it can only fail.
+
+        One check covers both, since -Bucket arrived after the plan script, and
+        it exits before the plan script runs, so it cannot set mode=repackage."""
+        step = harness.step(harness.workflow(ARTIFACT_WORKFLOW), "Look for an artifact to repackage", job="plan")
+        run = step["run"]
+
+        # With the ./ -- without it Import-Module reads the path as a module
+        # name, fails, and the step's continue-on-error turns every run into a
+        # build.
+        self.assertIn("$record = './.github/scripts/ArtifactRecord.psm1'", run)
+        self.assertIn("Import-Module $record", run)
+        self.assertRegex(
+            run,
+            r"(?s)if \(-not \(\$writer -and \$writer\.Parameters\.ContainsKey\('Bucket'\)\)\) \{.*?exit 0\s*\}",
+        )
+        self.assertLess(
+            run.index("exit 0"),
+            run.index("./.github/scripts/Get-ArtifactPlan.ps1"),
+            "the plan runs before anything has asked whether a repackage could upload",
+        )
+
     def test_the_repackage_runs_only_when_the_plan_said_so(self):
         repackage = self.jobs.get("repackage")
         self.assertIsNotNone(repackage, "there is no repackage job, so every run builds")
@@ -104,20 +131,6 @@ class TheRepackageShipsWhatABuildWouldTests(harness.HarnessAssertions, unittest.
             any("git config --global core.autocrlf true" in run for run in before),
             "the repackage checks out before turning autocrlf on",
         )
-
-    def test_the_zip_and_its_metadata_land_where_a_build_puts_them(self):
-        """Compared against the package job rather than restated, so the two
-        cannot drift: the deploy reads one folder, whichever job filled it."""
-        def uploads(steps):
-            return sorted(
-                (step["with"]["path"].split(".")[-1], step["with"]["destination"])
-                for step in steps
-                if (step.get("uses") or "").startswith("google-github-actions/upload-cloud-storage@")
-            )
-
-        built = uploads(self.jobs["package"]["steps"])
-        self.assertNotVacuous(built, "the package job no longer uploads to Cloud Storage")
-        self.assertEqual(built, uploads(self.steps))
 
     def test_the_build_packages_with_the_scripts_its_workflow_came_with(self):
         """Both jobs name the zip and write its record and outputs through
@@ -166,6 +179,131 @@ class TheRepackageShipsWhatABuildWouldTests(harness.HarnessAssertions, unittest.
                 f"the {name} output reads one packaging job only",
             )
             self.assertIn(name, self.jobs["repackage"].get("outputs") or {}, f"the repackage job never sets {name}")
+
+
+class EveryUploadGoesWhereTheModuleSaysTests(harness.HarnessAssertions, unittest.TestCase):
+    """The four Cloud Storage uploads take their folder from Get-ArtifactAddress.
+
+    ArtifactRecord.psm1 spells an artifact's address once, and the deploy's
+    object path, both records and the plan's listing all come from it. The
+    uploads used to spell the folder again from the job's env, so a change to
+    the address would have moved where the deploy looks and left the zips where
+    they were. Each packaging step now writes artifact_gcs_destination -- the
+    bucket and folder, in the action's own `bucket/prefix` form -- and each
+    upload takes it whole. ArtifactRecord.Tests.ps1 pins what that output says,
+    down to the object names the action makes from it. What is held here is
+    that the uploads read it and nothing else."""
+
+    # Each packaging job, and the id of the step in it that writes the outputs.
+    PACKAGING_STEP = {"package": "package-metadata", "repackage": "repackage"}
+
+    ZIP_UPLOAD = "Upload package zip to Cloud Storage"
+    RECORD_UPLOAD = "Upload package metadata to Cloud Storage"
+
+    def setUp(self):
+        self.parsed = harness.workflow(ARTIFACT_WORKFLOW)
+
+    def _uploads(self, job):
+        """The Cloud Storage uploads in one job, by step."""
+        return [
+            step for step in harness.steps(self.parsed, job)
+            if (step.get("uses") or "").startswith("google-github-actions/upload-cloud-storage@")
+        ]
+
+    def _packaging_step(self, job):
+        """The step that packaged the artifact, found by its id."""
+        return next(s for s in harness.steps(self.parsed, job) if s.get("id") == self.PACKAGING_STEP[job])
+
+    def test_no_upload_spells_the_folder_itself(self):
+        uploads = [(job, step) for job in self.PACKAGING_STEP for step in self._uploads(job)]
+        self.assertNotVacuous(uploads, "pr-test-artifact.yml no longer uploads to Cloud Storage")
+
+        for job, step in uploads:
+            with self.subTest(job=job, step=step.get("name")):
+                self.assertNotIn(
+                    "pr-environments",
+                    str(step.get("with") or {}),
+                    "this upload composes the artifact's folder itself rather than reading Get-ArtifactAddress's",
+                )
+
+    def test_each_upload_takes_its_destination_from_the_step_that_packaged(self):
+        """Whole, with nothing composed around it. An output the packaging step
+        never wrote is then an empty destination, which the action refuses;
+        `${{ env.BUCKET }}/` in front of it would upload to the bucket's root."""
+        for job, step_id in self.PACKAGING_STEP.items():
+            with self.subTest(job=job):
+                uploads = self._uploads(job)
+                self.assertEqual(
+                    sorted([self.ZIP_UPLOAD, self.RECORD_UPLOAD]),
+                    sorted(step.get("name") for step in uploads),
+                    f"the {job} job uploads something other than the zip and its record",
+                )
+
+                steps = harness.steps(self.parsed, job)
+                packaged = steps.index(self._packaging_step(job))
+                for step in uploads:
+                    self.assertEqual(
+                        f"${{{{ steps.{step_id}.outputs.artifact_gcs_destination }}}}",
+                        step["with"]["destination"],
+                    )
+                    self.assertLess(packaged, steps.index(step), f"{step['name']} runs before the output it reads exists")
+
+    def test_the_uploads_carry_the_zip_and_the_record_the_step_wrote(self):
+        """The action names each object for the file it uploads, so these are
+        the zip and record names Get-ArtifactAddress composed, under the folder
+        it composed."""
+        for job, step_id in self.PACKAGING_STEP.items():
+            with self.subTest(job=job):
+                zip_upload = harness.step(self.parsed, self.ZIP_UPLOAD, job=job)
+                record_upload = harness.step(self.parsed, self.RECORD_UPLOAD, job=job)
+                self.assertEqual(f"${{{{ steps.{step_id}.outputs.artifact_name }}}}", zip_upload["with"]["path"])
+                self.assertEqual("pr-test-artifact.json", record_upload["with"]["path"])
+
+    def test_both_packaging_steps_hand_the_module_what_the_folder_was_made_of(self):
+        """The other half of keeping every object name what it was. The uploads
+        were `${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}`;
+        ArtifactRecord.Tests.ps1 shows the output is that bucket, slash, that
+        folder, and this shows the module is handed those same three values,
+        defined alike in both jobs so a repackage lands where a build would."""
+        environments = []
+        for job in self.PACKAGING_STEP:
+            with self.subTest(job=job):
+                run = self._packaging_step(job)["run"]
+                self.assertIn("-Bucket $env:PR_TEST_GCS_BUCKET", run)
+                self.assertIn("-ArtifactSlug $env:ARTIFACT_SLUG", run)
+                self.assertIn("-TargetSha $env:HEAD_SHA", run)
+
+                env = self.parsed["jobs"][job].get("env") or {}
+                environments.append(
+                    (job, repr({name: env.get(name) for name in ("PR_TEST_GCS_BUCKET", "ARTIFACT_SLUG", "HEAD_SHA")}))
+                )
+
+        self.assertOneShape(
+            environments,
+            "the bucket, slug and commit the two packaging jobs address their artifact by",
+            "A repackaged artifact has to land in the folder a build of the same commit would fill.",
+        )
+
+    def test_a_repackage_that_names_no_destination_stops_before_uploading(self):
+        """The repackage runs its target's own script, and a target from before
+        artifact_gcs_destination writes the other five outputs and not this one.
+        The action would refuse the empty destination anyway; this says why, and
+        what to do, before anything is uploaded. Building instead is the way
+        out, as it is for every repackage that fails."""
+        guard = harness.step(self.parsed, "Refuse a repackage that names no upload destination", job="repackage")
+        self.assertEqual("steps.repackage.outputs.artifact_gcs_destination == ''", guard.get("if"))
+        self.assertIn("::error::", guard["run"])
+        self.assertIn("force_build", guard["run"])
+        self.assertIn("rock:full-build", guard["run"])
+        self.assertRegex(guard["run"], r"(?m)^\s*exit 1\s*$")
+
+        steps = harness.steps(self.parsed, "repackage")
+        self.assertLess(steps.index(self._packaging_step("repackage")), steps.index(guard))
+        self.assertLess(
+            steps.index(guard),
+            min(steps.index(step) for step in self._uploads("repackage")),
+            "the guard runs after an upload has already been tried",
+        )
 
 
 class AFullBuildCanBeForcedTests(harness.HarnessAssertions, unittest.TestCase):

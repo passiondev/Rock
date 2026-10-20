@@ -34,14 +34,16 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", workflow["on"])
         # The artifact name and GCS folder are keyed on ARTIFACT_SLUG, which
         # defaults to pr-<pr_number>, so the same build also serves staging and
-        # production without their artifacts colliding with a PR's. The name is
-        # composed by Get-ArtifactAddress in ArtifactRecord.psm1, and the Pester
-        # suite ArtifactRecord.Tests.ps1 pins it; what is left to hold here is
-        # that the build hands it the slug and the commit.
+        # production without their artifacts colliding with a PR's. The name and
+        # the folder the uploads take are composed by Get-ArtifactAddress in
+        # ArtifactRecord.psm1, and the Pester suite ArtifactRecord.Tests.ps1
+        # pins them; what is left to hold here is that the build hands it the
+        # bucket, the slug and the commit. test_artifact_reuse.py holds the
+        # uploads to what it composes.
         package = next(s for s in workflow["jobs"]["package"]["steps"] if s.get("id") == "package-metadata")
+        self.assertIn("-Bucket $env:PR_TEST_GCS_BUCKET", package["run"])
         self.assertIn("-ArtifactSlug $env:ARTIFACT_SLUG", package["run"])
         self.assertIn("-TargetSha $env:HEAD_SHA", package["run"])
-        self.assertIn("pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}", workflow_text)
         self.assertIn("format('pr-{0}', inputs.pr_number)", workflow_text)
         self.assertIn("artifact_gcs_object_path", workflow_text)
         self.assertIn("actions/upload-artifact@v4", workflow_text)

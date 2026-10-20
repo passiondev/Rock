@@ -128,9 +128,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORCE_BUILD: ${{ inputs.force_build }}
         run: |
-          # A commit from before artifact reuse has no plan to run, and builds.
-          if (-not (Test-Path .github/scripts/Get-ArtifactPlan.ps1)) {
-            Write-Host "::notice::$env:HEAD_SHA predates artifact reuse; building."
+          # A commit from before artifact reuse has no plan to run, and builds. So
+          # does one from before artifact_gcs_destination: the repackage job runs
+          # the target's own scripts, and the uploads after it take their
+          # destination from Write-ArtifactOutput's -Bucket, so a repackage of
+          # it would have nowhere to go. One check covers both, because -Bucket
+          # arrived after the plan script. It asks the function rather than
+          # searching the text, so a comment naming the parameter cannot pass
+          # for it, and the path needs its ./ or Import-Module reads it as a
+          # module name, fails, and every run builds.
+          $record = './.github/scripts/ArtifactRecord.psm1'
+          $writer = if (Test-Path $record) { Import-Module $record -Force; Get-Command Write-ArtifactOutput -ErrorAction SilentlyContinue }
+          if (-not ($writer -and $writer.Parameters.ContainsKey('Bucket'))) {
+            Write-Host "::notice::$env:HEAD_SHA predates artifact reuse, or a repackage of it would have nowhere to upload; building."
             exit 0
           }
           ./.github/scripts/Get-ArtifactPlan.ps1 -TargetSha $env:HEAD_SHA -ArtifactSlug $env:ARTIFACT_SLUG `
@@ -185,6 +195,17 @@ jobs:
             -TargetSha $env:HEAD_SHA -Bucket $env:PR_TEST_GCS_BUCKET -ArtifactSlug $env:ARTIFACT_SLUG `
             -PrNumber $env:PR_NUMBER -HostName $env:HOST_NAME
 
+      # The uploads' destination comes from the target's own script, and one
+      # from before artifact_gcs_destination writes the other outputs and not
+      # that. The plan builds such a target rather than choosing this job, so
+      # this is the net under that check: the upload would refuse the empty
+      # destination anyway, and this says why before anything is uploaded.
+      - name: Refuse a repackage that names no upload destination
+        if: steps.repackage.outputs.artifact_gcs_destination == ''
+        run: |
+          Write-Host "::error::The New-RepackagedArtifact.ps1 in $env:HEAD_SHA predates artifact_gcs_destination, so its zip has nowhere to go. Rerun with force_build, or add the rock:full-build label, to build instead."
+          exit 1
+
       - name: Upload GitHub artifact
         uses: actions/upload-artifact@v4
         with:
@@ -194,17 +215,21 @@ jobs:
             pr-test-artifact.json
           retention-days: 14
 
+      # Into the folder Get-ArtifactAddress names, with the bucket in front, as
+      # the repackage step handed it on: the deploy's object path comes from
+      # the same address, so where the zip lands and where the deploy looks
+      # cannot drift apart.
       - name: Upload package zip to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: ${{ steps.repackage.outputs.artifact_name }}
-          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}
+          destination: ${{ steps.repackage.outputs.artifact_gcs_destination }}
 
       - name: Upload package metadata to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: pr-test-artifact.json
-          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}
+          destination: ${{ steps.repackage.outputs.artifact_gcs_destination }}
 
   # !cancelled(): a failed plan job would otherwise skip this too, and a plan it
   # could not make is meant to cost a build.
@@ -760,14 +785,18 @@ jobs:
             gsutil mb -p ${{ secrets.GCP_PROJECT_ID }} gs://$env:PR_TEST_GCS_BUCKET
           }
 
+      # Into the folder Get-ArtifactAddress names, with the bucket in front, as
+      # the packaging step handed it on: the deploy's object path comes from
+      # the same address, so where the zip lands and where the deploy looks
+      # cannot drift apart.
       - name: Upload package zip to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: ${{ steps.package-metadata.outputs.artifact_name }}
-          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}
+          destination: ${{ steps.package-metadata.outputs.artifact_gcs_destination }}
 
       - name: Upload package metadata to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: pr-test-artifact.json
-          destination: ${{ env.PR_TEST_GCS_BUCKET }}/pr-environments/${{ env.ARTIFACT_SLUG }}/${{ env.HEAD_SHA }}
+          destination: ${{ steps.package-metadata.outputs.artifact_gcs_destination }}
