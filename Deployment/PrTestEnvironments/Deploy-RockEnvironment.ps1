@@ -2278,12 +2278,17 @@ function Invoke-DeploySmokeCheck {
         means something that is not Rock answered -- a static error document, an
         IIS placeholder, a proxy.
 
-        A warning rather than a throw, deliberately, and this is the one place in
+        Reported rather than thrown, deliberately, and this is the one place in
         the script where that is a close call. A 404 here is a routing choice a
         site is entitled to make, and failing a production deploy that is
         genuinely healthy costs more than the signal is worth. A 5xx is different
         and is reported as an outright failure of the check, which the caller
         turns into diagnostics.
+
+        Every outcome goes through Write-DeployStep, failures included. They were
+        warnings until 2026-10-20, and a warning reaches neither the timeline the
+        agent uploads nor the workflow log that prints it: staging's check failed
+        twice that day and the record said only that it had.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$HostName,
@@ -2294,12 +2299,12 @@ function Invoke-DeploySmokeCheck {
     $probe = Invoke-SiteContentProbe -Url $url -HostHeader $HostName -TimeoutSeconds $TimeoutSeconds
 
     if ($probe.StatusCode -eq 0) {
-        Write-Warning "Smoke check could not reach $url with Host: $HostName ($($probe.Error))."
+        Write-DeployStep "Smoke check could not reach $url with Host: $HostName ($($probe.Error))."
         return $false
     }
 
     if ($probe.StatusCode -ge 500) {
-        Write-Warning "Smoke check: $url returned $($probe.StatusCode). The site routes requests but cannot render its login page."
+        Write-DeployStep "Smoke check: $url returned $($probe.StatusCode). The site routes requests but cannot render its login page."
         return $false
     }
 
@@ -2313,7 +2318,7 @@ function Invoke-DeploySmokeCheck {
         return $true
     }
 
-    Write-Warning "Smoke check: $url returned $($probe.StatusCode) but the response has no __VIEWSTATE, so Rock did not render it. Something else is answering for this site."
+    Write-DeployStep "Smoke check: $url returned $($probe.StatusCode) ($($probe.Body.Length) chars, Server: $($probe.Server)) but the response has no __VIEWSTATE, so Rock did not render it. Something else is answering for this site."
     return $false
 }
 function Invoke-DedicatedSiteReplace {

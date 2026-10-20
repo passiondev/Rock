@@ -245,6 +245,22 @@ Describe 'Invoke-DeploySmokeCheck' {
             Should -BeFalse
     }
 
+    It 'says why it failed in the deploy timeline, for a <Case>' -ForEach @(
+        @{ Case = 'page with no __VIEWSTATE'; Probe = @{ StatusCode = 200; Body = '<html>maintenance</html>'; Server = 'cloudflare'; Error = '' }; Reason = 'no __VIEWSTATE' }
+        @{ Case = '500'; Probe = @{ StatusCode = 500; Body = 'Server Error'; Server = 'Microsoft-IIS/10.0'; Error = 'internal server error' }; Reason = 'returned 500' }
+        @{ Case = 'probe nothing answered'; Probe = @{ StatusCode = 0; Body = ''; Server = ''; Error = 'connection refused' }; Reason = 'connection refused' }
+    ) {
+        # The timeline is what the agent uploads and the workflow prints. A
+        # warning reaches neither, so staging's smoke check failed twice on
+        # 2026-10-20 and the only record of it was that it had.
+        $script:NextProbe = $Probe
+        Mock Write-DeployStep { }
+
+        Invoke-DeploySmokeCheck -HostName 'connect.passion.team' -WarningAction SilentlyContinue | Out-Null
+
+        Should -Invoke Write-DeployStep -Times 1 -Exactly -ParameterFilter { $Message -like "*$Reason*" }
+    }
+
     It 'treats a 404 as proving nothing rather than as a failure' {
         # Where the login page lives is a routing choice a site is entitled to
         # make, and failing a production deploy that is genuinely healthy costs
