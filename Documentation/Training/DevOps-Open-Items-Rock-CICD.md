@@ -60,6 +60,10 @@ nothing on the other side of it. Referencing an environment that does not exist 
 GitHub creates it with no rules, so the run sails past. Worth remembering as a category: an
 approval gate is not self-evidencing, and this one read as present in every review of the YAML.
 
+**Since 2026-10-20 there is no `approve` job.** The gate moved onto the job that writes the
+command, `env-deploy-command.yml`'s `deploy`, which declares `production` whenever its queue is
+`commands-prod` (item 33). The run waits at `Deploy to production`, still after the build.
+
 Current settings, read back from the API on 2026-08-24 rather than from memory:
 
 | Setting | Value | Why |
@@ -1637,27 +1641,46 @@ command names.
 
 1. **A production service account, held by the `production` environment.** Store its key as an
    environment secret on `production`. A job that declares the environment then gets that key,
-   and no other job can read it. Before this helps, every job that writes a production object
-   has to declare the environment, and today only `production-bootstrap-command-queue.yml`'s
-   `bootstrap` job does. The others:
-   - `env-deploy-command.yml`'s `deploy` job, which `production-deploy.yml` calls with
-     `queue_name: commands-prod`. The `approve` job in front of it holds the environment; the
-     job that writes the command does not.
+   and no other job can read it. That helps only if every job that writes a production object
+   declares the environment. Until 2026-10-20 only `production-bootstrap-command-queue.yml`'s
+   `bootstrap` job did. **The workflow half landed on 2026-10-20**, and these jobs now declare it
+   too:
+   - `env-deploy-command.yml`'s `deploy` job, whenever `queue_name` is `commands-prod`.
+     `production-deploy.yml`'s separate `approve` job is gone. It held the environment while
+     the job that wrote the command did not, and keeping both would ask for two approvals.
    - The `plan` jobs of `db-anonymize-staging.yml` and `db-set-theme-customization.yml`, and
-     `db-find-legacy-text-columns.yml`'s `find` job, whenever `queue_name` is `commands-prod`.
-     Their apply jobs declare `staging-anonymize` and `database-write`, not `production`.
-   - The build that `production-deploy.yml` runs through `pr-test-artifact.yml`, which uploads
-     production's artifact with no environment at all. Either it builds under the production
-     key, or the deploy checks the artifact against a hash recorded by a job that holds it. That
-     choice is the team's.
+     `db-find-legacy-text-columns.yml`'s `find` job, on the same condition. The two apply jobs
+     switch from `staging-anonymize` and `database-write` to `production` on it too. A db-* run
+     against production now asks for two approvals, the dry run's and the write's, and has to
+     be dispatched from a branch the environment allows.
+
+   Every other queue gets an empty environment name, which GitHub runs with no environment at
+   all (checked 2026-10-20 with a throwaway workflow), so staging and the PR fleet stay
+   unattended. `test_every_job_that_can_post_to_production_waits_for_the_production_gate`
+   scans every workflow that takes a queue name, so a new one is checked on the day it is added.
+
+   **The build stays ungated; the deploy checks what it built instead.** `production-deploy.yml`
+   builds through `pr-test-artifact.yml`, which uploads production's artifact with no
+   environment, so `pr-environments/production/` stays fleet-writable. The build records the
+   zip's SHA-256 as a job output, which no bucket key can rewrite. The command carries it as
+   `artifactSha256`, and `Deploy-RockEnvironment.ps1` checks the downloaded zip against it
+   before unpacking anything (`Assert-ArtifactHash`). Staging pins its hash the same way, so
+   every push rehearses the check. Production's agent checks only once production's bootstrap
+   has been re-run: an older agent drops a field its contract does not name.
+
+   One gap remains. When nothing that compiles has changed, `pr-test-artifact.yml` repackages
+   from a base artifact it finds in the bucket, and the hash it records is of the zip it built
+   from that base. A base planted under a fleet-writable slug would be hashed and pinned like an
+   honest one. Dispatching production with `force_build` closes it for that run; closing it for
+   good needs a base record that only production's key can write.
 2. **Then narrow the fleet account.** An IAM condition on `GCP_SA_KEY`'s service account that
-   leaves it everything under `pr-environments/` except the three prefixes above. Uniform
-   bucket-level access is on (item 17), so a condition on `resource.name` is available.
+   leaves it everything under `pr-environments/` except `commands-prod/` and `bootstrap/prod/`.
+   `production/` stays writable, because the hash is what protects it now. Uniform bucket-level
+   access is on (item 17), so a condition on `resource.name` is available.
 
 In the other order — the IAM change first — every production deploy, bootstrap and db-* run
 against `commands-prod` fails at its first write, because those jobs still authenticate with
-the fleet key. The workflow changes for step 1 are not in the repository yet, so nothing here
-can be applied until they are written, merged and pushed.
+the fleet key.
 
 **Corrected later on 2026-10-20: production's VM does not have its own service account.** This
 item first said it did. Live IAM says `connect-srv-prod` and `connect-srv-test` both run as the

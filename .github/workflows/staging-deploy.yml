@@ -253,6 +253,8 @@ jobs:
       host_name: staging.connect.passion.team
       sha: ${{ needs.resolve.outputs.sha }}
       artifact_gcs_object_path: ${{ needs.build.outputs.artifact_gcs_object_path }}
+      # The same pin production sends, so staging rehearses the VM's check of it.
+      artifact_sha256: ${{ needs.build.outputs.artifact_sha256 }}
       mode: DedicatedSite
       queue_name: commands
       write_connection_string: true

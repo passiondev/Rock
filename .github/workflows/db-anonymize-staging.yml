@@ -131,6 +131,11 @@ jobs:
     name: Dry run
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Production's queue is written only from behind the `production` gate, here as
+    # in env-deploy-command.yml, where the reasoning is; every other queue gets an
+    # empty name and runs with no environment. A dry run still posts a command, so
+    # against production it waits for a reviewer too. Open item 33.
+    environment: ${{ inputs.queue_name == 'commands-prod' && 'production' || '' }}
     defaults:
       run:
         shell: pwsh
@@ -232,8 +237,11 @@ jobs:
     #
     # Worth knowing: an environment with no required reviewers approves itself. This
     # job declaring one is necessary and not sufficient.
+    #
+    # Against production's queue the gate is `production` instead, which holds the
+    # only key that can write there. Open item 33.
     environment:
-      name: staging-anonymize
+      name: ${{ inputs.queue_name == 'commands-prod' && 'production' || 'staging-anonymize' }}
     defaults:
       run:
         shell: pwsh

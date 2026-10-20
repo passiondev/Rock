@@ -220,7 +220,6 @@ class ProductionUpgradeRunbookTests(RunbookAssertions, harness.HarnessAssertions
         "Resolve SHA and summarize the request",
         "Refuse a ref that is not on the production branch",
         "Refuse a ref from a different Rock version",
-        "Record approval",
     ]
 
     def workflow_step_names(self):

@@ -973,6 +973,10 @@ function Get-CommandContract {
             # production can omit connectionString and keep the one already on disk.
             Optional       = [ordered]@{
                 mode              = 'Mode'
+                # The zip's hash as its build recorded it, by way of GitHub rather
+                # than the bucket. Optional because a rollback to a commit from
+                # before the pin has none; Assert-ArtifactHash says so and goes on.
+                artifactSha256    = 'ArtifactSha256'
                 connectionString  = 'ConnectionString'
                 targetSitePath    = 'TargetSitePath'
                 targetSiteName    = 'TargetSiteName'

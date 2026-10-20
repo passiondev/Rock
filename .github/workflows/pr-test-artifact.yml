@@ -46,6 +46,13 @@ name: PR Test Environment Artifact
       sha:
         description: Commit SHA packaged by this workflow.
         value: ${{ jobs.package.outputs.sha || jobs.repackage.outputs.sha }}
+      artifact_sha256:
+        description: >-
+          SHA-256 of the deployable zip, taken by the job that made it. A job
+          output is held by GitHub, where no bucket key can rewrite it, so a
+          deploy that carries this to the VM refuses a zip replaced in the bucket
+          after the build.
+        value: ${{ jobs.package.outputs.artifact_sha256 || jobs.repackage.outputs.artifact_sha256 }}
   workflow_dispatch:
     inputs:
       pr_number:
@@ -169,6 +176,7 @@ jobs:
       host_name: ${{ steps.repackage.outputs.host_name }}
       pr_number: ${{ steps.repackage.outputs.pr_number }}
       sha: ${{ steps.repackage.outputs.sha }}
+      artifact_sha256: ${{ steps.artifact-hash.outputs.sha256 }}
 
     steps:
       # Before the checkout, which is when it is read. The build's text files
@@ -205,6 +213,19 @@ jobs:
         run: |
           Write-Host "::error::The New-RepackagedArtifact.ps1 in $env:HEAD_SHA predates artifact_gcs_destination, so its zip has nowhere to go. Rerun with force_build, or add the rock:full-build label, to build instead."
           exit 1
+
+      # The hash the deploy hands the VM, taken here from the zip this job is
+      # about to upload rather than read from the record, which sits in the
+      # bucket beside it. In the workflow and not in the packaging script, because
+      # the repackage job runs its target's own script and a target from before
+      # this would write no hash at all.
+      - name: Record the zip's hash for the deploy
+        id: artifact-hash
+        env:
+          ARTIFACT_FILE: ${{ steps.repackage.outputs.artifact_name }}
+        run: |
+          $hash = (Get-FileHash -Path $env:ARTIFACT_FILE -Algorithm SHA256).Hash
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload GitHub artifact
         uses: actions/upload-artifact@v4
@@ -251,6 +272,7 @@ jobs:
       host_name: ${{ steps.package-metadata.outputs.host_name }}
       pr_number: ${{ steps.package-metadata.outputs.pr_number }}
       sha: ${{ steps.package-metadata.outputs.sha }}
+      artifact_sha256: ${{ steps.artifact-hash.outputs.sha256 }}
 
     steps:
       - uses: actions/checkout@v4
@@ -763,6 +785,15 @@ jobs:
         run: |
           ./.artifact-scripts/.github/scripts/New-PackagedArtifact.ps1 -TargetSha $env:HEAD_SHA -ArtifactSlug $env:ARTIFACT_SLUG `
             -Bucket $env:PR_TEST_GCS_BUCKET -PrNumber $env:PR_NUMBER -HostName $env:HOST_NAME
+
+      # The hash the deploy hands the VM. See the same step in the repackage job.
+      - name: Record the zip's hash for the deploy
+        id: artifact-hash
+        env:
+          ARTIFACT_FILE: ${{ steps.package-metadata.outputs.artifact_name }}
+        run: |
+          $hash = (Get-FileHash -Path $env:ARTIFACT_FILE -Algorithm SHA256).Hash
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload GitHub artifact
         uses: actions/upload-artifact@v4

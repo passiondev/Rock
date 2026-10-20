@@ -68,6 +68,12 @@ param(
     [string]
     $ArtifactGcsPath,
 
+    # The SHA-256 the build recorded for that zip. Optional, so a hand-written
+    # command and one from before the pin still run; see Assert-ArtifactHash.
+    [Parameter(Mandatory = $false)]
+    [string]
+    $ArtifactSha256,
+
     [Parameter(Mandatory = $true)]
     [string]
     $HostName,
@@ -2123,6 +2129,50 @@ function Assert-DeployedCoreVersion {
     Write-DeployStep "Core version check: bin\Rock.dll is $siteVersion on both the artifact and the site."
 }
 
+
+function Assert-ArtifactHash {
+    <#
+        .SYNOPSIS
+        Fails the deploy if the downloaded zip is not the one the build recorded.
+
+        .DESCRIPTION
+        The build job records the zip's SHA-256 as a GitHub job output, and the
+        command that names the zip carries it here. Between the build and this
+        download the zip sits in a bucket that every key in the fleet can write --
+        for production, through however long the run waited for its approver --
+        so the path alone says where to look, not what will be found there. The
+        hash came by way of GitHub, which no bucket key can rewrite.
+
+        It throws before anything is unpacked, so a refused zip leaves the site
+        exactly as it was. An empty hash is a command that pinned none: a
+        hand-written one, or a build from before the pin existed. That is let
+        through and said, because refusing it would break every rollback to such
+        a commit.
+
+        .PARAMETER Path
+        The zip as downloaded.
+
+        .PARAMETER ExpectedSha256
+        The hash the command carried. Compared without regard to case.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ExpectedSha256
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+        Write-DeployStep "Artifact hash not checked: the command pinned no hash."
+        return
+    }
+
+    $expected = $ExpectedSha256.Trim()
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+    if ($actual -ne $expected) {
+        throw "The downloaded artifact's SHA-256 $actual does not match the $expected its build recorded. The zip at that path changed after the build. Nothing was unpacked and the site is untouched; find out what wrote it before deploying again."
+    }
+    Write-DeployStep "Artifact hash matches the build's: $actual."
+}
+
 function Invoke-SiteContentProbe {
     <#
         .SYNOPSIS
@@ -2992,6 +3042,7 @@ try {
     # to be an error document is obvious here and nowhere else until the site 500s.
     $artifactMegabytes = [math]::Round((Get-Item $ArtifactPath).Length / 1MB, 1)
     Write-DeployStep "Artifact downloaded ($artifactMegabytes MB)."
+    Assert-ArtifactHash -Path $ArtifactPath -ExpectedSha256 $ArtifactSha256
 
     if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force }
     Ensure-Directory -Path $ExtractPath

@@ -77,7 +77,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
-      short_sha: ${{ steps.resolve.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,7 +97,6 @@ jobs:
           sha="$(git rev-parse HEAD)"
           short="$(git rev-parse --short HEAD)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$short" >> "$GITHUB_OUTPUT"
 
           mode="DRY RUN (nothing will change)"
           if [ "${{ inputs.apply }}" = "true" ]; then
@@ -376,31 +374,30 @@ jobs:
       force_build: ${{ inputs.force_build }}
     secrets: inherit
 
-  approve:
-    name: Await production approval
-    needs: [resolve, build]
-    runs-on: ubuntu-latest
-    # The "production" GitHub Environment carries the required-reviewer rule. This
-    # job exists only to hold the run at that gate. It sits after the build on
-    # purpose: an approver should never be asked to approve a commit that turned
-    # out not to compile.
-    environment:
-      name: production
-      url: https://${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
-    steps:
-      - name: Record approval
-        run: |
-          echo "Approved by @${{ github.actor }} for commit ${{ needs.resolve.outputs.short_sha }}."
-
+  # The "production" GitHub Environment carries the required-reviewer rule, and
+  # the run waits at it here: env-deploy-command.yml's job declares the
+  # environment whenever the queue is commands-prod. It sits after the build on
+  # purpose -- an approver should never be asked to approve a commit that turned
+  # out not to compile.
+  #
+  # Until 2026-10-20 a job of its own, `approve`, held the gate in front of this
+  # one. That approved the run, and the job that then wrote the command to
+  # production's queue declared no environment, so a key kept as a `production`
+  # environment secret could not have reached the write. Two jobs declaring the
+  # environment would ask for two approvals, so the gate moved rather than being
+  # copied. Open item 33.
   deploy:
     name: Deploy to production
-    needs: [resolve, build, approve]
+    needs: [resolve, build]
     uses: ./.github/workflows/env-deploy-command.yml
     with:
       environment_name: production
       host_name: ${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
       sha: ${{ needs.resolve.outputs.sha }}
       artifact_gcs_object_path: ${{ needs.build.outputs.artifact_gcs_object_path }}
+      # Recorded by the build job in GitHub, so the VM refuses a zip that was
+      # replaced in the bucket while this run waited for its approver.
+      artifact_sha256: ${{ needs.build.outputs.artifact_sha256 }}
       mode: InPlace
       # Production runs its own queue on its own VM. Sharing the test VM's queue
       # would let either box pick up either environment's commands.

@@ -407,7 +407,8 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    could have caught a fault here.
 
 7. **Deploy.** Same dispatch with `apply` ticked. One of the two named reviewers approves
-   the `production` environment -- `Record approval` in the run is that gate. Self-review is
+   the `production` environment -- the run waits at its `Deploy to production` job, the one
+   that writes the command to production's queue, until they do. Self-review is
    allowed, so it can be the same person who dispatched it. The VM-side script backs the site
    up to `C:\RockBackups\production\<utc>-<sha>` before it copies anything, stops the app pool,
    copies over the site preserving `Content`, `App_Data`, `Logs`, `Uploads` and

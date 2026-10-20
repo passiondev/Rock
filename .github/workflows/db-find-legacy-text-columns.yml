@@ -67,6 +67,11 @@ jobs:
     name: Scan for legacy text columns
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Production's queue is written only from behind the `production` gate, here as
+    # in env-deploy-command.yml, where the reasoning is; every other queue gets an
+    # empty name and runs with no environment. The scan only reads, but posting it
+    # is still a write to production's queue. Open item 33.
+    environment: ${{ inputs.queue_name == 'commands-prod' && 'production' || '' }}
     defaults:
       run:
         shell: pwsh

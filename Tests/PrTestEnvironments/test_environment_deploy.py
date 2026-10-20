@@ -613,6 +613,49 @@ class ArtifactReuseTests(unittest.TestCase):
         self.assertEqual(staging["jobs"]["build"]["with"]["artifact_slug"], "staging")
         self.assertEqual(production["jobs"]["build"]["with"]["artifact_slug"], "production")
 
+    def test_each_build_job_records_the_hash_of_the_zip_it_uploaded(self):
+        """The hash travels as a job output, which nobody holding a bucket key can
+        rewrite. It is taken in the workflow rather than in the packaging script
+        because the repackage path runs the target ref's own copy of that script."""
+        workflow = yaml.safe_load(ARTIFACT_WORKFLOW.read_text())
+
+        for job_name in ["package", "repackage"]:
+            job = workflow["jobs"][job_name]
+            self.assertEqual(
+                job["outputs"]["artifact_sha256"],
+                "${{ steps.artifact-hash.outputs.sha256 }}",
+                job_name,
+            )
+            step = harness.step(workflow, "Record the zip's hash for the deploy", job=job_name)
+            self.assertEqual(step["id"], "artifact-hash")
+            self.assertIn("Get-FileHash", step["run"])
+            self.assertIn("-Algorithm SHA256", step["run"])
+
+            # Hashed before the upload, so the bytes hashed are the bytes uploaded.
+            names = [candidate.get("name") for candidate in job["steps"]]
+            upload = [name for name in names if name and name.startswith("Upload")]
+            self.assertTrue(upload, job_name)
+            self.assertLess(
+                names.index("Record the zip's hash for the deploy"),
+                names.index(upload[0]),
+                job_name,
+            )
+
+        value = workflow["on"]["workflow_call"]["outputs"]["artifact_sha256"]["value"]
+        self.assertIn("jobs.package.outputs.artifact_sha256", value)
+        self.assertIn("jobs.repackage.outputs.artifact_sha256", value)
+
+    def test_staging_and_production_pin_the_hash_their_build_recorded(self):
+        """Staging carries the same pin so every push rehearses the check that
+        guards production."""
+        for caller in [STAGING_WORKFLOW, PRODUCTION_WORKFLOW]:
+            workflow = yaml.safe_load(caller.read_text())
+            self.assertEqual(
+                workflow["jobs"]["deploy"]["with"]["artifact_sha256"],
+                "${{ needs.build.outputs.artifact_sha256 }}",
+                caller.name,
+            )
+
 
 class CommandWorkflowTests(unittest.TestCase):
     def queue_step(self):
@@ -632,6 +675,36 @@ class CommandWorkflowTests(unittest.TestCase):
             1, len(steps), "expected exactly one queue step in the deploy command workflow"
         )
         return steps[0]
+
+    def test_the_pinned_hash_travels_in_the_command(self):
+        """Optional with an empty default, so a caller that pins nothing -- the pr-*
+        fleet -- sends an empty hash, which the VM reads as nothing to check."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        hash_input = workflow["on"]["workflow_call"]["inputs"]["artifact_sha256"]
+        self.assertFalse(hash_input["required"])
+        self.assertEqual(hash_input["default"], "")
+
+        payload = str((self.queue_step().get("with") or {}).get("payload") or "")
+        # toJSON rather than a quoted interpolation, so the value cannot change the
+        # shape of the JSON around it.
+        self.assertIn('"artifactSha256": ${{ toJSON(env.ARTIFACT_SHA256) }}', payload)
+
+        # The agent binds only the fields its contract names, so a hash it does not
+        # list would arrive and be dropped without a word.
+        self.assertRegex(QUEUE_SCRIPT.read_text(), r"artifactSha256\s+=\s+'ArtifactSha256'")
+
+    def test_only_production_queue_writes_wait_for_the_production_gate(self):
+        """Keyed on the queue rather than on a caller's input, so a caller cannot
+        forget the gate. An empty name runs with no environment, which keeps
+        staging's deploy unattended."""
+        workflow = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        environment = workflow["jobs"]["deploy"]["environment"]
+
+        self.assertEqual(
+            environment["name"],
+            "${{ inputs.queue_name == 'commands-prod' && 'production' || '' }}",
+        )
+        self.assertIn("inputs.queue_name == 'commands-prod'", environment["url"])
 
     def test_command_workflow_fails_fast_when_the_artifact_is_missing(self):
         text = COMMAND_WORKFLOW.read_text()
@@ -710,6 +783,37 @@ class CommandWorkflowTests(unittest.TestCase):
 
         self.assertIn("::warning::", step["run"])
         self.assertIn("shared sandbox catalog", step["run"])
+
+
+class ProductionQueueGateTests(unittest.TestCase):
+    PRODUCTION_GATE = "inputs.queue_name == 'commands-prod' && 'production' ||"
+
+    def test_every_job_that_can_post_to_production_waits_for_the_production_gate(self):
+        """Open item 33. Only a job that declares `production` receives that
+        environment's secrets, so once production's key lives there a job without
+        the gate cannot write production's queue at all -- it fails instead of
+        posting. Pinned across every workflow that takes a queue name, so a new
+        command workflow is checked on the day it is added rather than on the day
+        it is first pointed at production."""
+        checked = []
+        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            workflow = yaml.safe_load(path.read_text()) or {}
+            for job_name, job in (workflow.get("jobs") or {}).items():
+                if "inputs.queue_name" not in str(job.get("env")):
+                    continue
+                environment = job.get("environment")
+                name = environment.get("name") if isinstance(environment, dict) else environment
+                self.assertIn(
+                    self.PRODUCTION_GATE,
+                    str(name),
+                    f"{path.name} job {job_name!r} can post to production's queue "
+                    "without the production gate",
+                )
+                checked.append(f"{path.name}:{job_name}")
+
+        # Six jobs today. Fewer means the scan stopped seeing them, which would
+        # turn the assertion above into a check of nothing.
+        self.assertGreaterEqual(len(checked), 6, checked)
 
 
 class DeployScriptDriftTests(unittest.TestCase):
@@ -999,14 +1103,28 @@ class ProductionWorkflowTests(unittest.TestCase):
         self.assertEqual(list(workflow["on"]), ["workflow_dispatch"])
 
     def test_production_deploy_requires_environment_approval_after_a_green_build(self):
+        """The gate sits on the job that writes the command, inside
+        env-deploy-command.yml. A separate approve job in front of it approved the
+        run and left the write to a job no environment covered, so a key held as a
+        `production` environment secret could never have reached the write."""
         workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
 
-        approve = workflow["jobs"]["approve"]
-        self.assertEqual(approve["environment"]["name"], "production")
-        # Approval gate must sit after the build: nobody should be asked to approve
-        # a commit that does not compile.
-        self.assertIn("build", approve["needs"])
-        self.assertIn("approve", workflow["jobs"]["deploy"]["needs"])
+        self.assertNotIn(
+            "approve",
+            workflow["jobs"],
+            "a second job holding `production` would ask for a second approval",
+        )
+        # Approval must come after the build: nobody should be asked to approve a
+        # commit that does not compile.
+        self.assertIn("build", workflow["jobs"]["deploy"]["needs"])
+        self.assertEqual(workflow["jobs"]["deploy"]["with"]["queue_name"], "commands-prod")
+
+        command = yaml.safe_load(COMMAND_WORKFLOW.read_text())
+        environment = command["jobs"]["deploy"]["environment"]
+        self.assertEqual(
+            environment["name"],
+            "${{ inputs.queue_name == 'commands-prod' && 'production' || '' }}",
+        )
 
     def test_production_defaults_to_a_dry_run(self):
         workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
@@ -1058,7 +1176,7 @@ class ProductionVersionGuardTests(unittest.TestCase):
         self.assertIn("Refuse a ref from a different Rock version", step_names)
         # `resolve` is what every other job depends on, so failing here costs no
         # build minutes and never reaches a human approver.
-        for job in ["build", "approve", "deploy"]:
+        for job in ["build", "deploy"]:
             self.assertIn("resolve", workflow["jobs"][job]["needs"] if isinstance(
                 workflow["jobs"][job].get("needs"), list) else [workflow["jobs"][job]["needs"]])
 

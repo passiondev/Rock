@@ -43,7 +43,7 @@ BeforeAll {
     $script:DeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
     . (Import-ScriptFunction -Path $script:DeployScript -Name `
             'Write-DeployStep', 'Ensure-Directory', 'Get-MigrationFingerprint', `
-            'Assert-DeployedCoreVersion', 'Invoke-DeploySmokeCheck', 'Write-DeployScriptProvenance', `
+            'Assert-DeployedCoreVersion', 'Assert-ArtifactHash', 'Invoke-DeploySmokeCheck', 'Write-DeployScriptProvenance', `
             'Save-UnhealthyDiagnostics', 'Test-EnvironmentHealth' `
         -Supplied `
             'DeployStartedUtc', 'DeployStepLogPath', 'Invoke-SiteContentProbe', 'Invoke-SiteProbe', `
@@ -137,6 +137,70 @@ Describe 'Assert-DeployedCoreVersion' {
         $body = Get-ScriptFunctionText -Path $script:DeployScript -Name 'Assert-DeployedCoreVersion'
 
         $body | Should -Match 'throw "The copy did not land'
+    }
+}
+
+Describe 'Assert-ArtifactHash' {
+    <#
+        The build records the zip's hash as a GitHub job output, and the command
+        carries it here. The zip itself waits in a bucket that every key in the
+        fleet can write, for as long as production's approver takes. So the hash
+        is the one thing between "the build this run approved" and "whatever is
+        at that path when the box downloads it", and it has to be checked before
+        anything is unpacked.
+    #>
+
+    BeforeEach {
+        $script:ArtifactPath = Join-Path $TestDrive ('artifact-' + [guid]::NewGuid().ToString('n') + '.zip')
+        Set-Content -Path $script:ArtifactPath -Value 'the zip the build made' -NoNewline
+        $script:ExpectedHash = (Get-FileHash -Path $script:ArtifactPath -Algorithm SHA256).Hash
+    }
+
+    It 'passes the zip the build recorded' {
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash } |
+            Should -Not -Throw
+    }
+
+    It 'compares without regard to case, since Get-FileHash and a job output need not agree on it' {
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash.ToLowerInvariant() } |
+            Should -Not -Throw
+    }
+
+    It 'refuses a zip that changed after the build recorded it' {
+        Set-Content -Path $script:ArtifactPath -Value 'a zip somebody put there later' -NoNewline
+
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash } |
+            Should -Throw -ExpectedMessage "*does not match*$($script:ExpectedHash)*"
+    }
+
+    It 'says nothing was unpacked, so the operator knows the site is untouched' {
+        Set-Content -Path $script:ArtifactPath -Value 'a zip somebody put there later' -NoNewline
+
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash } |
+            Should -Throw -ExpectedMessage '*Nothing was unpacked*'
+    }
+
+    It 'lets a command that pinned no hash through, and says so' {
+        # A hand-written command, or one from a build older than the pin. Both are
+        # legitimate, and refusing them would break every rollback to a commit
+        # from before this existed.
+        $script:Logged = @()
+        Mock Write-DeployStep { $script:Logged += $Message }
+
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 '' } | Should -Not -Throw
+
+        ($script:Logged -join "`n") | Should -Match 'pinned no hash'
+    }
+
+    It 'is called after the download and before the zip is unpacked' {
+        $text = Get-Content -Raw -Path $script:DeployScript
+        $download = $text.IndexOf('Copy-GcsObjectToFile -GcsUri $ArtifactGcsPath')
+        $check = $text.IndexOf('Assert-ArtifactHash -Path $ArtifactPath')
+        $unpack = $text.IndexOf('Expand-Archive -Path $ArtifactPath')
+
+        $download | Should -BeGreaterThan -1
+        $check | Should -BeGreaterThan $download
+        $unpack | Should -BeGreaterThan $check
     }
 }
 

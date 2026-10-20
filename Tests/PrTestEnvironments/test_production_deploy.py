@@ -181,7 +181,7 @@ class ProductionRefGuardTests(unittest.TestCase):
         )
 
     def test_the_ref_guard_runs_before_the_build(self):
-        """Both guards live in `resolve`, which `build` and `approve` depend on. If
+        """Both guards live in `resolve`, which `build` and `deploy` depend on. If
         the guard ran later, a refused deploy would still have spent a full Rock
         build, and an approver could be shown a commit that can never ship."""
         names = [step.get("name") for step in _resolve_steps()]
