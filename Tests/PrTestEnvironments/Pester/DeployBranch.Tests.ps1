@@ -38,6 +38,11 @@
     directly: it is what lets the deploy body ask "is there a backup" instead of
     asking which branch ran, and a stray emitter anywhere inside either function
     would break it silently -- robocopy's job summary alone is forty lines.
+
+    The last Describe runs nothing. It reads the script for calls to the three
+    commands that are right only on a site this pipeline built. A stray call in
+    the script body would run on every production deploy, and no lift can reach
+    the script body to catch it.
 #>
 
 BeforeAll {
@@ -694,5 +699,93 @@ Describe 'the two branches as one interface' {
         $inPlace = Invoke-InPlaceOverlay -Plan $plan -Sha 'abc1234' -ManifestPath $script:ManifestPath
 
         ($dedicated.Keys | Sort-Object) | Should -Be ($inPlace.Keys | Sort-Object)
+    }
+}
+
+Describe 'Where the dedicated-site-only commands are called' {
+    <#
+        Three commands in the deploy script are right only on a site this
+        pipeline has just built. Production is a live site somebody else built,
+        and on it each one does damage that no health check notices:
+
+            Sync-SharedSiteAssets   backfills production's Plugins tree, which
+                                    is maintained by hand outside git, from
+                                    another site.
+            Sync-ServerOwnedAssets  replaces production's own fonts and theme
+                                    overrides from a base site production does
+                                    not have.
+            icacls                  restates the ACL on a directory whose ACEs
+                                    were set by hand and are already right.
+
+        'never runs the shared-asset overlay' above holds this for
+        Invoke-InPlaceOverlay by running it. That covers one function. A call
+        added to the script body, or to a helper the in-place path reaches,
+        runs on every production deploy, and no lift can reach the script body
+        to find it. So this reads the file instead of running it: every call to
+        the three must sit inside a function on the list below.
+        WarmSiteSettings.Tests.ps1 holds that the one function on it is reached
+        only on a DedicatedSite deploy. Each half needs the other to mean
+        anything.
+
+        The list is where the calls are today. Adding a function to it is a
+        decision about production, so make it after reading this comment.
+    #>
+
+    BeforeAll {
+        # Parse errors are not checked here. The import at the top of this file
+        # parses the same script and throws if it does not parse, so this
+        # Describe never sees a partial tree.
+        $tokens = $null
+        $errors = $null
+        $tree = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:DeployScript, [ref]$tokens, [ref]$errors)
+
+        $script:DedicatedSiteOnly = @('Sync-SharedSiteAssets', 'Sync-ServerOwnedAssets', 'icacls')
+        $script:AllowedCallers = @('Invoke-DedicatedSiteReplace')
+
+        # Find every command first and filter afterwards, instead of filtering in
+        # the predicate. FindAll runs the predicate as a .NET delegate, and a
+        # reader should not have to work out which of this scope's variables
+        # that delegate can see. GetCommandName() reads `& icacls` as icacls,
+        # so the call operator does not hide a call. Comments and strings are
+        # not commands, so the prose that names all three is not counted.
+        $script:RestrictedCalls = @($tree.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.CommandAst]
+                }, $true) |
+                Where-Object { $_.GetCommandName() -in $script:DedicatedSiteOnly })
+    }
+
+    It 'finds a call to each of them, so a clean result is not an empty one' {
+        # The check below passes for every call it finds in an allowed function,
+        # and it also passes when it finds no calls at all. A renamed command,
+        # or a scan that stopped matching, would look exactly like a clean file.
+        foreach ($command in $script:DedicatedSiteOnly) {
+            @($script:RestrictedCalls | Where-Object { $_.GetCommandName() -eq $command }).Count |
+                Should -BeGreaterThan 0 -Because "the deploy script is expected to call $command in Invoke-DedicatedSiteReplace. If the call was renamed or removed, update the list in this Describe, or the next test checks nothing for that command"
+        }
+    }
+
+    It 'calls each of them only from the branch that builds the site' {
+        $strays = @()
+        foreach ($call in $script:RestrictedCalls) {
+            # The nearest function around the call, which is the one that runs
+            # it. A call in the script body has no function around it.
+            $enclosing = $call.Parent
+            while ($null -ne $enclosing -and
+                $enclosing -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
+                $enclosing = $enclosing.Parent
+            }
+
+            $isAllowed = $null -ne $enclosing -and $enclosing.Name -in $script:AllowedCallers
+            if ($isAllowed) {
+                continue
+            }
+
+            $location = if ($null -eq $enclosing) { 'the script body' } else { $enclosing.Name }
+            $strays += "$($call.GetCommandName()) at line $($call.Extent.StartLineNumber) in $location"
+        }
+
+        $strays.Count | Should -Be 0 -Because "each of these can run on a deploy that did not build the site, and production deploys that way:`n  $($strays -join "`n  ")"
     }
 }
