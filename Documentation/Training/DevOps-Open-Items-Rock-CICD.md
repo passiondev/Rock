@@ -674,6 +674,12 @@ confirmed gone. Two consequences to know:
   `processing/`, nothing re-runs it, and the producer's wait times out. That is the right
   trade for deploys — a duplicate deploy is what this item is about — but it means a command
   stranded in `processing/` is cleared by hand, after reading its log.
+- **A copy that lands but whose answer is lost is still the agent's.** Each claim carries a
+  `claimToken` in its metadata. When the copy fails with no answer or a `5xx`, the agent reads the
+  destination back, and its own token means it won and runs the command. Without the read-back,
+  every later run would get `412` from the agent's own copy and skip the command for good.
+  If the read-back fails too, the warning names the claim object, which is then cleared by hand
+  like any stranded command.
 - **The VM needs `objects.create` under `processing/`.** It already writes `results/` and
   `logs/` with the same service account, and no IAM condition in the repo narrows that by
   prefix, so this is expected to work as-is. Not verified against live IAM on 2026-10-20.

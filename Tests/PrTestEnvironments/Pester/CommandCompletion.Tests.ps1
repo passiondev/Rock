@@ -268,25 +268,50 @@ Describe 'Claiming the command object' {
     # only lands where nothing exists yet, so of two passes racing for one
     # command exactly one gets it. A lost race is an answer, not an error; only
     # a call that failed for some other reason is.
+    #
+    # A copy can also land without its answer reaching the agent. Every later
+    # pass would then lose the race to that copy, so the command would never
+    # run. The claim carries a token to tell that copy apart from another
+    # pass's.
 
     BeforeAll {
-        . (Import-ScriptFunction -Path $script:AgentScript -Name 'Copy-GcsObjectIfAbsent', 'Get-GcsErrorStatusCode' `
+        . (Import-ScriptFunction -Path $script:AgentScript `
+                -Name 'Copy-GcsObjectIfAbsent', 'Get-GcsObjectMetadata', 'Get-GcsErrorStatusCode' `
                 -Supplied 'Invoke-GcsRequest', 'BucketName')
 
         $script:BucketName = 'connect-file-storage'
-        $script:Requests = @()
-        $script:NextStatusCode = 0
 
-        function script:Invoke-GcsRequest {
-            param([string]$Uri, [string]$Method, $Body, [string]$ContentType)
+        function script:New-TestGcsError {
+            param([int]$StatusCode)
 
-            $script:Requests += [pscustomobject]@{ Uri = $Uri; Method = $Method }
-            if ($script:NextStatusCode -eq 0) { return $null }
-
-            $exception = [System.Exception]::new("simulated HTTP $script:NextStatusCode")
+            $exception = [System.Exception]::new("simulated HTTP $StatusCode")
             $exception | Add-Member -NotePropertyName Response `
-                -NotePropertyValue ([pscustomobject]@{ StatusCode = $script:NextStatusCode }) -Force
-            throw $exception
+                -NotePropertyValue ([pscustomobject]@{ StatusCode = $StatusCode }) -Force
+            return $exception
+        }
+
+        # POST is the copy, and fails with $script:CopyError when that is set.
+        # GET reads the destination back, and answers as $script:Destination
+        # says: ours, theirs, untagged, absent or unreadable.
+        function script:Invoke-GcsRequest {
+            param([string]$Uri, [string]$Method = 'GET', $Body, [string]$ContentType)
+
+            $script:Requests += [pscustomobject]@{ Uri = $Uri; Method = $Method; Body = $Body }
+
+            if ($Method -eq 'POST') {
+                $script:SentClaimToken = ($Body | ConvertFrom-Json).metadata.claimToken
+                if ($script:CopyError) { throw $script:CopyError }
+                return $null
+            }
+
+            switch ($script:Destination) {
+                'ours' { return [pscustomobject]@{ metadata = [pscustomobject]@{ claimToken = $script:SentClaimToken } } }
+                'theirs' { return [pscustomobject]@{ metadata = [pscustomobject]@{ claimToken = 'another-pass' } } }
+                'untagged' { return [pscustomobject]@{} }
+                'absent' { throw (New-TestGcsError -StatusCode 404) }
+                'unreadable' { throw (New-TestGcsError -StatusCode 503) }
+            }
+            throw "The test did not say what is at the destination."
         }
 
         function script:Copy-TestClaim {
@@ -297,7 +322,9 @@ Describe 'Claiming the command object' {
 
     BeforeEach {
         $script:Requests = @()
-        $script:NextStatusCode = 0
+        $script:CopyError = $null
+        $script:SentClaimToken = $null
+        $script:Destination = $null
     }
 
     It 'copies only where nothing exists yet, and says it won' {
@@ -309,8 +336,17 @@ Describe 'Claiming the command object' {
         $script:Requests[0].Uri | Should -Match 'ifGenerationMatch=0' -Because 'without the precondition both passes win'
     }
 
+    It 'tags each claim with a token of its own' {
+        Copy-TestClaim | Out-Null
+        $firstToken = $script:SentClaimToken
+        Copy-TestClaim | Out-Null
+
+        $firstToken | Should -Not -BeNullOrEmpty
+        $script:SentClaimToken | Should -Not -Be $firstToken
+    }
+
     It 'reports a claim another pass already holds as lost' {
-        $script:NextStatusCode = 412
+        $script:CopyError = New-TestGcsError -StatusCode 412
 
         Copy-TestClaim | Should -BeFalse
     }
@@ -318,23 +354,64 @@ Describe 'Claiming the command object' {
     It 'reports a command that is already gone as lost' {
         # Claimed and taken out of pending/ by another pass between this one's
         # list and its copy.
-        $script:NextStatusCode = 404
+        $script:CopyError = New-TestGcsError -StatusCode 404
 
         Copy-TestClaim | Should -BeFalse
     }
 
-    It 'reports a copy that was refused' {
+    It 'reports a copy that was refused, without reading the destination back' {
         # 403 is a scope or IAM problem: nobody holds the claim, so the command
-        # has to stay pending rather than be skipped as somebody else's.
-        $script:NextStatusCode = 403
+        # has to stay pending rather than be skipped as somebody else's. A
+        # refusal is GCS's answer, so there is nothing to find out by reading.
+        $script:CopyError = New-TestGcsError -StatusCode 403
 
-        { Copy-TestClaim } | Should -Throw
+        { Copy-TestClaim } | Should -Throw -ExpectedMessage '*stays in pending/*'
+        $script:Requests.Count | Should -Be 1
     }
 
-    It 'does not read a server error as a lost race' {
-        $script:NextStatusCode = 503
+    It 'counts a copy that landed but whose answer was lost as won' {
+        $script:CopyError = New-TestGcsError -StatusCode 503
+        $script:Destination = 'ours'
 
-        { Copy-TestClaim } | Should -Throw
+        Copy-TestClaim | Should -BeTrue -Because 'every later pass would lose to this copy, so nothing would ever run the command'
+        $script:Requests[1].Method | Should -Be 'GET'
+        $script:Requests[1].Uri | Should -BeLike '*/b/connect-file-storage/o/pr-environments%2Fcommands-prod%2Fprocessing%2Fabc123.json?fields=metadata'
+    }
+
+    It 'reads the destination back when the connection dropped with no answer at all' {
+        $script:CopyError = [System.Net.WebException]::new('The operation has timed out')
+        $script:Destination = 'ours'
+
+        Copy-TestClaim | Should -BeTrue
+    }
+
+    It 'reports a claim that another pass made while the copy failed as lost' {
+        $script:CopyError = New-TestGcsError -StatusCode 503
+        $script:Destination = 'theirs'
+
+        Copy-TestClaim | Should -BeFalse
+    }
+
+    It 'reports an untagged claim as lost' {
+        # An agent from before the token claims without one.
+        $script:CopyError = New-TestGcsError -StatusCode 503
+        $script:Destination = 'untagged'
+
+        Copy-TestClaim | Should -BeFalse
+    }
+
+    It 'does not read a server error as a lost race when nothing landed' {
+        $script:CopyError = New-TestGcsError -StatusCode 503
+        $script:Destination = 'absent'
+
+        { Copy-TestClaim } | Should -Throw -ExpectedMessage '*stays in pending/*'
+    }
+
+    It 'says the claim may be holding the command when it cannot read the destination back' {
+        $script:CopyError = New-TestGcsError -StatusCode 503
+        $script:Destination = 'unreadable'
+
+        { Copy-TestClaim } | Should -Throw -ExpectedMessage '*pr-environments/commands-prod/processing/abc123.json*nothing will run*'
     }
 }
 

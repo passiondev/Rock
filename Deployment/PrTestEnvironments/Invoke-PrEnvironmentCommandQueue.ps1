@@ -377,6 +377,48 @@ function Remove-GcsObject {
     }
 }
 
+function Get-GcsObjectMetadata {
+    <#
+    .SYNOPSIS
+        The custom metadata on one object, or $null if there is no such object.
+
+    .DESCRIPTION
+        An object that exists but carries no custom metadata comes back as an
+        empty hashtable, not $null, so the caller can tell "nothing is there"
+        from "something is there that nobody tagged". Copy-GcsObjectIfAbsent
+        needs exactly that difference. Any error other than 404 throws.
+
+    .PARAMETER ObjectName
+        The object to read.
+    #>
+    param([Parameter(Mandatory = $true)][string]$ObjectName)
+
+    $encodedObjectName = [System.Uri]::EscapeDataString($ObjectName)
+    $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName`?fields=metadata"
+
+    try {
+        $response = Invoke-GcsRequest -Uri $uri
+    }
+    catch {
+        if ((Get-GcsErrorStatusCode -ErrorRecord $_) -eq 404) {
+            return $null
+        }
+        throw
+    }
+
+    # Read through PSObject: GCS leaves "metadata" out of the response altogether
+    # when an object has none, and Set-StrictMode -Version Latest makes reading a
+    # missing property a terminating error.
+    $metadata = @{}
+    $metadataProperty = $response.PSObject.Properties['metadata']
+    if ($metadataProperty -and $metadataProperty.Value) {
+        foreach ($property in $metadataProperty.Value.PSObject.Properties) {
+            $metadata[$property.Name] = [string]$property.Value
+        }
+    }
+    return $metadata
+}
+
 function Copy-GcsObjectIfAbsent {
     <#
     .SYNOPSIS
@@ -392,9 +434,19 @@ function Copy-GcsObjectIfAbsent {
 
         Losing comes back as $false rather than as an error, in both of its
         shapes: 412 when the other pass's copy already exists, and 404 when that
-        pass has already taken the command out of pending/. Anything else throws,
-        because then nobody holds the claim, and the command has to be left
-        where the next pass will find it.
+        pass has already taken the command out of pending/. Any other refusal
+        throws, because then nobody holds the claim, and the command has to be
+        left where the next pass will find it.
+
+        A copy that fails with no answer, or with a 5xx, may still have landed.
+        That copy would hold the command, and every later pass would get a 412
+        from it and skip the command for good. So each claim carries a token of
+        its own, and on such a failure this reads the destination back. Our
+        token means we won. Another token, or none at all from an agent older
+        than the token, means another pass did. Nothing there means nobody
+        holds the claim, and this throws as for a refusal. If the read fails
+        too, this throws a message that says the claim may be holding the
+        command.
 
     .PARAMETER ObjectName
         The command in pending/.
@@ -411,20 +463,46 @@ function Copy-GcsObjectIfAbsent {
     $encodedDestinationObjectName = [System.Uri]::EscapeDataString($DestinationObjectName)
     $uri = "https://storage.googleapis.com/storage/v1/b/$BucketName/o/$encodedObjectName/copyTo/b/$BucketName/o/$encodedDestinationObjectName`?ifGenerationMatch=0"
 
+    # The body is metadata for the destination, and the token is all it sets.
+    # Whatever content type the claim ends up with, Read-GcsObjectText reads it
+    # back as text.
+    $claimToken = [guid]::NewGuid().ToString('N')
+    $body = @{ metadata = @{ claimToken = $claimToken } } | ConvertTo-Json -Compress
+
     try {
-        # The body is metadata for the destination, and there is none to set.
-        # Whatever content type the claim ends up with, Read-GcsObjectText reads
-        # it back as text.
-        Invoke-GcsRequest -Uri $uri -Method POST -Body '{}' | Out-Null
+        Invoke-GcsRequest -Uri $uri -Method POST -Body $body | Out-Null
         return $true
     }
     catch {
-        $statusCode = Get-GcsErrorStatusCode -ErrorRecord $_
-        if ($statusCode -eq 412 -or $statusCode -eq 404) {
-            return $false
-        }
-        throw
+        $copyError = $_
     }
+
+    $statusCode = Get-GcsErrorStatusCode -ErrorRecord $copyError
+    if ($statusCode -eq 412 -or $statusCode -eq 404) {
+        return $false
+    }
+
+    $unclaimedMessage = "The copy to $DestinationObjectName failed: $($copyError.Exception.Message). Nothing holds the claim, so the command stays in pending/ for the next pass."
+
+    # Any other 4xx is GCS refusing the request, so nothing was copied.
+    $mayHaveLanded = ($null -eq $statusCode) -or ($statusCode -ge 500)
+    if (-not $mayHaveLanded) {
+        throw $unclaimedMessage
+    }
+
+    try {
+        $claimMetadata = Get-GcsObjectMetadata -ObjectName $DestinationObjectName
+    }
+    catch {
+        throw ("The copy to $DestinationObjectName failed: $($copyError.Exception.Message). Reading it back to see " +
+            "whether the copy landed failed too: $($_.Exception.Message). If that object exists, it holds the command, " +
+            "and nothing will run the command until somebody removes it.")
+    }
+
+    if ($null -eq $claimMetadata) {
+        throw $unclaimedMessage
+    }
+    return ($claimMetadata['claimToken'] -eq $claimToken)
 }
 
 function New-GcsQueueTransport {
@@ -1426,9 +1504,10 @@ function Invoke-CommandQueuePass {
 
           A command is claimed before it is read, by copying it into processing/
           where nothing exists yet, and then taken out of pending/. A command
-          another pass has claimed is skipped untouched. A claim that errors
-          leaves the command in pending/ for the next pass. See
-          Copy-GcsObjectIfAbsent.
+          another pass has claimed is skipped untouched. A claim that errors is
+          a warning, and the command is not run in this pass. The error says
+          whether the command stays in pending/ for the next pass or may be
+          held by a claim that nobody reported. See Copy-GcsObjectIfAbsent.
 
           A command the agent will not run -- an unknown verb, a verb this queue
           does not accept, a missing field -- comes back as a failed result
@@ -1524,7 +1603,8 @@ function Invoke-CommandQueuePass {
             $isClaimed = [bool](& $Transport.Claim -ObjectName $commandObject -ClaimedObjectName $claimObject)
         }
         catch {
-            Write-Warning "Could not claim ${commandObject}: $($_.Exception.Message). It stays in pending/ for the next pass."
+            # The error says whether the command is still pending; see Copy-GcsObjectIfAbsent.
+            Write-Warning "Could not claim ${commandObject}: $($_.Exception.Message)"
             continue
         }
         if (-not $isClaimed) {
