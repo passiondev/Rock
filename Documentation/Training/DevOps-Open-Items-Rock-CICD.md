@@ -682,7 +682,8 @@ confirmed gone. Two consequences to know:
   like any stranded command.
 - **The VM needs `objects.create` under `processing/`.** It already writes `results/` and
   `logs/` with the same service account, and no IAM condition in the repo narrows that by
-  prefix, so this is expected to work as-is. Not verified against live IAM on 2026-10-20.
+  prefix. Checked against live IAM on 2026-10-20: both VMs run as the project's default compute
+  account, which holds `roles/storage.admin` on the bucket with no condition (see item 33).
 
 Neither host runs this until its bootstrap is dispatched — the agent refreshes its own script
 from the bootstrap prefix, so for the test VM that is the next `pr-test-bootstrap-command-queue`
@@ -1658,9 +1659,24 @@ against `commands-prod` fails at its first write, because those jobs still authe
 the fleet key. The workflow changes for step 1 are not in the repository yet, so nothing here
 can be applied until they are written, merged and pushed.
 
-Production's VM has its own service account, and this does not touch it: it still needs to
-read `commands-prod/` and `bootstrap/prod/`, and to write `processing/`, `results/` and `logs/`
-under its own queue.
+**Corrected later on 2026-10-20: production's VM does not have its own service account.** This
+item first said it did. Live IAM says `connect-srv-prod` and `connect-srv-test` both run as the
+project's default compute account, `6171028467-compute@developer.gserviceaccount.com`. With no
+condition, that account holds:
+
+- `roles/storage.admin` and `roles/storage.objectAdmin` on the bucket;
+- `roles/editor` on the project.
+
+The test VM carries the `cloud-platform` scope, and it runs every PR environment's code. Any
+process on it that can reach the metadata server gets that account's token. That token reaches
+further than `GCP_SA_KEY`: production's queue and bootstrap prefix, and through `roles/editor`
+the production VM and the rest of the project.
+
+So the fix needs a third half, before the IAM step above: give production's VM a service account
+of its own. Changing an instance's service account needs it stopped, so this is a production
+restart, like the bootstrap's scope change. Production's account still needs to read
+`commands-prod/` and `bootstrap/prod/`, and to write `processing/`, `results/` and `logs/` under
+its own queue. Then the test VM's account can be narrowed the same way as the fleet key.
 
 ## P2 — hygiene
 
