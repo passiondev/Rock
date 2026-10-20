@@ -1252,7 +1252,15 @@ function Sync-SharedSiteAssets {
         # the branch stays authoritative for everything it actually ships. See the
         # long note in Deploy-PrEnvironment.ps1 -- this was /MIR and it silently
         # reverted every theme change a branch made.
-        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP
+        #
+        # To the console and not the pipeline. The quiet switches still leave
+        # blank lines, and this is called from inside Invoke-DedicatedSiteReplace,
+        # whose return value is the record the deploy body reads: anything left
+        # in the pipeline here turns that record into an array, and under
+        # Set-StrictMode the rollback line's $deployed.BackupPath then throws on a
+        # site that deployed and passed its health check. That is how staging's
+        # first run of the function failed, 2026-10-20.
+        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP | Write-Host
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for shared asset directory $directory with exit code $exitCode."
@@ -1471,7 +1479,9 @@ function Sync-ServerOwnedAssets {
         # the Font Awesome restore down with it.
         [string[]]$recurse = if ($sourceIsFile) { @() } else { @('/E') }
         [string[]]$arguments = @($copyFilter) + @($recurse)
-        & robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP
+        # To the console, for the reason given at the robocopy call in
+        # Sync-SharedSiteAssets: this runs inside Invoke-DedicatedSiteReplace too.
+        & robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP | Write-Host
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for server-owned path $relativePath with exit code $exitCode."

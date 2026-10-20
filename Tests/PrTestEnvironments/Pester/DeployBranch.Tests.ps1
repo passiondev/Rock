@@ -878,6 +878,33 @@ Describe 'the two branches as one interface' {
 
         ($dedicated.Keys | Sort-Object) | Should -Be ($inPlace.Keys | Sort-Object)
     }
+
+    It 'each hands back the record alone, with nothing else in the pipeline ahead of it' {
+        # The deploy body reads $deployed.BackupPath under Set-StrictMode. One
+        # stray line of output from anywhere inside a branch makes $deployed an
+        # array, and that read throws after the site is already up -- which is
+        # how staging's first run of Invoke-DedicatedSiteReplace failed on
+        # 2026-10-20. The helpers are stubbed here, so this holds the two
+        # functions' own bodies; ServerOwnedThemeFiles.Tests.ps1 holds the
+        # overlay helpers that leaked that day.
+        $dedicated = @(Invoke-DedicatedSiteReplace `
+                -SitePath $script:SitePath -ExtractPath $script:ExtractPath `
+                -SiteName 'pr-1' -AppPoolName 'pr-1-pool' -HostName 'pr-1.pr.passion.team' `
+                -SharedAssetDirectories 'Themes')
+
+        Ensure-Directory -Path $script:ExtractPath
+        Ensure-Directory -Path $script:SitePath
+
+        $plan = Get-InPlaceOverlayPlan `
+            -SitePath $script:SitePath -ExtractPath $script:ExtractPath `
+            -EnvironmentName 'production' -BackupRoot $script:BackupRoot
+        $inPlace = @(Invoke-InPlaceOverlay -Plan $plan -Sha 'abc1234' -ManifestPath $script:ManifestPath)
+
+        $dedicated | Should -HaveCount 1
+        $dedicated[0] | Should -BeOfType [hashtable]
+        $inPlace | Should -HaveCount 1
+        $inPlace[0] | Should -BeOfType [hashtable]
+    }
 }
 
 Describe 'Where the dedicated-site-only commands are called' {

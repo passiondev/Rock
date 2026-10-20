@@ -31,6 +31,7 @@ BeforeAll {
         'Get-ServerOwnedThemeFilePaths',
         'ConvertTo-NativePath',
         'Resolve-SharedAssetSource',
+        'Sync-SharedSiteAssets',
         'Sync-ServerOwnedAssets',
         'Ensure-Directory',
         'Write-DeployStep') -Supplied 'DeployStartedUtc', 'DeployStepLogPath')
@@ -569,5 +570,67 @@ Describe 'Resolve-SharedAssetSource' {
         function Get-Website { param($Name) [pscustomobject]@{ physicalPath = '/srv/default-web-site' } }
 
         Resolve-SharedAssetSource -ConfiguredPath '' | Should -Be '/srv/default-web-site'
+    }
+}
+
+Describe 'What the two overlay passes hand back' {
+
+    <#
+        Nothing. Both are called from inside Invoke-DedicatedSiteReplace, whose
+        return value is the record the deploy body reads -- $deployed.BackupPath --
+        and anything either of them leaves in the pipeline lands in that record
+        too, ahead of it. The record becomes an array, and under Set-StrictMode
+        asking an array of strings for BackupPath is a terminating error.
+
+        robocopy is what leaked. /NJH /NJS /NFL /NDL quiet it but do not silence
+        it: it still writes blank lines, and an error line when a file will not
+        copy. While the dedicated-site branch was top-level script that went to
+        the console and harmed nothing. Once the branch became a function it went
+        into the return value, and the first staging deploy to run it -- 20
+        October 2026 -- put the site up, passed its health check, and then failed
+        on the line that prints the rollback advice.
+
+        The stub prints what the real one does, so the assertion is about the
+        function and not about a stub that happens to be quiet.
+    #>
+
+    BeforeAll {
+        function robocopy {
+            ''
+            '          New File               12        _variable-overrides.less'
+            ''
+            $global:LASTEXITCODE = 1
+        }
+
+        function Write-DeployStep {
+            param([string]$Message)
+        }
+    }
+
+    BeforeEach {
+        $script:Source = Join-Path $TestDrive 'quietbase'
+        $script:Destination = Join-Path $TestDrive 'quietnew'
+        foreach ($root in @($script:Source, $script:Destination)) {
+            if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+        }
+        New-Item -ItemType Directory -Path $script:Destination -Force | Out-Null
+
+        $sourceStyles = Join-Path $script:Source 'Themes/Rock/Styles'
+        New-Item -ItemType Directory -Path $sourceStyles -Force | Out-Null
+        Set-Content -Path (Join-Path $sourceStyles '_variable-overrides.less') -Value '@brand-color: #00b8e4;' -NoNewline
+    }
+
+    It 'Sync-SharedSiteAssets emits nothing, whatever robocopy prints' {
+        $emitted = @(Sync-SharedSiteAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+                -DirectoryList 'Themes')
+
+        $emitted | Should -HaveCount 0 -Because 'Invoke-DedicatedSiteReplace returns its record through the same pipeline'
+    }
+
+    It 'Sync-ServerOwnedAssets emits nothing, whatever robocopy prints' {
+        $emitted = @(Sync-ServerOwnedAssets -SourceRoot $script:Source -DestinationRoot $script:Destination `
+                -RelativePaths @('Themes/Rock/Styles/_variable-overrides.less') -WarningAction SilentlyContinue)
+
+        $emitted | Should -HaveCount 0 -Because 'Invoke-DedicatedSiteReplace returns its record through the same pipeline'
     }
 }

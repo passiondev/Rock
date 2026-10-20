@@ -1458,6 +1458,20 @@ class StepReporterAdoptionTests(unittest.TestCase):
             "test asserts these two calls keep /NJS off, so the summary they emit "
             "is the thing an operator reads to see whether the copy moved anything"
         ),
+        "& robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP | Write-Host": (
+            "the base-site overlay in Sync-SharedSiteAssets, redirected for the "
+            "same reason. It runs inside Invoke-DedicatedSiteReplace, and the "
+            "blank lines its quiet switches still leave turned that function's "
+            "record into an array -- staging's deploy of 2026-10-20 then threw on "
+            "$deployed.BackupPath after the site was up. Its error lines, if any, "
+            "still reach the log this way; the file counts either side of it go "
+            "through Write-DeployStep"
+        ),
+        "& robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP | Write-Host": (
+            "the server-owned restore in Sync-ServerOwnedAssets, which is called "
+            "from the same function for the same reason; its byte counts go "
+            "through Write-DeployStep"
+        ),
     }
 
     def setUp(self):
