@@ -2245,11 +2245,13 @@ function Invoke-SiteContentProbe {
         $stream = $response.GetResponseStream()
         $reader = New-Object System.IO.StreamReader($stream)
         try {
-            # Capped rather than read to the end: a Rock page is a few hundred KB
-            # and the markers being looked for are all in the first screenful, so
-            # there is no reason to hold a megabyte of HTML in a deploy script.
+            # Capped rather than read to the end: a Rock page is a few hundred KB,
+            # so there is no reason to hold a megabyte of HTML in a deploy script.
+            # ReadBlock, not Read: Read returns whatever has arrived so far, and on
+            # 2026-10-20 that was the first 3443 chars of the login page, ahead of
+            # its __VIEWSTATE, so the smoke check failed every healthy deploy.
             $buffer = New-Object char[] $MaxBodyBytes
-            $read = $reader.Read($buffer, 0, $MaxBodyBytes)
+            $read = $reader.ReadBlock($buffer, 0, $MaxBodyBytes)
             if ($read -gt 0) { $outcome.Body = (New-Object string($buffer, 0, $read)) }
         }
         finally { $reader.Dispose() }

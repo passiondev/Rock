@@ -281,6 +281,88 @@ Describe 'Invoke-DeploySmokeCheck' {
     }
 }
 
+Describe 'Invoke-SiteContentProbe' {
+    <#
+        The seam the block above mocks, tested for real. On 2026-10-20 staging's
+        smoke check failed three deploys running with "/Login returned 200 (3443
+        chars) but the response has no __VIEWSTATE", while the same page fetched
+        from off the box was 98 KB of Rock with __VIEWSTATE in it. The probe read
+        the body with one StreamReader.Read, which hands back what has arrived so
+        far rather than filling the buffer, and Rock's login page has a large
+        inline script ahead of its form. The check was judging the first chunk.
+
+        A listener on the loopback answers in two chunks with a pause between
+        them, which is how a network stream delivers a page that size. The first
+        chunk is 3443 bytes, as staging's was, and deliberately not a multiple of
+        the reader's buffer, so the bug cannot hide behind a full read.
+    #>
+
+    BeforeAll {
+        . (Import-ScriptFunction -Path $script:DeployScript -Name 'Invoke-SiteContentProbe')
+
+        # Accepts one connection, skips the request headers, and writes a
+        # chunked 200 with a pause after each chunk is flushed.
+        $script:ServeInChunks = {
+            param($Listener, [string[]]$Chunks)
+
+            $client = $Listener.AcceptTcpClient()
+            try {
+                $stream = $client.GetStream()
+                $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+                while (-not [string]::IsNullOrEmpty($reader.ReadLine())) { }
+
+                $send = {
+                    param([byte[]]$Bytes)
+                    $stream.Write($Bytes, 0, $Bytes.Length)
+                    $stream.Flush()
+                }
+
+                & $send ([Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nTransfer-Encoding: chunked`r`nConnection: close`r`n`r`n"))
+                foreach ($chunk in $Chunks) {
+                    $payload = [Text.Encoding]::UTF8.GetBytes($chunk)
+                    & $send ([Text.Encoding]::ASCII.GetBytes(('{0:X}' -f $payload.Length) + "`r`n"))
+                    & $send $payload
+                    & $send ([Text.Encoding]::ASCII.GetBytes("`r`n"))
+                    Start-Sleep -Milliseconds 500
+                }
+                & $send ([Text.Encoding]::ASCII.GetBytes("0`r`n`r`n"))
+            }
+            finally { $client.Close() }
+        }
+    }
+
+    BeforeEach {
+        $script:Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $script:Listener.Start()
+        $script:Server = $null
+    }
+
+    AfterEach {
+        if ($script:Server) {
+            $script:Server.Stop()
+            $script:Server.Dispose()
+        }
+        $script:Listener.Stop()
+    }
+
+    It 'reads past the first chunk, where Rock''s __VIEWSTATE actually is' {
+        $head = '<!DOCTYPE html><html><head><script>' + ('x' * 3443) + '</script></head>'
+        $head = $head.Substring(0, 3443)
+        $form = '<body><form method="post" action="./Login"><input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="" /></form></body></html>'
+
+        $script:Server = [powershell]::Create().AddScript($script:ServeInChunks).AddArgument($script:Listener).AddArgument(@($head, $form))
+        $handle = $script:Server.BeginInvoke()
+
+        $url = "http://127.0.0.1:$($script:Listener.LocalEndpoint.Port)/Login"
+        $probe = Invoke-SiteContentProbe -Url $url -TimeoutSeconds 10
+        $script:Server.EndInvoke($handle) | Out-Null
+
+        $probe.StatusCode | Should -Be 200
+        $probe.Body.Length | Should -Be ($head.Length + $form.Length)
+        $probe.Body | Should -Match '__VIEWSTATE'
+    }
+}
+
 Describe 'Write-DeployScriptProvenance' {
 
     BeforeEach {
