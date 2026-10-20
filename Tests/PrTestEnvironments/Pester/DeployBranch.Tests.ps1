@@ -230,9 +230,15 @@ BeforeAll {
         }
     }
 
+    # Both write to the success stream, for the reason robocopy's stub does. They
+    # drive the IIS provider, which hands back objects from calls that look like
+    # statements -- a binding's AddSslCertificate is one -- and no test here can
+    # run against a real IIS to learn which. Staging's second run of
+    # Invoke-DedicatedSiteReplace, on 2026-10-20, failed on exactly that.
     function Script:Ensure-AppPool {
         param($Name)
         Script:Record -Name 'Ensure-AppPool' -Detail @{ Name = $Name }
+        Write-Output "IIS:\AppPools\$Name"
     }
 
     function Script:Ensure-Website {
@@ -241,6 +247,7 @@ BeforeAll {
             Name = $Name; PhysicalPath = $PhysicalPath; HostHeader = $HostHeader
             PoolName = $PoolName; Thumbprint = $Thumbprint
         }
+        Write-Output "IIS:\Sites\$Name"
     }
 
     function Script:Invoke-OrphanedAssemblyReconciliation {
@@ -883,10 +890,12 @@ Describe 'the two branches as one interface' {
         # The deploy body reads $deployed.BackupPath under Set-StrictMode. One
         # stray line of output from anywhere inside a branch makes $deployed an
         # array, and that read throws after the site is already up -- which is
-        # how staging's first run of Invoke-DedicatedSiteReplace failed on
+        # how staging's first two runs of Invoke-DedicatedSiteReplace failed on
         # 2026-10-20. The helpers are stubbed here, so this holds the two
         # functions' own bodies; ServerOwnedThemeFiles.Tests.ps1 holds the
-        # overlay helpers that leaked that day.
+        # overlay helpers that leaked first, and CertificateSelection.Tests.ps1
+        # holds Ensure-Website, which leaked second. The IIS stubs above emit,
+        # so this also holds that the replace does not trust them to be quiet.
         $dedicated = @(Invoke-DedicatedSiteReplace `
                 -SitePath $script:SitePath -ExtractPath $script:ExtractPath `
                 -SiteName 'pr-1' -AppPoolName 'pr-1-pool' -HostName 'pr-1.pr.passion.team' `

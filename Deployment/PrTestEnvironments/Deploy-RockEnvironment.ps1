@@ -1199,7 +1199,11 @@ function Ensure-Website {
             Where-Object { $_.bindingInformation -eq "*:443:$HostHeader" }
     }
 
-    $httpsBinding.AddSslCertificate((Get-EnvironmentCertificateThumbprint -HostHeader $HostHeader -Thumbprint $Thumbprint), "My")
+    # Discarded because a method call's return value goes to the caller, and the
+    # caller is Invoke-DedicatedSiteReplace, which returns a record. Left in the
+    # pipeline, it made that record an array and failed staging's deploy on
+    # 2026-10-20 after the site had come up healthy.
+    $httpsBinding.AddSslCertificate((Get-EnvironmentCertificateThumbprint -HostHeader $HostHeader -Thumbprint $Thumbprint), "My") | Out-Null
 }
 
 function Remove-PluginBuildArtifacts {
@@ -2470,8 +2474,12 @@ function Invoke-DedicatedSiteReplace {
     Write-PluginAssemblyReport -SiteRoot $SitePath | Out-Null
 
     Write-RuntimeConfiguration -Path $SitePath -Connection $ConnectionString -ExistingWebConfig $ExistingWebConfig
-    Ensure-AppPool -Name $AppPoolName
-    Ensure-Website -Name $SiteName -PhysicalPath $SitePath -HostHeader $HostName -PoolName $AppPoolName -Thumbprint $CertificateThumbprint
+
+    # Discarded here as well as inside them. Both drive the IIS provider, which
+    # hands objects back from calls that read like statements, and nothing that
+    # runs off the box can say which. This function's output is its record.
+    Ensure-AppPool -Name $AppPoolName | Out-Null
+    Ensure-Website -Name $SiteName -PhysicalPath $SitePath -HostHeader $HostName -PoolName $AppPoolName -Thumbprint $CertificateThumbprint | Out-Null
 
     # The same two fields the in-place branch hands back, so the run that follows
     # can ask what happened rather than ask which branch ran.
