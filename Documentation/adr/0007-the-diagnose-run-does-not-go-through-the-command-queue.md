@@ -74,3 +74,22 @@ agent case alone.
 Failing that, if the queue ever grows claim semantics and a liveness heartbeat,
 most of what this run is used for could be read out of the bucket without touching
 the VM, and the workflow would not need to exist.
+
+## Since this was written
+
+2026-10-20. The queue's callers no longer use `queue-vm-command` and
+`await-vm-command` directly. They go through `run-vm-command`, which composes the
+two, and eight workflows use it. Nothing above changes with that: the composed
+action still writes the command into `pending/` and waits for a result, and a dead
+agent still leaves it there.
+
+The queue also has a claim now, which is half of the reopening condition above. A
+VM whose bootstrap has been re-run since then copies each command into
+`processing/` before running it and takes it out of `pending/`, so the bucket
+alone says whether an agent took a command: still in `pending/` means none did,
+and in `processing/` with no result means one did and has not finished. The other
+half, a heartbeat, does not exist. A command in `processing/` looks the same
+whether its agent is still running it or died part way through, and an empty
+queue looks the same whether the agent is alive or not. So this workflow is still
+the only answer for an agent that is not running, which is the case it was built
+for.
