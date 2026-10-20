@@ -419,6 +419,22 @@ Describe 'New-GsutilArtifactStore' {
         $call | Should -Contain $destination
     }
 
+    It 'downloads in one piece, never as slices' {
+        # The build uploads through upload-cloud-storage, which stores every
+        # object gzip-encoded. gsutil slices a download of 150 MB or more into
+        # ranged reads, and it cannot rebuild a gzip-encoded object from them:
+        # it fails with "Some components ... were not downloaded successfully"
+        # on every attempt. The repackage's first run against a real bucket,
+        # staging on 2026-10-20, failed that way twice on a 212 MB base.
+        & $script:Store.Download -ObjectPath 'pr-environments/staging/x/RockWeb-staging-x.zip' -Destination (Join-Path $TestDrive 'base.zip')
+
+        $call = $script:Gsutil.Calls[0]
+        $optionIndex = [array]::IndexOf($call, '-o')
+        $optionIndex | Should -BeGreaterOrEqual 0
+        $call[$optionIndex + 1] | Should -BeExactly 'GSUtil:sliced_object_download_threshold=0'
+        $optionIndex | Should -BeLessThan ([array]::IndexOf($call, 'cp'))
+    }
+
     It 'throws when a download fails, saying only how gsutil exited' {
         # The repackage words the sentence around this -- "Could not download
         # the base artifact ... (exit 1)" -- as it did when it ran gsutil itself.

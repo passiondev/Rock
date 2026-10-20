@@ -358,7 +358,13 @@ function Copy-GsutilArtifactObject {
         [Parameter(Mandatory = $true)][string]$Destination
     )
 
-    gsutil -q cp "gs://$Bucket/$ObjectPath" $Destination
+    # Sliced downloads off. upload-cloud-storage stores every artifact
+    # gzip-encoded, and gsutil cannot rebuild a gzip-encoded object from the
+    # ranged reads it slices a large download into: anything past its 150 MB
+    # threshold -- every RockWeb zip -- fails with "Some components ... were not
+    # downloaded successfully", however often it is retried. One stream is
+    # slower and always works.
+    gsutil -q -o 'GSUtil:sliced_object_download_threshold=0' cp "gs://$Bucket/$ObjectPath" $Destination
     if ($LASTEXITCODE -ne 0) {
         throw "exit $LASTEXITCODE"
     }
