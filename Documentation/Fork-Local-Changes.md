@@ -139,6 +139,39 @@ repository is a public fork and the fonts are licensed, so they stay on the serv
 reach a deploy through `$ServerOwnedDirectories` in `Deploy-RockEnvironment.ps1`. The
 override file above only names the weights; it does not carry them.
 
+## 5. The LMS program tabs carry icons and follow a course's own page
+
+- `RockWeb/Themes/Rock/Assets/Lava/LMSPageListAsTabs.lava`
+
+**What it does.** Rewrites the template that draws the tabs across a Learn program's pages
+(Courses, Classes, Completions, Semesters). Each tab carries its page's icon, falling back
+to the parent's. Courses and Semesters stay highlighted on a single course or semester as
+well as on their own page: a course is its own page nested under Courses, and
+`childPage.Current` marks only an exact match, so the template checks for the
+`LearningCourseId` and `LearningSemesterId` page parameters instead. Semesters is hidden
+for On-Demand programs, decided by a `{% sql %}` lookup of the program's
+`ConfigurationMode`. The block's Include Page List now renders ahead of the tabs. It is the
+only place in this file an extra link can come from, so PR #21's "back to programs" tab
+is presumably an entry there, which is block configuration in the database, not part of
+this file. Check the block's settings before relying on that.
+
+**Why it exists.** PR #21 restored it on 2026-10-20. Its description says the change had
+been made before and was overwritten at the upgrade, so it is item 4's shape again: an edit
+that lived outside git until a deploy replaced it with Rock's copy.
+
+**Read the lookup carefully before changing it.** Its naming is inverted, and the
+inversions cancel. `ConfigurationMode = 0` is `AcademicCalendar`
+(`Rock.Enums/Lms/ConfigurationMode.cs`), not On-Demand as the SQL comment says, so
+`programIsOnDemand` is true for calendar programs. The tab is skipped when
+`programIsOnDemand == false`, which inverts it back, so Semesters shows exactly where the
+template's header says. Correct both or neither: fixing only the number hides Semesters
+from every calendar program. The block also needs the `Sql` Lava command enabled, as the
+header says, or the lookup renders a Lava error in place of a result.
+
+**If a merge drops it,** the tabs go back to Rock's plain text list: no icons, none of
+the Include Page List links, Courses unhighlighted on a course's page, and Semesters shown
+on On-Demand programs. Nothing fails and nothing is logged.
+
 ---
 
 ---
@@ -159,7 +192,7 @@ agree, and `test_upgrade_diff.py` fails when they do not.
 
 Paths under `.github/`, `Deployment/`, `Documentation/`, `Tests/PrTestEnvironments/` and
 `.gitignore` are excluded. The fork owns those outright; they are modified relative to
-upstream permanently and by design, and including them would bury these eight.
+upstream permanently and by design, and including them would bury the entries above.
 
 ## What to do at a merge
 
