@@ -26,7 +26,6 @@ ENGINEERING_GUIDE = REPO_ROOT / "Documentation" / "Local-Engineering-Training-Ed
 OPERATOR_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Operator-Runbook.md"
 DEVELOPER_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Developer-Runbook.md"
 MAKING_A_CHANGE = REPO_ROOT / "Documentation" / "Making-A-Change-To-Rock.md"
-FORK_LOCAL_CHANGES = REPO_ROOT / "Documentation" / "Fork-Local-Changes.md"
 DEVOPS_OPEN_ITEMS = REPO_ROOT / "Documentation" / "Training" / "DevOps-Open-Items-Rock-CICD.md"
 FACILITATOR_SCRIPT = REPO_ROOT / "Documentation" / "Training" / "Facilitator-Script-Rock-CICD-Training.md"
 
@@ -41,7 +40,6 @@ REFERENCE_DOCS = [
     OPERATOR_RUNBOOK,
     DEVELOPER_RUNBOOK,
     MAKING_A_CHANGE,
-    FORK_LOCAL_CHANGES,
     DEVOPS_OPEN_ITEMS,
     FACILITATOR_SCRIPT,
     CONTEXT_DOC,

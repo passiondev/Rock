@@ -9,7 +9,7 @@ no log line. Staging had already demonstrated the outcome: it deployed from the 
 came up orange, and got its blue put back by hand through the admin UI.
 
 These tests exist so that a merge which resolves either file towards upstream fails here
-rather than in front of staff. See `Documentation/Fork-Local-Changes.md` item 4.
+rather than in front of staff.
 """
 
 import pathlib
@@ -22,7 +22,6 @@ import pipeline_harness as harness
 REPO_ROOT = harness.REPO_ROOT
 THEME_ROOT = REPO_ROOT / "RockWeb" / "Themes"
 FONT_ROOT = REPO_ROOT / "RockWeb" / "Assets" / "Fonts" / "FontAwesome"
-FORK_LOCAL_REGISTER = REPO_ROOT / "Documentation" / "Fork-Local-Changes.md"
 DEPLOY_SCRIPT = REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Deploy-RockEnvironment.ps1"
 
 # Read off what production serves, not chosen here. Every value below was taken from
@@ -144,21 +143,6 @@ class ThemeBrandingTests(unittest.TestCase):
             "production",
         )
         self.assertIn("Assets/Fonts/FontAwesome", re.findall(r"'([^']+)'", match.group(1)))
-
-    def test_the_register_lists_both_override_files(self):
-        """`test_upgrade_diff.py` already fails when the register misses a fork-local
-        file, but it derives its list from the upstream tag and needs the upstream remote
-        to do it. This runs everywhere and names the two files directly, so a laptop
-        without the remote still catches a register that has fallen behind.
-        """
-        register = FORK_LOCAL_REGISTER.read_text()
-
-        for theme in ("Rock", "RockManager"):
-            with self.subTest(theme=theme):
-                self.assertIn(
-                    f"RockWeb/Themes/{theme}/Styles/_variable-overrides.less", register,
-                    f"the {theme} theme override is fork-local and is not in the register",
-                )
 
 
 if __name__ == "__main__":

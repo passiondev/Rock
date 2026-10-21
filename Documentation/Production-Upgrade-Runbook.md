@@ -673,8 +673,9 @@ They are listed so the answer is already written down.
   between `hotfix-18.4` and `hotfix-19.3`. Every workflow form that shows the campus
   field will refuse to submit without one, where 18.4.1 accepted a blank. This is stock
   Rock 19 behaviour rather than a fork change, so reverting it means deliberately
-  diverging from upstream on a file the fork already patches for layout -- check
-  `Documentation/Fork-Local-Changes.md` item 3 before touching it.
+  diverging from upstream on a file the fork already patches for layout. The fork's edit
+  there is layout only -- the primary person editor is full width and the spouse editor
+  has a row of its own -- so keep that and take upstream's `rules="required"` at a merge.
 
 - **The first load after the deploy is slow, and some health-check attempts fail.**
   Covered in step 8. Worth repeating here because it is the single most likely thing to

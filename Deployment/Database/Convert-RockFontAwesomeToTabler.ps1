@@ -46,7 +46,8 @@
 
     TABLE DISCOVERY MIRRORS THE MIGRATION. The same predicate: a user table, a
     column named IconCssClass, a character type. The character-type filter is the
-    fork-local narrowing from Documentation/Fork-Local-Changes.md.
+    fork's own narrowing of the migration's cursor; the comment above that cursor in
+    ReplaceFontAwesomeWithTablerIcons.cs says why.
 
     ROCK CACHES THESE VALUES IN MEMORY. PageCache, BlockTypeCache, CategoryCache,
     DefinedValueCache and friends are plain in-process caches on an installation

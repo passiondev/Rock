@@ -1186,9 +1186,9 @@ environment's database, which left production's real customization sitting on pr
 in no repository, waiting for the first automated deploy to overwrite it.
 
 **Fixed in code 2026-08-26.** Both override files are now committed and match production byte for
-byte, so the branding rides in the artifact. `Documentation/Fork-Local-Changes.md` item 4 records
-them as fork-local, and `Tests/PrTestEnvironments/test_theme_branding.py` fails if a merge resolves
-either towards upstream. This does not replace the `RockNextGen` database settings below — v19
+byte, so the branding rides in the artifact. Git sees both as fork-local edits to Rock's own files
+(`upgrade_diff.py fork-local` lists them), and `Tests/PrTestEnvironments/test_theme_branding.py`
+fails if a merge resolves either towards upstream. This does not replace the `RockNextGen` database settings below — v19
 moves the internal site off the `Rock` theme, so both are needed — but every site still on a
 LESS theme now keeps its branding through a deploy, in both environments, without a manual step.
 
@@ -1539,9 +1539,11 @@ discovered during an incident.
 **Most of the above is now a command rather than advice.** `Deployment/Repository/upgrade_diff.py`
 takes the two refs and reports what the upgrade removed; the `Upgrade Diff` workflow is the same
 thing with a dispatch button. It answers the three questions this item kept asking people to
-remember:
+remember, and since 2026-10-21 a fourth — which of the fork's own edits the merge dropped. That
+one needs the two upstream release tags locally, which the first command fetches:
 
 ```bash
+python3 Deployment/Repository/upgrade_diff.py fetch-upstream origin/passion-18.4.1 origin/passion-19.3.4
 python3 Deployment/Repository/upgrade_diff.py cutover origin/passion-18.4.1 origin/passion-19.3.4
 ```
 
@@ -1578,16 +1580,20 @@ ever proves the tight set missed something, widen `CONFIGURATION_TABLES` and mov
 file with it. Until then, a migration that rewrites configuration through some other table is
 still a human read.
 
-**The first step still entirely human: fork-local edits.** A merge resolves those *for* you, and
-"take theirs" on one silently reverts a fix or deletes a feature with every test still green.
-`Documentation/Fork-Local-Changes.md` is the register, derived rather than hand-collected, and
-deriving it on 2026-08-20 immediately corrected the record: the belief that the icon migration's
-narrowed cursor was the only place this fork changes Rock's behaviour was wrong. There are six
-files across two unrelated changes, and the second — a FormBuilder header-image feature spanning
-a C# block, a view model and three Obsidian components — has no test coverage at all. Nothing but
-that page stands between it and a bad merge.
+**Fork-local edits are now in the report.** A merge resolves those *for* you, and "take theirs"
+on one silently reverts a fix or deletes a feature with every test still green. The cutover report
+reads each trunk's Rock version from its own tree, measures each against that upstream release
+tag, and lists under *Fork edits the new trunk no longer carries* any file the old trunk had
+changed that the new one no longer does. Run `upgrade_diff.py fetch-upstream` first so both tags
+are local; without them the report says the check did not run and counts that as a finding. This
+replaced a hand-kept register, `Fork-Local-Changes.md`, retired 2026-10-21: CI failed every pull
+request that touched a Rock-owned file until someone wrote an entry for it, and git already knew
+the list. Deriving that list on 2026-08-20 had corrected the record — the icon migration's
+narrowed cursor was not the only place this fork changes Rock's behaviour, and a FormBuilder
+header-image feature spanning a C# block, a view model and two Obsidian components still has no
+test coverage — so the report is what now stands between those edits and a bad merge.
 
-**The second: state that only exists on the VM.** `upgrade_diff.py` compares two git refs, so
+**Still human: state that only exists on the VM.** `upgrade_diff.py` compares two git refs, so
 anything not in git is invisible to it by construction — and a surprising amount of what makes
 this a Passion install rather than a stock Rock install is in that category. Verified from this
 checkout:
@@ -2522,9 +2528,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     trunks before flipping anything: it finds deleted paths the tooling still names, directories
     that emptied because upstream started generating them, and migrations that repoint site
     configuration. Against the real 18.4.1 → 19.3.4 pair it rediscovers all three v19 incidents,
-    every one of which was originally found in production by symptom. Two steps stay human —
-    reviewing each config-writing migration, and checking `Documentation/Fork-Local-Changes.md`
-    survived the merge
+    every one of which was originally found in production by symptom. It also lists any fork
+    edit to Rock's own files the merge dropped. Reviewing each config-writing migration stays
+    human
 
 18. Item 30 — one value, either repointed or removed. It is not on the production path, but it is
     the way step 2 of the cutover checklist fails today, and the failure names a login rather than
