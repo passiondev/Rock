@@ -91,6 +91,16 @@ name: Deployment Pipeline Tests
       - 'Rock/Cms/ThemeCustomizationSettings.cs'
       - 'Rock/SystemGuid/DefinedValue.cs'
       - 'Rock/Model/CMS/Theme/ThemeService.cs'
+      # Where the front-end builds write inside RockWeb. ArtifactPlan.Tests.ps1
+      # reads each output path from these and checks that artifact-paths.json
+      # classes it as build, so a new bundle cannot be repackaged as source. The
+      # Blocks project is already covered by its tree above.
+      - 'Rock.JavaScript/webpack.config.js'
+      - 'Rock.JavaScript/webpack.config.monaco.js'
+      - 'Rock.JavaScript.EditorJs/webpack.config.js'
+      - 'Rock.JavaScript.Obsidian/package.json'
+      - 'Rock.JavaScript.Obsidian/Framework/rollup.config.cjs'
+      - 'Rock.JavaScript.Obsidian.Reporting/rollup.config.cjs'
       # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
       - 'CONTEXT.md'
   # The path list is repeated rather than shared through a YAML anchor: PyYAML
@@ -136,6 +146,16 @@ name: Deployment Pipeline Tests
       - 'Rock/Cms/ThemeCustomizationSettings.cs'
       - 'Rock/SystemGuid/DefinedValue.cs'
       - 'Rock/Model/CMS/Theme/ThemeService.cs'
+      # Where the front-end builds write inside RockWeb. ArtifactPlan.Tests.ps1
+      # reads each output path from these and checks that artifact-paths.json
+      # classes it as build, so a new bundle cannot be repackaged as source. The
+      # Blocks project is already covered by its tree above.
+      - 'Rock.JavaScript/webpack.config.js'
+      - 'Rock.JavaScript/webpack.config.monaco.js'
+      - 'Rock.JavaScript.EditorJs/webpack.config.js'
+      - 'Rock.JavaScript.Obsidian/package.json'
+      - 'Rock.JavaScript.Obsidian/Framework/rollup.config.cjs'
+      - 'Rock.JavaScript.Obsidian.Reporting/rollup.config.cjs'
       # The CI/CD domain vocabulary, guarded by test_domain_vocabulary.py.
       - 'CONTEXT.md'
   workflow_dispatch:
@@ -188,25 +208,19 @@ jobs:
             git fetch --depth=1 origin "$branch:refs/remotes/origin/$branch" || true
           done
 
-      # The fork-local register is checked by re-deriving it against the upstream release
-      # it names, which needs a tag origin does not carry. Without this the two derivation
-      # tests skip and the register's claim to be derived holds only on a laptop.
+      # The upgrade-diff tests measure each trunk against the upstream release it is built
+      # from, which needs tags origin does not carry. The tool reads each trunk's version
+      # and fetches the matching tag itself, so there is no release number here to update
+      # at a cutover -- it fetches for whatever trunks the step above provided.
       #
-      # Both the tag and the remote come out of the register itself, so there is no second
-      # place to update at a cutover. Failure is tolerated here because the tests are the
-      # real guard: _require_ref fails rather than skips when GITHUB_ACTIONS is set, so a
-      # fetch that silently stops working shows up as a red test and not as a quiet skip.
-      - name: Fetch the upstream release the fork-local register names
+      # Failure is tolerated because the tests are the real guard: _require_ref fails
+      # rather than skips when GITHUB_ACTIONS is set, so a fetch that silently stops
+      # working shows up as a red test and not as a quiet skip.
+      - name: Fetch the upstream releases those trunks are built from
         continue-on-error: true
         run: |
-          read -r remote tag <<<"$(python3 -c "
-          import pathlib, re
-          register = pathlib.Path('Documentation/Fork-Local-Changes.md').read_text()
-          tag = re.search(r'\*\*Measured against upstream\*\* \`([^\`]+)\`', register).group(1)
-          remote = re.search(r'\*\*Upstream remote\*\* \`([^\`]+)\`', register).group(1)
-          print(remote, tag)
-          ")"
-          git fetch --depth=1 "$remote" "refs/tags/$tag:refs/tags/$tag" || true
+          mapfile -t trunks < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin/)
+          python3 Deployment/Repository/upgrade_diff.py fetch-upstream "${trunks[@]}"
 
       - uses: actions/setup-python@v5
         with:

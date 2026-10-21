@@ -74,6 +74,22 @@ jobs:
         with:
           python-version: '3.13'
 
+      # The report lists any edit the fork made to Rock's own files that the new trunk no
+      # longer carries. It finds them by measuring each trunk against the upstream release
+      # its own version names, so nobody keeps a list -- but it needs those two tags, and
+      # origin carries none. The tool reads the versions and fetches the tags itself.
+      #
+      # Allowed to fail so the report still runs: without the tags it says the fork-edit
+      # check did not run, and counts that as a finding, rather than staying silent.
+      - name: Fetch the upstream releases both trunks are built from
+        continue-on-error: true
+        env:
+          OLD_REF: ${{ inputs.old_ref }}
+          NEW_REF: ${{ inputs.new_ref }}
+        run: |
+          python3 Deployment/Repository/upgrade_diff.py fetch-upstream \
+            "origin/$OLD_REF" "origin/$NEW_REF"
+
       # No pip install. The tool is stdlib plus git, which is the property that lets it
       # run anywhere the repository does, including on a laptop mid-cutover.
       #

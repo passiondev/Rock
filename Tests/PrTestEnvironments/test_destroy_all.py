@@ -190,7 +190,7 @@ class DestroyAllQueueTests(unittest.TestCase):
         self.scripts = _all_run_scripts(self.workflow)
 
     def test_it_queues_the_command_type_the_agent_already_understands(self):
-        # Where the command lands is `.github/actions/queue-vm-command`, asserted
+        # Where the command lands is `.github/actions/run-vm-command`, asserted
         # once in test_local_composite_actions.py. The verb is still this
         # workflow's own decision, so it stays here -- it is read out of the
         # action call rather than out of a line of PowerShell.
@@ -198,7 +198,7 @@ class DestroyAllQueueTests(unittest.TestCase):
             str((step.get("with") or {}).get("command") or "").strip()
             for job in (self.workflow.get("jobs") or {}).values()
             for step in (job.get("steps") or [])
-            if (step.get("uses") or "") == "./.github/actions/queue-vm-command"
+            if (step.get("uses") or "") == "./.github/actions/run-vm-command"
         }
 
         # Assert the verb positively rather than banning a substring: the workflow's

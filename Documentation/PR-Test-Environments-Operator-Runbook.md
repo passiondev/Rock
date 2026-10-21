@@ -46,7 +46,7 @@
   as what you get if you run this by hand, not as something the fleet does on its own. Use
   `-WhatIf` first. See open item 6.
 - `Invoke-SandboxRefreshWithPrEnvironments.ps1` stops PR app pools before DB refresh and restarts only previously running app pools afterward.
-- `Invoke-PrEnvironmentCertificateRenewal.ps1` issues/renews Let's Encrypt certs for deployed PR environments and rebinds IIS HTTPS bindings. Run through the scheduled/manual certificate renewal workflow so the `pr-test-acme-http` network tag is present only during ACME validation.
+- `Invoke-PrEnvironmentCertificateRenewal.ps1` issues/renews Let's Encrypt certs for deployed PR environments and rebinds IIS HTTPS bindings. Run through the scheduled/manual certificate renewal workflow so the `pr-test-acme-http` network tag is present only during ACME validation. It renews every deployed manifest under `C:\RockTestEnvs`, staging's included, and nothing else. `-AdditionalManifestRoots` is empty by default and the queue cannot set it; name a root by hand only on the test VM, and never `C:\RockBackups` on production — that is where production's own manifest lives, and renewal stops `W3SVC` and rebinds https for every host it finds.
 
 ## Sandbox DB refresh coordination
 
@@ -188,6 +188,21 @@ The consequence of the fix is that **"move the default branch" is now a required
 ## Troubleshooting
 
 - Failed builds: inspect `.github/workflows/pr-test-artifact.yml` logs.
+- Build or repackage: the `plan` job's summary says which ran and why. A repackage
+  copies a **base artifact** already in the bucket and swaps in the files that changed
+  since; its `pr-test-artifact.json` adds `builtFromSha`, the commit whose compiled
+  output it carries, and `baseArtifactGcsPath`. The plan never fails a run -- if it
+  cannot decide, or its whole job fails, it builds and leaves a warning. A failed
+  repackage does fail the run, and does not fall back: rerun with a full build. For a
+  PR that is the `rock:full-build` label plus `rock:start`; for staging or production,
+  dispatch `staging-deploy.yml` or `production-deploy.yml` with `force_build` checked.
+- A path a repackage patched but should have built: add a `build` rule for it to
+  `.github/scripts/artifact-paths.json`, above the `RockWeb/**` patch rule. Rules are
+  tried in order and an unmatched path already builds, so the file only ever needs a
+  rule when a broad patch rule catches something it should not.
+  `Tests/PrTestEnvironments/Pester/ArtifactPlan.Tests.ps1` checks the rules against the
+  webpack, rollup and styles configs, so a new bundle output there fails CI until the
+  rules cover it.
 - Failed deploys: inspect `.github/workflows/pr-test-deploy.yml`, command queue results, GCS artifact path, and `C:\RockDeploy` scripts.
 - Stopped environments: developers can re-add `rock:start`.
 - Certificate warnings: expected until the certificate-selection fix reaches the VM -- every

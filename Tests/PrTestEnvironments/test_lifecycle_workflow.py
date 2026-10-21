@@ -22,7 +22,9 @@ class PrTestLifecycleTests(unittest.TestCase):
 
         self.assertIn('Stop-WebAppPool', stop)
         self.assertIn('Stop-Website', stop)
-        self.assertIn('status = "stopped"', stop)
+        # That the stop marks its manifest stopped is Pester/ManifestContract.Tests.ps1
+        # now: it stops a deployed manifest with the stop script's own writer and
+        # checks cleanup reads the status and the stop date back.
         self.assertNotIn('Remove-Item $EnvironmentPath', stop)
 
         self.assertIn('Remove-Website', destroy)
@@ -36,15 +38,17 @@ class PrTestLifecycleTests(unittest.TestCase):
         self.assertIn('rock:stop', text)
         self.assertIn('rock:destroy', text)
         self.assertIn('merged', text)
-        # Queueing the command is `.github/actions/queue-vm-command` now. Where it
-        # writes, and that the echo redacts, are asserted once in
+        # Queueing the command is `.github/actions/queue-vm-command` now, reached
+        # through run-vm-command. Where it writes, and that the echo redacts, are
+        # asserted once in
         # test_local_composite_actions.py instead of once per producer -- which is
         # how two of the six came to redact a field name the third does not use.
         # What stays here is the verb, because the VM agent only knows the verbs it
         # shipped with at bootstrap and this workflow picks between two of them.
         self.assertIn('command: ${{ env.COMMAND }}', text)
-        # The wait itself is .github/actions/await-vm-command now, and its
-        # behaviour is asserted once in test_local_composite_actions.py rather
+        # The wait itself is .github/actions/await-vm-command now, called by the
+        # same action, and its behaviour is asserted once in
+        # test_local_composite_actions.py rather
         # than once per producer. What stays here is what this workflow chooses.
         self.assertIn("attempts: '120'", text)
         self.assertIn('updatePrTestStatus', text)

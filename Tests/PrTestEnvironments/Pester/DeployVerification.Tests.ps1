@@ -23,6 +23,18 @@
         alone leaves old binaries against a new schema -- a worse state than the
         one being rolled back from. The rollback advice had no way to know that
         and said "roll back from $backupPath" either way.
+
+    And one that exists because of the same mistake made the other way round:
+    believing a deploy failed on evidence that does not say so.
+
+    Test-EnvironmentHealth
+        ASP.NET caches an Application_Start failure for the life of the app
+        domain, so a site whose first start faulted goes on answering every probe
+        with that fault after its cause has cleared. On 2026-08-10 staging was
+        reported unhealthy three times over and was serving Rock normally minutes
+        after each. Polling again only rereads the cached failure; recycling the
+        pool is what discards it, so when it recycles is tested here against a
+        clock the tests control.
 #>
 
 BeforeAll {
@@ -31,12 +43,12 @@ BeforeAll {
     $script:DeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1'
     . (Import-ScriptFunction -Path $script:DeployScript -Name `
             'Write-DeployStep', 'Ensure-Directory', 'Get-MigrationFingerprint', `
-            'Assert-DeployedCoreVersion', 'Invoke-DeploySmokeCheck', 'Write-DeployScriptProvenance', `
-            'Save-UnhealthyDiagnostics' `
+            'Assert-DeployedCoreVersion', 'Assert-ArtifactHash', 'Invoke-DeploySmokeCheck', 'Write-DeployScriptProvenance', `
+            'Save-UnhealthyDiagnostics', 'Test-EnvironmentHealth' `
         -Supplied `
             'DeployStartedUtc', 'DeployStepLogPath', 'Invoke-SiteContentProbe', 'Invoke-SiteProbe', `
             'Write-GcsObjectFromFile', 'EnvironmentName', 'Sha', 'HostName', 'Mode', `
-            'AppPoolName', 'SiteName', 'ArtifactGcsPath')
+            'AppPoolName', 'SiteName', 'ArtifactGcsPath', 'Stop-EnvironmentAppPool')
 
     $script:DeployStartedUtc = (Get-Date).ToUniversalTime()
     $script:DeployStepLogPath = ''
@@ -128,6 +140,70 @@ Describe 'Assert-DeployedCoreVersion' {
     }
 }
 
+Describe 'Assert-ArtifactHash' {
+    <#
+        The build records the zip's hash as a GitHub job output, and the command
+        carries it here. The zip itself waits in a bucket that every key in the
+        fleet can write, for as long as production's approver takes. So the hash
+        is the one thing between "the build this run approved" and "whatever is
+        at that path when the box downloads it", and it has to be checked before
+        anything is unpacked.
+    #>
+
+    BeforeEach {
+        $script:ArtifactPath = Join-Path $TestDrive ('artifact-' + [guid]::NewGuid().ToString('n') + '.zip')
+        Set-Content -Path $script:ArtifactPath -Value 'the zip the build made' -NoNewline
+        $script:ExpectedHash = (Get-FileHash -Path $script:ArtifactPath -Algorithm SHA256).Hash
+    }
+
+    It 'passes the zip the build recorded' {
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash } |
+            Should -Not -Throw
+    }
+
+    It 'compares without regard to case, since Get-FileHash and a job output need not agree on it' {
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash.ToLowerInvariant() } |
+            Should -Not -Throw
+    }
+
+    It 'refuses a zip that changed after the build recorded it' {
+        Set-Content -Path $script:ArtifactPath -Value 'a zip somebody put there later' -NoNewline
+
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash } |
+            Should -Throw -ExpectedMessage "*does not match*$($script:ExpectedHash)*"
+    }
+
+    It 'says nothing was unpacked, so the operator knows the site is untouched' {
+        Set-Content -Path $script:ArtifactPath -Value 'a zip somebody put there later' -NoNewline
+
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 $script:ExpectedHash } |
+            Should -Throw -ExpectedMessage '*Nothing was unpacked*'
+    }
+
+    It 'lets a command that pinned no hash through, and says so' {
+        # A hand-written command, or one from a build older than the pin. Both are
+        # legitimate, and refusing them would break every rollback to a commit
+        # from before this existed.
+        $script:Logged = @()
+        Mock Write-DeployStep { $script:Logged += $Message }
+
+        { Assert-ArtifactHash -Path $script:ArtifactPath -ExpectedSha256 '' } | Should -Not -Throw
+
+        ($script:Logged -join "`n") | Should -Match 'pinned no hash'
+    }
+
+    It 'is called after the download and before the zip is unpacked' {
+        $text = Get-Content -Raw -Path $script:DeployScript
+        $download = $text.IndexOf('Copy-GcsObjectToFile -GcsUri $ArtifactGcsPath')
+        $check = $text.IndexOf('Assert-ArtifactHash -Path $ArtifactPath')
+        $unpack = $text.IndexOf('Expand-Archive -Path $ArtifactPath')
+
+        $download | Should -BeGreaterThan -1
+        $check | Should -BeGreaterThan $download
+        $unpack | Should -BeGreaterThan $check
+    }
+}
+
 Describe 'Invoke-DeploySmokeCheck' {
 
     BeforeAll {
@@ -169,6 +245,22 @@ Describe 'Invoke-DeploySmokeCheck' {
             Should -BeFalse
     }
 
+    It 'says why it failed in the deploy timeline, for a <Case>' -ForEach @(
+        @{ Case = 'page with no __VIEWSTATE'; Probe = @{ StatusCode = 200; Body = '<html>maintenance</html>'; Server = 'cloudflare'; Error = '' }; Reason = 'no __VIEWSTATE' }
+        @{ Case = '500'; Probe = @{ StatusCode = 500; Body = 'Server Error'; Server = 'Microsoft-IIS/10.0'; Error = 'internal server error' }; Reason = 'returned 500' }
+        @{ Case = 'probe nothing answered'; Probe = @{ StatusCode = 0; Body = ''; Server = ''; Error = 'connection refused' }; Reason = 'connection refused' }
+    ) {
+        # The timeline is what the agent uploads and the workflow prints. A
+        # warning reaches neither, so staging's smoke check failed twice on
+        # 2026-10-20 and the only record of it was that it had.
+        $script:NextProbe = $Probe
+        Mock Write-DeployStep { }
+
+        Invoke-DeploySmokeCheck -HostName 'connect.passion.team' -WarningAction SilentlyContinue | Out-Null
+
+        Should -Invoke Write-DeployStep -Times 1 -Exactly -ParameterFilter { $Message -like "*$Reason*" }
+    }
+
     It 'treats a 404 as proving nothing rather than as a failure' {
         # Where the login page lives is a routing choice a site is entitled to
         # make, and failing a production deploy that is genuinely healthy costs
@@ -186,6 +278,88 @@ Describe 'Invoke-DeploySmokeCheck' {
 
         $body | Should -Match 'https://127\.0\.0\.1/Login'
         $body | Should -Match '-HostHeader \$HostName'
+    }
+}
+
+Describe 'Invoke-SiteContentProbe' {
+    <#
+        The seam the block above mocks, tested for real. On 2026-10-20 staging's
+        smoke check failed three deploys running with "/Login returned 200 (3443
+        chars) but the response has no __VIEWSTATE", while the same page fetched
+        from off the box was 98 KB of Rock with __VIEWSTATE in it. The probe read
+        the body with one StreamReader.Read, which hands back what has arrived so
+        far rather than filling the buffer, and Rock's login page has a large
+        inline script ahead of its form. The check was judging the first chunk.
+
+        A listener on the loopback answers in two chunks with a pause between
+        them, which is how a network stream delivers a page that size. The first
+        chunk is 3443 bytes, as staging's was, and deliberately not a multiple of
+        the reader's buffer, so the bug cannot hide behind a full read.
+    #>
+
+    BeforeAll {
+        . (Import-ScriptFunction -Path $script:DeployScript -Name 'Invoke-SiteContentProbe')
+
+        # Accepts one connection, skips the request headers, and writes a
+        # chunked 200 with a pause after each chunk is flushed.
+        $script:ServeInChunks = {
+            param($Listener, [string[]]$Chunks)
+
+            $client = $Listener.AcceptTcpClient()
+            try {
+                $stream = $client.GetStream()
+                $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+                while (-not [string]::IsNullOrEmpty($reader.ReadLine())) { }
+
+                $send = {
+                    param([byte[]]$Bytes)
+                    $stream.Write($Bytes, 0, $Bytes.Length)
+                    $stream.Flush()
+                }
+
+                & $send ([Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/html; charset=utf-8`r`nTransfer-Encoding: chunked`r`nConnection: close`r`n`r`n"))
+                foreach ($chunk in $Chunks) {
+                    $payload = [Text.Encoding]::UTF8.GetBytes($chunk)
+                    & $send ([Text.Encoding]::ASCII.GetBytes(('{0:X}' -f $payload.Length) + "`r`n"))
+                    & $send $payload
+                    & $send ([Text.Encoding]::ASCII.GetBytes("`r`n"))
+                    Start-Sleep -Milliseconds 500
+                }
+                & $send ([Text.Encoding]::ASCII.GetBytes("0`r`n`r`n"))
+            }
+            finally { $client.Close() }
+        }
+    }
+
+    BeforeEach {
+        $script:Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $script:Listener.Start()
+        $script:Server = $null
+    }
+
+    AfterEach {
+        if ($script:Server) {
+            $script:Server.Stop()
+            $script:Server.Dispose()
+        }
+        $script:Listener.Stop()
+    }
+
+    It 'reads past the first chunk, where Rock''s __VIEWSTATE actually is' {
+        $head = '<!DOCTYPE html><html><head><script>' + ('x' * 3443) + '</script></head>'
+        $head = $head.Substring(0, 3443)
+        $form = '<body><form method="post" action="./Login"><input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="" /></form></body></html>'
+
+        $script:Server = [powershell]::Create().AddScript($script:ServeInChunks).AddArgument($script:Listener).AddArgument(@($head, $form))
+        $handle = $script:Server.BeginInvoke()
+
+        $url = "http://127.0.0.1:$($script:Listener.LocalEndpoint.Port)/Login"
+        $probe = Invoke-SiteContentProbe -Url $url -TimeoutSeconds 10
+        $script:Server.EndInvoke($handle) | Out-Null
+
+        $probe.StatusCode | Should -Be 200
+        $probe.Body.Length | Should -Be ($head.Length + $form.Length)
+        $probe.Body | Should -Match '__VIEWSTATE'
     }
 }
 
@@ -394,5 +568,255 @@ Describe 'Save-UnhealthyDiagnostics' {
         $body = Get-ScriptFunctionText -Path $script:DeployScript -Name 'Save-UnhealthyDiagnostics'
 
         $body | Should -Match 'Write-DeployStep "Collected diagnostics'
+    }
+}
+
+Describe 'Test-EnvironmentHealth' {
+    <#
+        Every decision this function makes is about time: how long to keep
+        polling, when a failing site has failed long enough to recycle, and when
+        the window is too nearly closed for a recycle to be worth it. So the
+        clock is the stand-in that matters. Get-Date answers from $script:Now and
+        Start-Sleep moves it forward instead of waiting, which lets a 400-second
+        window run in milliseconds and puts every recycle at a time the test can
+        state.
+    #>
+
+    BeforeAll {
+        # The probe is the seam, for the reason Invoke-DeploySmokeCheck's is: these
+        # tests are about what the function does with an answer, not about HTTP.
+        # Each call takes the next answer, and the last one repeats, so a list of
+        # one is a site that never changes.
+        function Invoke-SiteProbe {
+            param($Url, $HostHeader, $TimeoutSeconds)
+            $script:Probes += @{ Url = $Url; HostHeader = $HostHeader }
+            $answers = @($script:ProbeAnswers)
+            return $answers[[Math]::Min(@($script:Probes).Count, $answers.Count) - 1]
+        }
+
+        # The two halves of a recycle, recorded in the order they happen and
+        # stamped with the fake clock, because when and in what order is the
+        # whole of what is being asked of them.
+        function Stop-EnvironmentAppPool {
+            param([Parameter(Mandatory = $true)][string]$Name)
+            $script:PoolEvents += "stop:$Name"
+            $script:Recycles += $script:Now
+        }
+
+        # Advanced, because the call passes -ErrorAction. The WebAdministration
+        # cmdlet this stands in for does not exist off Windows.
+        function Start-WebAppPool {
+            [CmdletBinding()]
+            param([Parameter(Mandatory = $true)][string]$Name)
+            $script:PoolEvents += "start:$Name"
+        }
+
+        Mock Get-Date { $script:Now }
+        Mock Start-Sleep { $script:Now = $script:Now.AddSeconds($Seconds) }
+
+        # Write-DeployStep runs for real and writes every line to the step log as
+        # well, which is what these tests read. A 400-second window is forty
+        # attempts, and forty timestamped lines on the console say nothing the
+        # file does not.
+        Mock Write-Host { }
+
+        $script:Healthy = @{ Ok = $true; StatusCode = 200; Error = '' }
+        $script:Failing = @{ Ok = $false; StatusCode = 500; Error = 'internal server error' }
+        $script:Refused = @{ Ok = $false; StatusCode = 0; Error = 'connection refused' }
+        $script:PublicUrl = 'https://staging.connect.passion.team/'
+    }
+
+    BeforeEach {
+        $script:Now = [datetime]'2026-10-15T00:00:00'
+        $script:Start = $script:Now
+        $script:Probes = @()
+        $script:ProbeAnswers = @($script:Failing)
+        $script:PoolEvents = @()
+        $script:Recycles = @()
+
+        $script:DeployStepLogPath = Join-Path $TestDrive ('health-' + [guid]::NewGuid().ToString('n') + '.log')
+
+        # The function sets both of these process-wide, and every other suite in
+        # this run shares the process.
+        $script:PreviousCertificateCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+        $script:PreviousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+    }
+
+    AfterEach {
+        $script:DeployStepLogPath = ''
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $script:PreviousCertificateCallback
+        [Net.ServicePointManager]::SecurityProtocol = $script:PreviousSecurityProtocol
+    }
+
+    It 'returns $true on the first healthy answer, and records what the site returned' {
+        # A pass returns before the bottom of the loop, where every failed
+        # attempt reports. A pass that said nothing would leave a production
+        # deploy with no record of what the site answered, which is the detail
+        # the next argument about that deploy turns on.
+        $script:ProbeAnswers = @($script:Healthy)
+
+        $result = Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60
+
+        @($result).Count | Should -Be 1 -Because 'the deploy body tests this as one boolean, and an array of anything is truthy'
+        $result | Should -BeOfType [bool]
+        $result | Should -BeTrue
+        @($script:Probes).Count | Should -Be 1
+        (Get-Content -Raw -Path $script:DeployStepLogPath) | Should -Match 'Health check passed.*200'
+    }
+
+    It 'probes the loopback, carrying the public host name as the Host header' {
+        # This VM cannot reliably reach its own public address. On 2026-08-11 the
+        # probe to the public name failed for 900 seconds while the same URL
+        # answered 302 from off the box, and the deploy went red on a site that
+        # was serving. The loopback is the same IIS site and the same app domain.
+        $script:ProbeAnswers = @($script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60 -HostHeader 'staging.connect.passion.team' | Out-Null
+
+        $script:Probes[0].Url | Should -BeExactly 'https://127.0.0.1/'
+        $script:Probes[0].HostHeader | Should -BeExactly 'staging.connect.passion.team'
+    }
+
+    It 'probes the URL it was given when there is no host name to carry' {
+        $script:ProbeAnswers = @($script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60 | Out-Null
+
+        $script:Probes[0].Url | Should -BeExactly $script:PublicUrl
+        $script:Probes[0].HostHeader | Should -BeExactly ''
+    }
+
+    It 'keeps polling through a 500 and a refused connection until the site answers' {
+        # Rock runs its migrations on the first request after a deploy, so a
+        # site that is still starting fails in both of these ways before it
+        # comes up. Either one is a reason to wait, not a verdict.
+        $script:ProbeAnswers = @($script:Failing, $script:Refused, $script:Healthy)
+
+        $result = Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 300
+
+        $result | Should -BeTrue
+        @($script:Probes).Count | Should -Be 3
+
+        # Each failure says what it was, so a timeline that ends in a pass still
+        # shows what the site did on the way there.
+        $log = Get-Content -Raw -Path $script:DeployStepLogPath
+        $log | Should -Match 'HTTP 500'
+        $log | Should -Match 'connection refused'
+    }
+
+    It 'leaves a site alone that recovers before RecycleAfterSeconds' {
+        # Still starting is not the same as poisoned. A recycle here would
+        # restart the migrations the site was most of the way through.
+        $script:ProbeAnswers = @($script:Failing, $script:Failing, $script:Failing, $script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 300 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 |
+            Should -BeTrue
+
+        @($script:PoolEvents).Count | Should -Be 0
+    }
+
+    It 'recycles a site that stays unhealthy, every RecycleAfterSeconds and not only once' {
+        # The 2026-08-10 failure. Retrying alone rereads one cached exception
+        # until the window closes; a recycle discards the app domain holding it,
+        # and recycling again turns a second bad start into one lost interval
+        # rather than a lost deploy.
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 430 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        $recycles = @($script:Recycles)
+        $recycles.Count | Should -BeGreaterOrEqual 2 -Because 'a second bad start is as likely as the first'
+        ($recycles[0] - $script:Start).TotalSeconds | Should -BeGreaterOrEqual 120 -Because 'the first recycle waits out one whole interval of failure'
+        for ($i = 1; $i -lt $recycles.Count; $i++) {
+            ($recycles[$i] - $recycles[$i - 1]).TotalSeconds | Should -BeGreaterOrEqual 120 -Because 'each later one waits out an interval after the last'
+        }
+    }
+
+    It 'stops the pool and then starts the same pool' {
+        # Stopped and never started is a site that is down until somebody
+        # notices, and the health check would spend the rest of its window
+        # probing a pool it had switched off.
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 200 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        ($script:PoolEvents -join ',') | Should -BeExactly 'stop:RockStagingPool,start:RockStagingPool'
+    }
+
+    It 'does not recycle in the last minute of the window' {
+        # A pool restarted with less than a minute left is still starting when
+        # the window closes, so the recycle could only ensure the last probes
+        # fail. With 150 seconds and a 120-second interval, the one recycle the
+        # interval allows would come 30 seconds before the end.
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 150 -AppPoolName 'RockStagingPool' -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        @($script:PoolEvents).Count | Should -Be 0
+    }
+
+    It 'never recycles when it was given no app pool' {
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 430 -RecycleAfterSeconds 120 -WarningAction SilentlyContinue |
+            Out-Null
+
+        @($script:PoolEvents).Count | Should -Be 0
+    }
+
+    It 'forces TLS 1.2 before it polls' {
+        # PowerShell 5.1 can default to SSL3 or TLS 1.0, which a hardened IIS
+        # refuses. That surfaces as "the underlying connection was closed", which
+        # reads like the site is down rather than like the probe is broken.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SystemDefault
+        $script:ProbeAnswers = @($script:Healthy)
+
+        Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 60 | Out-Null
+
+        [Net.ServicePointManager]::SecurityProtocol | Should -Be ([Net.SecurityProtocolType]::Tls12)
+    }
+
+    It 'returns $false once the window closes, and warns with the last error' {
+        # $false rather than a throw: the caller collects diagnostics and words
+        # the rollback advice, and only it knows whether there is a backup.
+        $result = Test-EnvironmentHealth -Url $script:PublicUrl -TimeoutSeconds 30 `
+            -WarningVariable warnings -WarningAction SilentlyContinue
+
+        @($result).Count | Should -Be 1
+        $result | Should -BeOfType [bool]
+        $result | Should -BeFalse
+        @($script:Probes).Count | Should -Be 3 -Because 'a 30-second window polled every 10 seconds is three attempts'
+        @($warnings).Count | Should -Be 1
+        "$warnings" | Should -Match 'did not pass within 30 seconds'
+        "$warnings" | Should -Match 'HTTP 500'
+    }
+}
+
+Describe 'Invoke-SiteProbe' {
+    <#
+        The probe the health check polls with, and the one the diagnostics path
+        calls on its own. Both reach HTTP through here, so the TLS version is
+        forced here as well as in the caller: the diagnostics path has no reason
+        to know it is needed.
+    #>
+
+    BeforeAll {
+        . (Import-ScriptFunction -Path $script:DeployScript -Name 'Invoke-SiteProbe')
+    }
+
+    BeforeEach {
+        $script:PreviousCertificateCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+        $script:PreviousSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
+    }
+
+    AfterEach {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $script:PreviousCertificateCallback
+        [Net.ServicePointManager]::SecurityProtocol = $script:PreviousSecurityProtocol
+    }
+
+    It 'forces TLS 1.2 before it connects' {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SystemDefault
+
+        # Port 1 on the loopback refuses at once, so the probe fails without
+        # leaving the machine. What it answers is not the question here.
+        $outcome = Invoke-SiteProbe -Url 'https://127.0.0.1:1/' -TimeoutSeconds 1
+
+        $outcome.Ok | Should -BeFalse
+        [Net.ServicePointManager]::SecurityProtocol | Should -Be ([Net.SecurityProtocolType]::Tls12)
     }
 }

@@ -151,3 +151,81 @@ Describe '<Function>' -ForEach @(
         Should -Invoke New-SelfSignedCertificate -Times 1 -Exactly
     }
 }
+
+Describe 'Ensure-Website, which binds the certificate chosen above' {
+    <#
+        Staging's second run of Invoke-DedicatedSiteReplace, on 2026-10-20,
+        deployed, passed its health check, and then failed on "The property
+        'BackupPath' cannot be found on this object". Something inside the
+        replace had joined its return value. The overlay's robocopy output had
+        been contained that morning, and by elimination the one statement left
+        on that path that could still emit was this function's last line: a
+        method call on an IIS binding, whose return value PowerShell hands to
+        the caller unless something discards it.
+
+        The binding is faked, so this cannot say what the real method returns.
+        It holds that whatever it returns goes nowhere.
+    #>
+
+    BeforeAll {
+        . (Import-ScriptFunction `
+            -Path (Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1') `
+            -Name @('Ensure-Website', 'Get-EnvironmentCertificateThumbprint'))
+
+        # WebAdministration cmdlets, absent off Windows, stubbed for the reason
+        # New-SelfSignedCertificate is above. The parameters are the ones
+        # Ensure-Website passes, so a mock's filter can see them. New-Website and
+        # New-WebBinding are never reached: the site and both bindings exist.
+        if (-not (Get-Command Get-WebBinding -ErrorAction SilentlyContinue)) {
+            function global:Get-WebBinding {
+                param([string]$Name, [string]$Protocol)
+                throw 'stub: this should always be mocked'
+            }
+        }
+        if (-not (Get-Command New-WebBinding -ErrorAction SilentlyContinue)) {
+            function global:New-WebBinding {
+                param([string]$Name, [string]$Protocol, [int]$Port, [string]$HostHeader, [int]$SslFlags)
+                throw 'stub: this should always be mocked'
+            }
+        }
+        if (-not (Get-Command New-Website -ErrorAction SilentlyContinue)) {
+            function global:New-Website {
+                param([string]$Name, [string]$PhysicalPath, [string]$ApplicationPool, [int]$Port, [string]$HostHeader)
+                throw 'stub: this should always be mocked'
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:Bound = @()
+
+        $script:HttpsBinding = [pscustomobject]@{ bindingInformation = "*:443:$($script:HostHeader)" }
+        $script:HttpsBinding | Add-Member -MemberType ScriptMethod -Name AddSslCertificate -Value {
+            param($Thumbprint, $StoreName)
+            $script:Bound += "$StoreName/$Thumbprint"
+            return 'an object IIS handed back'
+        }
+
+        Mock Test-Path { $true } -ParameterFilter { $Path -like 'IIS:\Sites\*' }
+        Mock Set-ItemProperty { }
+        Mock Get-WebBinding -ParameterFilter { $Protocol -eq 'http' } -MockWith {
+            [pscustomobject]@{ bindingInformation = "*:80:$($script:HostHeader)" }
+        }
+        Mock Get-WebBinding -ParameterFilter { $Protocol -eq 'https' } -MockWith { $script:HttpsBinding }
+        Mock Get-EnvironmentCertificateThumbprint { 'LETSENCRYPT' }
+    }
+
+    It 'binds the certificate to the HTTPS binding' {
+        Ensure-Website -Name 'rock-staging' -PhysicalPath 'C:\inetpub\staging' `
+            -HostHeader $script:HostHeader -PoolName 'rock-staging' | Out-Null
+
+        $script:Bound | Should -Be @('My/LETSENCRYPT')
+    }
+
+    It 'hands nothing back, whatever the binding returns' {
+        $output = @(Ensure-Website -Name 'rock-staging' -PhysicalPath 'C:\inetpub\staging' `
+                -HostHeader $script:HostHeader -PoolName 'rock-staging')
+
+        $output | Should -HaveCount 0 -Because 'Invoke-DedicatedSiteReplace calls this and returns a record; anything this emits lands in that record'
+    }
+}

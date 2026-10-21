@@ -1,5 +1,8 @@
 import json
+import pathlib
 import re
+import shutil
+import tempfile
 import unittest
 
 import yaml
@@ -17,25 +20,13 @@ VERSION_GUARD_STEP = "Refuse a ref from a different Rock version"
 
 def _resolve_steps():
     workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
-    return workflow["jobs"]["resolve"]["steps"]
+    return harness.steps(workflow, job="resolve")
 
 
-def _step_named(name):
-    for step in _resolve_steps():
-        if step.get("name") == name:
-            return step
-    return None
-
-
-def _without_comments(script):
-    """Only the lines bash actually executes. A guard's comment naturally quotes
-    the thing it is guarding against -- this one explains why it deliberately has
-    no `acknowledge_version_change` escape -- and a test that reads the comment
-    concludes the escape is present. Full-line comments only: a trailing `#` split
-    would cut into the quoted text of the `echo` lines below."""
-    return "\n".join(
-        line for line in script.splitlines() if not line.lstrip().startswith("#")
-    )
+def _resolve_step(name):
+    """One step of `resolve`, the job both guards live in."""
+    workflow = yaml.safe_load(PRODUCTION_WORKFLOW.read_text())
+    return harness.step(workflow, name, job="resolve")
 
 
 class ProductionRefGuardTests(unittest.TestCase):
@@ -50,13 +41,14 @@ class ProductionRefGuardTests(unittest.TestCase):
     standing between `develop` and production. This guard is the control."""
 
     def setUp(self):
-        self.step = _step_named(REF_GUARD_STEP)
-        self.assertIsNotNone(
-            self.step,
-            f"production-deploy.yml has no step named {REF_GUARD_STEP!r}; nothing stops a "
-            f"deploy from a branch that is not the trunk",
-        )
-        self.script = _without_comments(self.step.get("run", ""))
+        # A missing step means nothing stops a deploy from a branch that is not
+        # the trunk, and harness.step fails on it.
+        self.step = _resolve_step(REF_GUARD_STEP)
+        # Only the lines bash executes. The guard's comment quotes the thing it
+        # guards against -- it explains why it deliberately has no
+        # `acknowledge_version_change` escape -- and a test that read the comment
+        # would conclude the escape is present.
+        self.script = harness.strip_bash_comments(self.step.get("run", ""))
 
     def test_the_guard_compares_against_the_production_branch_pin(self):
         """The same oracle the version guard uses, and NOT the repository's default
@@ -189,7 +181,7 @@ class ProductionRefGuardTests(unittest.TestCase):
         )
 
     def test_the_ref_guard_runs_before_the_build(self):
-        """Both guards live in `resolve`, which `build` and `approve` depend on. If
+        """Both guards live in `resolve`, which `build` and `deploy` depend on. If
         the guard ran later, a refused deploy would still have spent a full Rock
         build, and an approver could be shown a commit that can never ship."""
         names = [step.get("name") for step in _resolve_steps()]
@@ -199,11 +191,136 @@ class ProductionRefGuardTests(unittest.TestCase):
         """The two guards answer different questions -- 'is this the trunk' and 'is
         this the expected Rock minor' -- and a rollback can satisfy the first while
         failing the second. Neither replaces the other."""
-        self.assertIsNotNone(
-            _step_named(VERSION_GUARD_STEP),
+        self.assertIn(
+            VERSION_GUARD_STEP,
+            [step.get("name") for step in _resolve_steps()],
             "the Rock version guard is gone; a rollback to an older minor would now "
             "migrate the production database with nothing objecting",
         )
+
+
+@unittest.skipUnless(shutil.which("jq"), "jq is not installed")
+class ProductionVersionGuardRunTests(unittest.TestCase):
+    """Run the version guard's own step text against a stubbed `gh`.
+
+    The staging guard has been run by its tests since it was written; this one was
+    only ever read as text. That was survivable while its comparison was a
+    parameter expansion. It is now a call into .github/scripts/rock-version.sh,
+    and a misspelt function name there fails the step under `bash -e` -- which
+    refuses every production deploy, and no text match would notice.
+
+    These pin the half of the comparison that is production's own: it compares
+    the *minor*. 19.4.4 against 19.5.0 is one line and two minors, and the staging
+    guard let that through until 2026-10-20; production never has. The stub serves
+    files per branch, so the expected version is only found where the guard should
+    look for it -- on the branch `productionBranch` names, read from the default
+    branch's config."""
+
+    DEFAULT_BRANCH = "trunk"
+
+    def _run(self, ref_version, production_version, acknowledged=False):
+        """Returns `(exit code, stdout + stderr)` for one run of the guard."""
+        script = _resolve_step(VERSION_GUARD_STEP)["run"]
+        # What the runner substitutes before bash ever sees the text. Anything
+        # left over would reach bash as a "bad substitution", so it is refused
+        # here rather than passed through.
+        expressions = {
+            "${{ inputs.acknowledge_version_change }}": "true" if acknowledged else "false",
+            "${{ github.actor }}": "deployer",
+        }
+        for expression, value in expressions.items():
+            script = script.replace(expression, value)
+        self.assertNotIn(
+            "${{",
+            script,
+            "the version guard carries an expression this test does not substitute",
+        )
+
+        workdir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        checkout = workdir / "checkout"
+        checkout.mkdir()
+        (checkout / "Directory.Build.props").write_text(
+            f"<Project>\n  <PropertyGroup>\n    <Version>{ref_version}</Version>\n"
+            "  </PropertyGroup>\n</Project>\n"
+        )
+
+        production_branch = f"passion-{production_version}"
+        served = workdir / "served"
+        config = served / self.DEFAULT_BRANCH / ".github" / "pr-test-environments.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"productionBranch": production_branch}))
+        props = served / production_branch / "Directory.Build.props"
+        props.parent.mkdir(parents=True)
+        props.write_text(
+            f"<Project>\n  <PropertyGroup>\n    <Version>{production_version}</Version>\n"
+            "  </PropertyGroup>\n</Project>\n"
+        )
+
+        # `gh api repos/<owner>/<repo>/contents/<path>?ref=<branch> --jq .content`
+        # answers with the file's base64, the way the contents API does; a path
+        # the branch does not carry is a 404 and a non-zero exit.
+        gh = (
+            'endpoint="$2"\n'
+            'path="${endpoint#*/contents/}"\n'
+            'path="${path%%\\?*}"\n'
+            'ref="${endpoint##*\\?ref=}"\n'
+            'served="$STUB_SERVED/$ref/$path"\n'
+            'if [ ! -f "$served" ]; then echo "stub gh: 404 $ref:$path" >&2; exit 1; fi\n'
+            'base64 < "$served"\n'
+        )
+
+        result = harness.run_bash(
+            script,
+            env={
+                "STUB_SERVED": str(served),
+                "GH_TOKEN": "unused",
+                "REF": "the-ref",
+                "REPOSITORY": "passiondev/Rock",
+                "DEFAULT_BRANCH": self.DEFAULT_BRANCH,
+            },
+            stubs={"gh": gh},
+            cwd=checkout,
+        )
+        return result.returncode, result.output
+
+    def test_a_patch_change_within_the_production_minor_is_allowed(self):
+        """A rollback, or a patch release on the minor production runs. Refusing
+        this would make the checkbox routine, and a routine checkbox is ticked
+        without being read."""
+        code, output = self._run("19.4.1", "19.4.4")
+
+        self.assertEqual(0, code, f"a same-minor production deploy was refused:\n{output}")
+        self.assertSaysMinorNotLine(output)
+
+    def test_a_minor_change_within_the_line_is_refused(self):
+        """One line, two minors. The case that told production's guard apart from
+        staging's until staging moved to the minor too."""
+        code, output = self._run("19.5.0", "19.4.4")
+
+        self.assertNotEqual(0, code, f"a 19.5 ref was allowed onto a 19.4 production:\n{output}")
+        self.assertIn("::error::", output, output)
+        self.assertIn(
+            "19.4",
+            output,
+            f"the refusal does not name the minor production expects:\n{output}",
+        )
+
+    def test_an_acknowledged_minor_change_is_allowed(self):
+        """The upgrade path. The checkbox is what a deliberate upgrade ticks after
+        taking a backup, so it has to let the same deploy through -- loudly."""
+        code, output = self._run("19.5.0", "19.4.4", acknowledged=True)
+
+        self.assertEqual(0, code, f"an acknowledged version change was still refused:\n{output}")
+        self.assertIn("::warning::", output, output)
+        self.assertSaysMinorNotLine(output)
+
+    def assertSaysMinorNotLine(self, output):
+        """The guard compares the minor, and both messages it passes with named
+        19.4 "the expected 19.4 line" -- the word this pipeline uses for the major
+        alone. An operator reading "line" next to a deploy that crosses 19.4 ->
+        19.5 has every reason to think the guard compared 19 and 19."""
+        self.assertIn("19.4 minor", output, output)
+        self.assertNotRegex(output, r"\bline\b", output)
 
 
 if __name__ == "__main__":

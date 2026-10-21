@@ -1,10 +1,9 @@
 import json
-import os
 import pathlib
 import re
+import shlex
 import shutil
 import stat
-import subprocess
 import tempfile
 import unittest
 
@@ -17,15 +16,6 @@ PROTECTION_SCRIPT = REPO_ROOT / "Deployment" / "Repository" / "set-trunk-protect
 # The dry run prints the ruleset already in place and then the one it would send.
 # Tests that care about the second have to be able to find where it starts.
 WOULD_WRITE_MARKER = "Would write:"
-
-
-def _executable_lines(text):
-    """Only what bash runs. This script's header documents how to undo it, which
-    means the word DELETE appears in prose long before any write -- and a test that
-    reads the comments concludes the dry run mutates the repository."""
-    return "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
 
 
 class TrunkProtectionScriptTests(unittest.TestCase):
@@ -46,7 +36,10 @@ class TrunkProtectionScriptTests(unittest.TestCase):
             "in repository settings that nobody can review or repeat",
         )
         self.text = PROTECTION_SCRIPT.read_text()
-        self.code = _executable_lines(self.text)
+        # Only what bash runs. The header documents how to undo the script, so the
+        # word DELETE appears in prose long before any write -- and a test that read
+        # the comments would conclude the dry run mutates the repository.
+        self.code = harness.strip_bash_comments(self.text)
 
     def assertMentions(self, needle, why):
         """assertIn prints the whole script into the failure. These get read while
@@ -196,17 +189,16 @@ class TrunkProtectionDryRunTests(unittest.TestCase):
     it is the only way to find that class of thing."""
 
     def _run(self, rulesets, ruleset_detail=None, args=()):
-        """Put a fake `gh` at the front of PATH and run the script against it.
-        `rulesets` is what the list endpoint returns -- as a list of pages, so
-        pagination is exercised rather than assumed."""
-        stub_dir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+        """Run the script against a fake `gh`. `rulesets` is what the list endpoint
+        returns -- as a list of pages, so pagination is exercised rather than
+        assumed. The working directory is a scratch directory kept as
+        `self.workdir`, so a test can look at anything the script leaves there."""
+        self.workdir = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
 
         pages = "".join(json.dumps(page) for page in rulesets)
         detail = json.dumps(ruleset_detail or {})
 
-        stub = stub_dir / "gh"
-        stub.write_text(
-            "#!/usr/bin/env bash\n"
+        gh = (
             'args="$*"\n'
             "case \"$args\" in\n"
             "  *--paginate*rulesets)  cat <<'EOF'\n" + pages + "\nEOF\n    ;;\n"
@@ -216,16 +208,11 @@ class TrunkProtectionDryRunTests(unittest.TestCase):
             "  *)                     echo \"stub gh: unhandled: $args\" >&2; exit 1 ;;\n"
             "esac\n"
         )
-        stub.chmod(0o755)
 
-        env = dict(os.environ, PATH=f"{stub_dir}:{os.environ['PATH']}")
-        self.stub_dir = stub_dir
-        return subprocess.run(
-            [str(PROTECTION_SCRIPT), "--repository", "passiondev/Rock", *args],
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=stub_dir,
+        return harness.run_bash(
+            shlex.join([str(PROTECTION_SCRIPT), "--repository", "passiondev/Rock", *args]),
+            stubs={"gh": gh},
+            cwd=self.workdir,
         )
 
     def test_the_dry_run_finds_a_ruleset_that_is_not_on_the_first_page(self):
@@ -333,8 +320,8 @@ class TrunkProtectionDryRunTests(unittest.TestCase):
         )
 
     def test_the_dry_run_writes_nothing_to_disk(self):
-        """It runs in a scratch directory here, so anything the script drops shows up
-        beside the stub. A preview that leaves a rollback file behind has decided
+        """It runs in an empty scratch directory here, so anything the script drops
+        shows up there. A preview that leaves a rollback file behind has decided
         something happened when nothing did."""
         result = self._run(rulesets=[[]])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -345,7 +332,7 @@ class TrunkProtectionDryRunTests(unittest.TestCase):
             f"with no ruleset present the dry run should describe a create:\n{result.stdout}",
         )
 
-        left_behind = sorted(p.name for p in self.stub_dir.iterdir() if p.name != "gh")
+        left_behind = sorted(p.name for p in self.workdir.iterdir())
         self.assertEqual(
             left_behind,
             [],

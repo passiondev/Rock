@@ -32,10 +32,9 @@ These tests run the reader rather than matching its source. A shape assertion is
 what both guards already had, and what they had was two shapes.
 """
 
-import os
 import pathlib
 import re
-import subprocess
+import shlex
 import tempfile
 import unittest
 
@@ -109,24 +108,18 @@ def write_tree(root, props=None, attribute=None):
 def run_reader(script, cwd):
     """Source the reader and run `script`, the way both guard steps do.
 
-    `bash -euo pipefail` and `$GITHUB_WORKSPACE` are not decoration: they are what
-    the guards run under, and the reader has to behave under both -- a `| head -1`
-    inside it would fail a whole deploy on sed's SIGPIPE only when pipefail is set.
+    Pipefail and `$GITHUB_WORKSPACE` are not decoration: they are what the guards
+    run under, and the reader has to behave under both -- a `| head -1` inside it
+    would fail a whole deploy on sed's SIGPIPE only when pipefail is set. Neither
+    guard is given `-u`, so neither is this.
 
     Returns `(exit code, stdout, stdout + stderr)`. The split matters: the version
     is the stdout, and everything the run log shows is the combined stream.
     """
-    body = f'. "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"\n{script}\n'
-    env = dict(os.environ)
-    env["GITHUB_WORKSPACE"] = str(REPO_ROOT)
-    completed = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", body],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
+    result = harness.run_bash(
+        f'. "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"\n{script}\n', cwd=cwd
     )
-    return completed.returncode, completed.stdout.strip(), completed.stdout + completed.stderr
+    return result.returncode, result.stdout.strip(), result.output
 
 
 class ReaderAnswersTests(unittest.TestCase):
@@ -262,6 +255,123 @@ class ReaderAnswersTests(unittest.TestCase):
             f"the reader reads a different version out of this checkout than it "
             f"declares ({declared}):\n{output}",
         )
+
+
+class MinorTests(unittest.TestCase):
+    """The part of a version both guards compare, answered in one place.
+
+    The two guards read the version through the reader above and then sliced it
+    themselves: staging with `${version%%.*}`, which keeps the major, and
+    production with `${version%.*}`, which drops the last part. Both were commented
+    as comparing "the minor". Only production's did -- staging's was the line, and
+    test_staging_catalog_version_guard.py allowed 18.4.1 -> 18.5.0 until staging
+    moved to the minor on 2026-10-20. Two slices that looked alike and meant
+    different things are how that went unread, so the reader names the one answer
+    and both guards call it.
+
+    The expected values are worked by hand, not derived: a test that split the
+    version in Python to get its answer would agree with any reader that split it
+    the same wrong way."""
+
+    # (version, its minor)
+    VERSIONS = (
+        ("19.4.4", "19.4"),
+        ("18.4.1", "18.4"),
+        # A trunk can be named for a two-part version -- TRUNK_BRANCH_PATTERN in
+        # test_base_branch_config.py allows passion-19.4 -- and production's old
+        # `${version%.*}` sliced that to "19", the line, while calling it the minor.
+        ("19.4", "19.4"),
+    )
+
+    # Nothing either declaration has ever carried, and nothing a guard should
+    # compare. "19" is here on purpose: a bare major has no minor, and a reader that
+    # produced one has misread something.
+    #
+    # So are four parts. Both declarations Rock has used carry three -- 18.4.1 in
+    # AssemblySharedInfo.cs, 19.4.4 in Directory.Build.props -- and the one four-part
+    # shape anyone here has written is the old Rock 1.x numbering, 1.19.4.4, whose
+    # first two parts are "1.19". A pattern that took any number of parts answered
+    # that as the minor, and a guard comparing "1.19" with "19.4" refuses for a
+    # reason nobody can act on, or agrees with another 1.x version for a reason
+    # nobody meant.
+    NOT_VERSIONS = (
+        "",
+        "19",
+        "19.",
+        "19..4",
+        ".19.4",
+        "v19.4.4",
+        "19.4.4-beta",
+        "$(Version)",
+        "1.19.4.4",
+        "19.4.4.0",
+    )
+
+    # (branch, the version it is named for)
+    BRANCHES = (
+        ("passion-19.4.4", "19.4.4"),
+        ("passion-18.4.1", "18.4.1"),
+        ("passion-19.4", "19.4"),
+    )
+
+    # Branches that are not named for a version. `develop` and `staging` are real
+    # branches here that declare 19.0.3 and 17.6.1 -- nothing about their names
+    # says so. A suffix is refused rather than trimmed: the guard reading the pin
+    # refuses when it cannot tell, and passion-19.4.4-anything is a name it would
+    # have to guess at.
+    NOT_VERSION_BRANCHES = (
+        "",
+        "develop",
+        "staging",
+        "passion-19",
+        "passion-19.x",
+        "passion-19.4.4-hotfix",
+        "passion-1.19.4.4",
+        "fix/passion-19.4.4",
+        "Passion-19.4.4",
+    )
+
+    def assertAnswers(self, call, expected):
+        code, answer, output = run_reader(call, REPO_ROOT)
+        self.assertEqual(0, code, output)
+        self.assertEqual(expected, answer, output)
+
+    def assertRefuses(self, call):
+        """The same refusal rock_version_of_tree makes: non-zero, nothing on stdout,
+        and a GitHub annotation saying why. An empty answer with a zero status
+        would compare equal to another empty answer and wave a deploy through."""
+        code, answer, output = run_reader(call, REPO_ROOT)
+        self.assertNotEqual(0, code, f"{call} answered instead of refusing:\n{output}")
+        self.assertEqual("", answer, f"{call} refused but still answered:\n{output}")
+        self.assertIn("::error::", output, f"{call} refused without an annotation:\n{output}")
+
+    def test_the_minor_of_a_version_is_its_major_and_minor(self):
+        for version, minor in self.VERSIONS:
+            with self.subTest(version=version):
+                self.assertAnswers(f"rock_minor_of_version {shlex.quote(version)}", minor)
+
+    def test_something_that_is_not_a_version_has_no_minor(self):
+        for text in self.NOT_VERSIONS:
+            with self.subTest(text=text):
+                self.assertRefuses(f"rock_minor_of_version {shlex.quote(text)}")
+
+    def test_the_line_is_no_longer_answered(self):
+        """Removed with the last guard that compared it. A function nobody calls
+        is one somebody reaches for, and the reason it existed -- staging compared
+        the line -- is the disagreement this class was written to end."""
+        code, answer, output = run_reader("rock_line_of_version 19.4.4", REPO_ROOT)
+        self.assertNotEqual(0, code, f"rock_line_of_version still answers:\n{output}")
+        self.assertEqual("", answer, output)
+
+    def test_a_branch_answers_the_version_it_is_named_for(self):
+        for branch, version in self.BRANCHES:
+            with self.subTest(branch=branch):
+                self.assertAnswers(f"rock_version_of_branch {shlex.quote(branch)}", version)
+
+    def test_a_branch_not_named_for_a_version_refuses(self):
+        for branch in self.NOT_VERSION_BRANCHES:
+            with self.subTest(branch=branch):
+                self.assertRefuses(f"rock_version_of_branch {shlex.quote(branch)}")
 
 
 class NobodyElseReadsTheVersionTests(harness.HarnessAssertions, unittest.TestCase):
@@ -417,15 +527,9 @@ class BothGuardsReadThroughItTests(unittest.TestCase):
     }
 
     def guard_body(self, path, step_name):
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for job in workflow["jobs"].values():
-            for step in job.get("steps", []):
-                if step.get("name") == step_name:
-                    return step["run"]
-        raise AssertionError(
-            f"no step named {step_name!r} in {path.name}; that deploy no longer "
-            "guards the Rock version at all"
-        )
+        """A missing step fails in `harness.step` -- which, here, means that deploy no
+        longer guards the Rock version at all."""
+        return harness.step(yaml.safe_load(path.read_text(encoding="utf-8")), step_name)["run"]
 
     def test_each_guard_sources_the_reader(self):
         for name, (path, step_name) in self.GUARDS.items():

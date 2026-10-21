@@ -47,6 +47,13 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      force_build:
+        description: >-
+          Build from source even if an existing artifact could be repackaged. For a
+          repackage that failed, or one whose site does not show the change.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Never two production deploys at once, and never cancel one midway -- a
@@ -62,6 +69,7 @@ permissions:
   # permissions in every workflow reached through `uses:` below.
   contents: read
   actions: read
+  pull-requests: read
 
 jobs:
   resolve:
@@ -69,7 +77,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
-      short_sha: ${{ steps.resolve.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,7 +97,6 @@ jobs:
           sha="$(git rev-parse HEAD)"
           short="$(git rev-parse --short HEAD)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$short" >> "$GITHUB_OUTPUT"
 
           mode="DRY RUN (nothing will change)"
           if [ "${{ inputs.apply }}" = "true" ]; then
@@ -319,8 +325,16 @@ jobs:
             exit 1
           fi
 
-          ref_minor="${ref_version%.*}"
-          expected_minor="${expected_version%.*}"
+          # The minor -- 19.4 of 19.4.4 -- the same part the staging guard compares.
+          # A patch or a rollback on the same minor passes; anything else is the
+          # migration this step exists to stop. Each call refuses with its own
+          # annotation when what it is handed is not a version ("19." or "19..4",
+          # which the file reader's [0-9][0-9.]* can return). That refusal comes
+          # before the acknowledgement on purpose: the checkbox accepts a change
+          # of version, and a version this step cannot read is not one. The old
+          # `${version%.*}` slice made a minor out of anything and compared it.
+          ref_minor="$(rock_minor_of_version "$ref_version")" || exit 1
+          expected_minor="$(rock_minor_of_version "$expected_version")" || exit 1
 
           {
             echo "| Rock version of ref | \`$ref_version\` |"
@@ -328,12 +342,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$ref_minor" = "$expected_minor" ]; then
-            echo "Rock $ref_version is on the expected $expected_minor line."
+            echo "Rock $ref_version is on the expected $expected_minor minor."
             exit 0
           fi
 
           if [ "${{ inputs.acknowledge_version_change }}" = "true" ]; then
-            echo "::warning::Deploying Rock $ref_version against an expected $expected_minor line. Acknowledged by @${{ github.actor }} -- migrations will run on the first request after this deploy."
+            echo "::warning::Deploying Rock $ref_version against an expected $expected_minor minor. Acknowledged by @${{ github.actor }} -- migrations will run on the first request after this deploy."
             echo "| Version change | **acknowledged by @${{ github.actor }}** |" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -357,33 +371,33 @@ jobs:
       head_sha: ${{ needs.resolve.outputs.sha }}
       host_name: ${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
       artifact_slug: production
+      force_build: ${{ inputs.force_build }}
     secrets: inherit
 
-  approve:
-    name: Await production approval
-    needs: [resolve, build]
-    runs-on: ubuntu-latest
-    # The "production" GitHub Environment carries the required-reviewer rule. This
-    # job exists only to hold the run at that gate. It sits after the build on
-    # purpose: an approver should never be asked to approve a commit that turned
-    # out not to compile.
-    environment:
-      name: production
-      url: https://${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
-    steps:
-      - name: Record approval
-        run: |
-          echo "Approved by @${{ github.actor }} for commit ${{ needs.resolve.outputs.short_sha }}."
-
+  # The "production" GitHub Environment carries the required-reviewer rule, and
+  # the run waits at it here: env-deploy-command.yml's job declares the
+  # environment whenever the queue is commands-prod. It sits after the build on
+  # purpose -- an approver should never be asked to approve a commit that turned
+  # out not to compile.
+  #
+  # Until 2026-10-20 a job of its own, `approve`, held the gate in front of this
+  # one. That approved the run, and the job that then wrote the command to
+  # production's queue declared no environment, so a key kept as a `production`
+  # environment secret could not have reached the write. Two jobs declaring the
+  # environment would ask for two approvals, so the gate moved rather than being
+  # copied. Open item 33.
   deploy:
     name: Deploy to production
-    needs: [resolve, build, approve]
+    needs: [resolve, build]
     uses: ./.github/workflows/env-deploy-command.yml
     with:
       environment_name: production
       host_name: ${{ vars.PRODUCTION_HOST_NAME || 'rock.passion.team' }}
       sha: ${{ needs.resolve.outputs.sha }}
       artifact_gcs_object_path: ${{ needs.build.outputs.artifact_gcs_object_path }}
+      # Recorded by the build job in GitHub, so the VM refuses a zip that was
+      # replaced in the bucket while this run waited for its approver.
+      artifact_sha256: ${{ needs.build.outputs.artifact_sha256 }}
       mode: InPlace
       # Production runs its own queue on its own VM. Sharing the test VM's queue
       # would let either box pick up either environment's commands.

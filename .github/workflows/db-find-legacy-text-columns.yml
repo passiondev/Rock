@@ -67,11 +67,15 @@ jobs:
     name: Scan for legacy text columns
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Production's queue is written only from behind the `production` gate, here as
+    # in env-deploy-command.yml, where the reasoning is; every other queue gets an
+    # empty name and runs with no environment. The scan only reads, but posting it
+    # is still a write to production's queue. Open item 33.
+    environment: ${{ inputs.queue_name == 'commands-prod' && 'production' || '' }}
     defaults:
       run:
         shell: pwsh
     env:
-      COMMAND_ID: find-legacy-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       MEASURE_SIZES: ${{ inputs.measure_sizes }}
       GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
@@ -89,9 +93,9 @@ jobs:
       # the script they would be reshaping is the one holding a live connection string.
       POLL_ATTEMPTS: ${{ inputs.poll_attempts }}
     steps:
-      # `uses: ./...` loads the action from the working tree. Sparse and non-cone:
-      # this job wants one action.yml and nothing else from the repository.
-      - name: Check out the await action
+      # `uses: ./...` loads the actions from the working tree. Sparse and non-cone:
+      # this job wants the actions directory and nothing else from the repository.
+      - name: Check out the queue actions
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
@@ -117,38 +121,20 @@ jobs:
           "| Catalog | $env:DB_NAME_SOURCE |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Sized scan | $env:MEASURE_SIZES |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Queue find-legacy-text-columns command
-        uses: ./.github/actions/queue-vm-command
+      # The findings ARE the output of this command, so unlike a deploy the log goes
+      # in the summary whole rather than as a 60-line tail -- truncating it would cut
+      # off the columns an operator has to act on. The agent redacts before uploading.
+      - name: Queue the scan and wait for the findings
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
           queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: find-legacy
           command: find-legacy-text-columns
           payload: |
             {"measureSizes": ${{ env.MEASURE_SIZES == 'true' }}}
           secret-value: ${{ env.CONNECTION_STRING }}
-
-      - name: Wait for the VM to report the findings
-        id: await
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.GCS_BUCKET }}
-          queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
           label: The scan
           attempts: ${{ env.POLL_ATTEMPTS }}
           interval-seconds: '10'
-
-      # The findings ARE the output of this command, so unlike a deploy the log goes
-      # in the summary whole rather than as a 60-line tail -- truncating it would cut
-      # off the columns an operator has to act on. That is specific enough to this
-      # one command to belong here rather than as another input on the action. The
-      # agent redacts before uploading.
-      - name: Put the findings in the job summary
-        if: always() && steps.await.outputs.log-path != ''
-        shell: pwsh
-        run: |
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          log-to-summary: 'true'

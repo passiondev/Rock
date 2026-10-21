@@ -13,7 +13,6 @@ jobs:
     name: Renew PR environment certificates
     runs-on: ubuntu-latest
     env:
-      COMMAND_ID: renew-certificates-${{ github.run_id }}-${{ github.run_attempt }}
       ACME_TAG: pr-test-acme-http
       PR_TEST_GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
     steps:
@@ -86,21 +85,16 @@ jobs:
           gcloud compute instances add-tags $vmName --zone=$vmZone --tags=$env:ACME_TAG
 
       # No payload: the verb is the whole command.
-      - name: Queue certificate renewal command
-        uses: ./.github/actions/queue-vm-command
-        with:
-          bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
-          command: renew-certificate
-
+      #
       # The action prints the VM log on success as well as on failure, which this
       # command needs: the renewal script exits happily when it finds zero deployed
       # environments, so `succeeded` alone is not proof a certificate was issued.
-      - name: Wait for the VM to report the result
-        uses: ./.github/actions/await-vm-command
+      - name: Queue the renewal and wait for the result
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.PR_TEST_GCS_BUCKET }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: renew-certificates
+          command: renew-certificate
           label: Certificate renewal
           attempts: '90'
           interval-seconds: '10'

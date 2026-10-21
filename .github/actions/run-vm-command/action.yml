@@ -1,0 +1,142 @@
+name: Run a VM command
+description: >
+  Queue a command for the VM, wait for its result, and optionally put the VM's
+  log in the job summary. The one call a workflow makes to have the VM do work.
+
+inputs:
+  bucket:
+    description: The GCS bucket holding the command queue.
+    required: true
+  command-id-prefix:
+    description: >
+      The part of the command id that names the caller, for example
+      `deploy-1234` or `theme-plan`. The action appends the run id and the run
+      attempt, so the id is `<prefix>-<run_id>-<run_attempt>` and a re-run never
+      reads the previous attempt's answer. Operators search the bucket and the
+      logs for these ids, so keep a caller's prefix stable.
+    required: true
+  command:
+    description: The verb the queue agent dispatches on, for example `deploy`.
+    required: true
+  payload:
+    description: >
+      A JSON object of fields for this command on top of the envelope. See
+      queue-vm-command for the rules: blank fields are dropped, a false boolean
+      is kept, and the envelope's own fields are refused.
+    required: false
+    default: '{}'
+  queue-name:
+    description: >
+      The queue directory under `pr-environments/`, for both the command and its
+      result. The PR fleet uses the default.
+    required: false
+    default: commands
+  secret-field:
+    description: Field name to carry `secret-value` under.
+    required: false
+    default: connectionString
+  secret-value:
+    description: >
+      The connection string for this command, or empty for a command that needs
+      none. A separate input so it never passes through an interpolated payload.
+    required: false
+    default: ''
+  label:
+    description: >
+      What to call this command in error messages, for example "Deploy of
+      staging". Name the thing that failed rather than the verb.
+    required: true
+  attempts:
+    description: How many times to look for the result before giving up.
+    required: false
+    default: '140'
+  interval-seconds:
+    description: Seconds between attempts.
+    required: false
+    default: '15'
+  failure-hint:
+    description: Extra sentence appended to the failure annotation.
+    required: false
+    default: ''
+  log-to-summary:
+    description: >
+      'true' to append the VM's whole log to the job summary, on failure as well
+      as on success. For a scan or a dry run the log is the result, and for a
+      plan an approver signs off it is what they read. Off by default because a
+      deploy writes its own summary.
+    required: false
+    default: 'false'
+
+outputs:
+  command-id:
+    description: >
+      The id the command was queued under, for a caller that needs to name it
+      without rebuilding it. Assembled here rather than by a step, so it is set
+      even when the command fails.
+    value: ${{ inputs.command-id-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+# Ten jobs in eight workflows called queue-vm-command and then await-vm-command,
+# and each wrote the bucket, the queue and the command id twice. The halves only
+# work if those agree, and the agreement lived in each caller. The id was the
+# worst of it: a re-run reads the previous attempt's result unless the id carries
+# github.run_attempt, and every producer had to remember that in its own env
+# block. Here the action appends the run and the attempt to the caller's prefix,
+# once, for both halves.
+#
+# "Once" is one expression written three times: in the output above and in each
+# half's `with:`. A composite action has no env block that a `with:` can read, and
+# a step that composed the id would put a shell step in front of the queue for the
+# sake of one string. RunActionTests compares the three copies instead.
+#
+# The ids are byte-for-byte what each caller built before, because runbooks and
+# operators search for them. Every caller's id already had this shape, so the
+# prefix is all a caller still owns.
+#
+# The summary block was the other repeat: five jobs put the whole VM log in the
+# job summary with the same four lines. It is an input rather than a default
+# because only the callers whose log is the finding want it.
+#
+# The two halves stay separate actions because Pester runs their scripts, and
+# this file stays free of PowerShell beyond the summary for the same reason.
+runs:
+  using: composite
+  steps:
+    - name: Queue the command
+      uses: ./.github/actions/queue-vm-command
+      with:
+        bucket: ${{ inputs.bucket }}
+        command-id: ${{ inputs.command-id-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
+        command: ${{ inputs.command }}
+        payload: ${{ inputs.payload }}
+        queue-name: ${{ inputs.queue-name }}
+        secret-field: ${{ inputs.secret-field }}
+        secret-value: ${{ inputs.secret-value }}
+
+    # No `if:`. A composite skips the steps after a failure unless they ask to
+    # run, so a failed upload ends the action here rather than in a full-length
+    # wait for a command that was never queued.
+    - name: Wait for the VM to report the result
+      id: await
+      uses: ./.github/actions/await-vm-command
+      with:
+        bucket: ${{ inputs.bucket }}
+        command-id: ${{ inputs.command-id-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
+        label: ${{ inputs.label }}
+        queue-name: ${{ inputs.queue-name }}
+        attempts: ${{ inputs.attempts }}
+        interval-seconds: ${{ inputs.interval-seconds }}
+        failure-hint: ${{ inputs.failure-hint }}
+
+    # always(): a failed scan or dry run needs its log in front of the reader more
+    # than a passing one. Whole rather than a tail, because for these callers the
+    # log is the list somebody acts on. The agent redacts before uploading.
+    - name: Put the VM log in the job summary
+      if: always() && inputs.log-to-summary == 'true' && steps.await.outputs.log-path != ''
+      shell: pwsh
+      env:
+        RUN_LOG_PATH: ${{ steps.await.outputs.log-path }}
+      run: |
+        "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        Get-Content -LiteralPath $env:RUN_LOG_PATH -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+        "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

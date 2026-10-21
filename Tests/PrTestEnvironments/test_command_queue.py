@@ -47,7 +47,7 @@ def _queued_verbs():
 
         for job in (parsed.get("jobs") or {}).values():
             for step in job.get("steps") or []:
-                if not str(step.get("uses", "")).endswith("queue-vm-command"):
+                if not str(step.get("uses", "")).endswith("run-vm-command"):
                     continue
 
                 command = str((step.get("with") or {}).get("command", ""))
@@ -118,17 +118,15 @@ class ContractTableTests(harness.HarnessAssertions, unittest.TestCase):
 
 
 class CommandQueueTests(unittest.TestCase):
-    def test_queue_processor_pulls_commands_from_gcs_and_runs_local_scripts(self):
+    def test_the_agent_never_reaches_the_vm_over_ssh_or_restarts_it(self):
+        """The two absences are all this keeps. It used to match a dozen strings that
+        said the agent pulls from GCS and runs local scripts, and every one of them is
+        now held by something that runs it: the queue prefixes by
+        test_environment_deploy.py, the scripts each verb runs by the contract tests
+        above, and the result's shape by Pester/CommandQueuePass.Tests.ps1, which reads
+        what the poll pass writes back through the reader the workflow uses. An absence
+        is the one claim nothing executes."""
         text = QUEUE_SCRIPT.read_text()
-        for expected in [
-            "Get-GcsAccessToken", "Invoke-GcsRequest",
-            # The prefix is templated on $QueueName so each VM owns its own queue;
-            # see test_environment_deploy.py::test_each_vm_polls_its_own_queue_prefix.
-            "$QueueName/pending/", "$QueueName/processing/", "$QueueName/results/",
-            "Deploy-PrEnvironment.ps1", "Stop-PrEnvironment.ps1", "Destroy-PrEnvironment.ps1", "Invoke-PrEnvironmentCertificateRenewal.ps1",
-            "ConvertFrom-Json", "ConvertTo-Json", "CommandId", "status = \"succeeded\"", "status = \"failed\""
-        ]:
-            self.assertIn(expected, text)
         self.assertNotIn("ssh", text.lower())
         self.assertNotIn("Restart-Computer", text)
 
@@ -140,15 +138,16 @@ class CommandQueueTests(unittest.TestCase):
     def test_workflows_upload_commands_and_poll_results_without_ssh(self):
         for path in [DEPLOY_WORKFLOW, LIFECYCLE_WORKFLOW]:
             text = path.read_text()
-            self.assertIn("./.github/actions/queue-vm-command", text)
+            self.assertIn("./.github/actions/run-vm-command", text)
             self.assertNotIn("sshpass", text)
             self.assertNotIn("Deploy over SSH", text)
 
-            # Both halves of the queue protocol moved into shared actions:
-            # queue-vm-command and await-vm-command. test_local_composite_actions.py
-            # asserts every producer uses both and that neither kept a private copy,
-            # which is a stronger claim than the strings this used to match. What is
-            # left here is the property the class is named for: no SSH.
+            # Both halves of the queue protocol moved into shared actions,
+            # queue-vm-command and await-vm-command, and run-vm-command calls the
+            # pair. test_local_composite_actions.py asserts every producer goes
+            # through it and that none kept a private copy, which is a stronger
+            # claim than the strings this used to match. What is left here is the
+            # property the class is named for: no SSH.
 
 if __name__ == "__main__":
     unittest.main()

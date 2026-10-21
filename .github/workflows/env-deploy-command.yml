@@ -28,6 +28,15 @@ name: Rock Environment Deploy Command
         description: Artifact object path inside the deployment bucket.
         required: true
         type: string
+      artifact_sha256:
+        description: >-
+          The zip's SHA-256 from pr-test-artifact.yml's artifact_sha256 output. The
+          VM refuses a downloaded zip that does not match, before unpacking it.
+          Empty sends no hash and the VM says it checked none, which is what a
+          build from before the output existed gives.
+        required: false
+        default: ''
+        type: string
       mode:
         description: DedicatedSite (its own IIS site) or InPlace (update an existing site).
         required: false
@@ -98,8 +107,20 @@ jobs:
     name: Deploy to ${{ inputs.environment_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # This job writes the command, so it is the one that has to hold the gate.
+    # production-deploy.yml used to hold it in a job of its own in front of this
+    # one, which approved the run and left the write to a job no environment
+    # covered -- so an environment secret on `production` could never have
+    # reached the write. Keyed on the queue rather than on a caller's input,
+    # because the queue is what makes a write a production write: a caller that
+    # forgot to ask for the gate would still get it. Every other queue gets an
+    # empty name, which GitHub runs with no environment at all (checked on
+    # 2026-10-20 with a throwaway workflow: no deployment recorded, no
+    # environment created). Open item 33.
+    environment:
+      name: ${{ inputs.queue_name == 'commands-prod' && 'production' || '' }}
+      url: ${{ inputs.queue_name == 'commands-prod' && format('https://{0}', inputs.host_name) || '' }}
     env:
-      COMMAND_ID: deploy-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       ENVIRONMENT_NAME: ${{ inputs.environment_name }}
       HOST_NAME: ${{ inputs.host_name }}
@@ -110,6 +131,7 @@ jobs:
       APPLY: ${{ inputs.apply }}
       GCS_BUCKET: ${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}
       ARTIFACT_GCS_PATH: gs://${{ vars.PR_TEST_GCS_BUCKET || format('rock-pr-env-{0}-{1}', github.repository_id, secrets.GCP_PROJECT_ID) }}/${{ inputs.artifact_gcs_object_path }}
+      ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
       # `inputs.db_name || secrets.DB_NAME`: an unset caller variable arrives here
       # as the empty string, which is falsy in a GitHub expression, so an
       # environment that names no catalog keeps the exact behaviour it had before
@@ -196,12 +218,15 @@ jobs:
       #
       # toJSON, not a quoted interpolation: target_site_path is a Windows path and
       # a bare backslash is not a valid JSON escape.
-      - name: Queue deploy-environment command
-        uses: ./.github/actions/queue-vm-command
+      #
+      # The step keeps the wait's title because the production runbook sends an
+      # operator to it by name for the VM log.
+      - name: Wait for the VM to report the result
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
           queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: deploy-${{ inputs.environment_name }}
           command: deploy-environment
           payload: |
             {
@@ -209,20 +234,13 @@ jobs:
               "sha": ${{ toJSON(env.DEPLOY_SHA) }},
               "hostName": ${{ toJSON(env.HOST_NAME) }},
               "artifactGcsPath": ${{ toJSON(env.ARTIFACT_GCS_PATH) }},
+              "artifactSha256": ${{ toJSON(env.ARTIFACT_SHA256) }},
               "mode": ${{ toJSON(env.DEPLOY_MODE) }},
               "targetSitePath": ${{ toJSON(env.DEPLOY_MODE == 'InPlace' && env.TARGET_SITE_PATH || '') }},
               "targetSiteName": ${{ toJSON(env.DEPLOY_MODE == 'InPlace' && env.TARGET_SITE_NAME || '') }},
               "apply": ${{ env.APPLY == 'true' }}
             }
           secret-value: ${{ env.CONNECTION_STRING }}
-
-      - name: Wait for the VM to report the result
-        id: await
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.GCS_BUCKET }}
-          queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
           label: Deploy of ${{ env.ENVIRONMENT_NAME }}
           attempts: ${{ inputs.poll_attempts }}
 
@@ -238,6 +256,8 @@ jobs:
           "| URL | https://$env:HOST_NAME |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Commit | ``$env:DEPLOY_SHA`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Mode | $env:DEPLOY_MODE |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $pinned = if ($env:ARTIFACT_SHA256) { "``$env:ARTIFACT_SHA256``" } else { 'none sent, so the VM checked none' }
+          "| Artifact SHA-256 | $pinned |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       # The verification lives in a composite action so the staging/production path and
       # the pr-* fleet ask the identical question -- see .github/actions/verify-public-url,

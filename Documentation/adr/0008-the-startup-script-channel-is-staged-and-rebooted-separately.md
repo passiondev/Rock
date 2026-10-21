@@ -62,3 +62,18 @@ them -- then its restart becomes the same stop-and-start as the fleet's and shou
 move behind `restart-vm`. Equally, if a caller appears that needs the action to
 generate its payload rather than stage one, the path-versus-content decision above
 is worth re-reading rather than worked around.
+
+## Since this was written
+
+2026-10-20. The command queue's callers no longer use `queue-vm-command` and
+`await-vm-command` directly. They go through `run-vm-command`, which composes the
+two, and eight workflows use it. That changes the context paragraph's count and
+action names, not this decision: the queue is still the channel for a VM whose
+agent is running, and this one is still the channel for reaching a VM at boot.
+
+The queue gaining a claim and a per-queue list of accepted verbs on the same date
+makes the two channels more different, not less. Both only take effect on a VM
+whose bootstrap has been re-run since, and the bootstrap is a caller of this
+channel. Production's own restart stays outside `restart-vm` for the reasons
+above, so delivering the claim to production goes through that restart, under its
+approval, and not through anything shared with the fleet.

@@ -24,8 +24,11 @@ so Invoke-PrEnvironmentCertificateRenewal.ps1 discovers and renews its Let's
 Encrypt certificate with no extra configuration -- that script keys off
 hostName/siteName in env.json, not off a PR number.
 
-InPlace deliberately writes its manifest somewhere else, so a certificate
-renewal run on the test VM can never reach a production site.
+InPlace deliberately writes its manifest somewhere else -- $BackupRoot, default
+C:\RockBackups -- so certificate renewal never reaches a production site. That
+holds only while renewal's defaults leave the backup root out: the production
+bootstrap ships every script in this directory, renewal included, to
+production's queue. ManifestContract.Tests.ps1 holds the two together.
 #>
 
 # On the sixteen parameters below, and why they are still sixteen.
@@ -64,6 +67,12 @@ param(
     [Parameter(Mandatory = $true)]
     [string]
     $ArtifactGcsPath,
+
+    # The SHA-256 the build recorded for that zip. Optional, so a hand-written
+    # command and one from before the pin still run; see Assert-ArtifactHash.
+    [Parameter(Mandatory = $false)]
+    [string]
+    $ArtifactSha256,
 
     [Parameter(Mandatory = $true)]
     [string]
@@ -512,6 +521,72 @@ $SiteName = $DeploymentTarget.SiteName
 $AppPoolName = $DeploymentTarget.AppPoolName
 $SitePath = $DeploymentTarget.SitePath
 $ManifestPath = $DeploymentTarget.ManifestPath
+
+# The one place this script writes env.json, in either mode.
+#
+# A function rather than inline at the end of the deploy so that
+# ManifestContract.Tests.ps1 can run it. Three scripts read what this writes --
+# cleanup, the sandbox refresh and certificate renewal -- and none of them calls
+# this one, so the only thing holding the field names and the file's location
+# to what those readers expect is that suite writing a real manifest with this
+# function and handing it to the real readers.
+#
+# Everything comes in as a parameter, $Target included, rather than being read
+# from the script scope: a manifest says what the caller asked for, and a value
+# picked up from scope is one the suite could not see change.
+#
+# No prNumber, ever. Cleanup stops and destroys any manifest carrying one under
+# its root, and staging's manifest sits in that root.
+function Write-DeploymentManifest {
+    [CmdletBinding()]
+    param(
+        # What Resolve-DeploymentTarget returned: SiteName, AppPoolName, SitePath
+        # and ManifestPath. Passed whole so the manifest and the deploy can never
+        # disagree about which site this was.
+        [Parameter(Mandatory = $true)]
+        [hashtable]
+        $Target,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Mode,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Sha,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $ArtifactGcsPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $HostName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentPath
+    )
+
+    $manifest = [ordered]@{
+        environmentName = $EnvironmentName
+        mode = $Mode
+        sha = $Sha
+        artifactGcsPath = $ArtifactGcsPath
+        hostName = $HostName
+        siteName = $Target.SiteName
+        appPoolName = $Target.AppPoolName
+        environmentPath = $EnvironmentPath
+        sitePath = $Target.SitePath
+        status = "deployed"
+        deployedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $Target.ManifestPath -Encoding UTF8 -Force
+}
 
 function Ensure-Directory {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -1124,7 +1199,11 @@ function Ensure-Website {
             Where-Object { $_.bindingInformation -eq "*:443:$HostHeader" }
     }
 
-    $httpsBinding.AddSslCertificate((Get-EnvironmentCertificateThumbprint -HostHeader $HostHeader -Thumbprint $Thumbprint), "My")
+    # Discarded because a method call's return value goes to the caller, and the
+    # caller is Invoke-DedicatedSiteReplace, which returns a record. Left in the
+    # pipeline, it made that record an array and failed staging's deploy on
+    # 2026-10-20 after the site had come up healthy.
+    $httpsBinding.AddSslCertificate((Get-EnvironmentCertificateThumbprint -HostHeader $HostHeader -Thumbprint $Thumbprint), "My") | Out-Null
 }
 
 function Remove-PluginBuildArtifacts {
@@ -1177,7 +1256,15 @@ function Sync-SharedSiteAssets {
         # the branch stays authoritative for everything it actually ships. See the
         # long note in Deploy-PrEnvironment.ps1 -- this was /MIR and it silently
         # reverted every theme change a branch made.
-        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP
+        #
+        # To the console and not the pipeline. The quiet switches still leave
+        # blank lines, and this is called from inside Invoke-DedicatedSiteReplace,
+        # whose return value is the record the deploy body reads: anything left
+        # in the pipeline here turns that record into an array, and under
+        # Set-StrictMode the rollback line's $deployed.BackupPath then throws on a
+        # site that deployed and passed its health check. That is how staging's
+        # first run of the function failed, 2026-10-20.
+        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP | Write-Host
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for shared asset directory $directory with exit code $exitCode."
@@ -1240,12 +1327,13 @@ function Resolve-SharedAssetSource {
         The site the shared-asset overlay and the server-owned restore read from.
 
     .DESCRIPTION
-        Extracted because the dry run and the apply run both need the answer and
-        had worked it out separately. The apply path falls back to the Default Web
-        Site's physical path when no explicit source is configured, which is the
-        normal case; the plan read the configured value alone and so reported
-        "none found" for a run that would go on to restore eight files. A plan
-        that under-reports is the same defect as one that over-promises.
+        The apply path falls back to the Default Web Site's physical path when no
+        explicit source is configured, which is the normal case. This was
+        extracted for a dry-run plan that read the configured value alone and so
+        reported "none found" for a run that would go on to restore eight files.
+        That plan was the DedicatedSite arm of a dry run that only ever runs
+        InPlace, so no operator ever read it, and it has since been removed.
+        Invoke-DedicatedSiteReplace is the one caller left.
     #>
     param(
         [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ConfiguredPath
@@ -1258,11 +1346,11 @@ function Resolve-SharedAssetSource {
     # Guarded with Get-Command, and -ErrorAction is not enough on its own. A
     # missing cmdlet raises CommandNotFoundException before any parameter is
     # bound, so SilentlyContinue never gets the chance to suppress it -- verified,
-    # not assumed. That matters more than it used to: the dry run calls this now,
-    # and a plan that throws where the previous one returned a value is a
-    # regression in the one command an operator runs to find out what will happen.
-    # It also keeps the function callable from the tests, which do not run on
-    # Windows and have no IIS module.
+    # not assumed. It matters because of when the one caller asks: the dedicated
+    # site has already been deleted and replaced by then, so a throw here leaves
+    # an environment with no shared assets and no server-owned restore. It also
+    # keeps the function callable from the tests, which do not run on Windows
+    # and have no IIS module.
     #
     # Absent is not an error. The caller treats an empty source as "nothing to
     # overlay from", which is the right answer both off Windows and on a box where
@@ -1395,7 +1483,9 @@ function Sync-ServerOwnedAssets {
         # the Font Awesome restore down with it.
         [string[]]$recurse = if ($sourceIsFile) { @() } else { @('/E') }
         [string[]]$arguments = @($copyFilter) + @($recurse)
-        & robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP
+        # To the console, for the reason given at the robocopy call in
+        # Sync-SharedSiteAssets: this runs inside Invoke-DedicatedSiteReplace too.
+        & robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP | Write-Host
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for server-owned path $relativePath with exit code $exitCode."
@@ -2053,6 +2143,50 @@ function Assert-DeployedCoreVersion {
     Write-DeployStep "Core version check: bin\Rock.dll is $siteVersion on both the artifact and the site."
 }
 
+
+function Assert-ArtifactHash {
+    <#
+        .SYNOPSIS
+        Fails the deploy if the downloaded zip is not the one the build recorded.
+
+        .DESCRIPTION
+        The build job records the zip's SHA-256 as a GitHub job output, and the
+        command that names the zip carries it here. Between the build and this
+        download the zip sits in a bucket that every key in the fleet can write --
+        for production, through however long the run waited for its approver --
+        so the path alone says where to look, not what will be found there. The
+        hash came by way of GitHub, which no bucket key can rewrite.
+
+        It throws before anything is unpacked, so a refused zip leaves the site
+        exactly as it was. An empty hash is a command that pinned none: a
+        hand-written one, or a build from before the pin existed. That is let
+        through and said, because refusing it would break every rollback to such
+        a commit.
+
+        .PARAMETER Path
+        The zip as downloaded.
+
+        .PARAMETER ExpectedSha256
+        The hash the command carried. Compared without regard to case.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ExpectedSha256
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+        Write-DeployStep "Artifact hash not checked: the command pinned no hash."
+        return
+    }
+
+    $expected = $ExpectedSha256.Trim()
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+    if ($actual -ne $expected) {
+        throw "The downloaded artifact's SHA-256 $actual does not match the $expected its build recorded. The zip at that path changed after the build. Nothing was unpacked and the site is untouched; find out what wrote it before deploying again."
+    }
+    Write-DeployStep "Artifact hash matches the build's: $actual."
+}
+
 function Invoke-SiteContentProbe {
     <#
         .SYNOPSIS
@@ -2111,11 +2245,13 @@ function Invoke-SiteContentProbe {
         $stream = $response.GetResponseStream()
         $reader = New-Object System.IO.StreamReader($stream)
         try {
-            # Capped rather than read to the end: a Rock page is a few hundred KB
-            # and the markers being looked for are all in the first screenful, so
-            # there is no reason to hold a megabyte of HTML in a deploy script.
+            # Capped rather than read to the end: a Rock page is a few hundred KB,
+            # so there is no reason to hold a megabyte of HTML in a deploy script.
+            # ReadBlock, not Read: Read returns whatever has arrived so far, and on
+            # 2026-10-20 that was the first 3443 chars of the login page, ahead of
+            # its __VIEWSTATE, so the smoke check failed every healthy deploy.
             $buffer = New-Object char[] $MaxBodyBytes
-            $read = $reader.Read($buffer, 0, $MaxBodyBytes)
+            $read = $reader.ReadBlock($buffer, 0, $MaxBodyBytes)
             if ($read -gt 0) { $outcome.Body = (New-Object string($buffer, 0, $read)) }
         }
         finally { $reader.Dispose() }
@@ -2144,12 +2280,17 @@ function Invoke-DeploySmokeCheck {
         means something that is not Rock answered -- a static error document, an
         IIS placeholder, a proxy.
 
-        A warning rather than a throw, deliberately, and this is the one place in
+        Reported rather than thrown, deliberately, and this is the one place in
         the script where that is a close call. A 404 here is a routing choice a
         site is entitled to make, and failing a production deploy that is
         genuinely healthy costs more than the signal is worth. A 5xx is different
         and is reported as an outright failure of the check, which the caller
         turns into diagnostics.
+
+        Every outcome goes through Write-DeployStep, failures included. They were
+        warnings until 2026-10-20, and a warning reaches neither the timeline the
+        agent uploads nor the workflow log that prints it: staging's check failed
+        twice that day and the record said only that it had.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$HostName,
@@ -2160,12 +2301,12 @@ function Invoke-DeploySmokeCheck {
     $probe = Invoke-SiteContentProbe -Url $url -HostHeader $HostName -TimeoutSeconds $TimeoutSeconds
 
     if ($probe.StatusCode -eq 0) {
-        Write-Warning "Smoke check could not reach $url with Host: $HostName ($($probe.Error))."
+        Write-DeployStep "Smoke check could not reach $url with Host: $HostName ($($probe.Error))."
         return $false
     }
 
     if ($probe.StatusCode -ge 500) {
-        Write-Warning "Smoke check: $url returned $($probe.StatusCode). The site routes requests but cannot render its login page."
+        Write-DeployStep "Smoke check: $url returned $($probe.StatusCode). The site routes requests but cannot render its login page."
         return $false
     }
 
@@ -2179,7 +2320,7 @@ function Invoke-DeploySmokeCheck {
         return $true
     }
 
-    Write-Warning "Smoke check: $url returned $($probe.StatusCode) but the response has no __VIEWSTATE, so Rock did not render it. Something else is answering for this site."
+    Write-DeployStep "Smoke check: $url returned $($probe.StatusCode) ($($probe.Body.Length) chars, Server: $($probe.Server)) but the response has no __VIEWSTATE, so Rock did not render it. Something else is answering for this site."
     return $false
 }
 function Invoke-DedicatedSiteReplace {
@@ -2340,8 +2481,12 @@ function Invoke-DedicatedSiteReplace {
     Write-PluginAssemblyReport -SiteRoot $SitePath | Out-Null
 
     Write-RuntimeConfiguration -Path $SitePath -Connection $ConnectionString -ExistingWebConfig $ExistingWebConfig
-    Ensure-AppPool -Name $AppPoolName
-    Ensure-Website -Name $SiteName -PhysicalPath $SitePath -HostHeader $HostName -PoolName $AppPoolName -Thumbprint $CertificateThumbprint
+
+    # Discarded here as well as inside them. Both drive the IIS provider, which
+    # hands objects back from calls that read like statements, and nothing that
+    # runs off the box can say which. This function's output is its record.
+    Ensure-AppPool -Name $AppPoolName | Out-Null
+    Ensure-Website -Name $SiteName -PhysicalPath $SitePath -HostHeader $HostName -PoolName $AppPoolName -Thumbprint $CertificateThumbprint | Out-Null
 
     # The same two fields the in-place branch hands back, so the run that follows
     # can ask what happened rather than ask which branch ran.
@@ -2356,31 +2501,43 @@ function Invoke-DedicatedSiteReplace {
     }
 }
 
-function Invoke-InPlaceOverlay {
+function Get-InPlaceOverlayPlan {
     <#
     .SYNOPSIS
-        Copy the artifact over a site that already exists and is not ours.
+        What the in-place overlay will keep away from the artifact, worked out
+        once for the dry run and the apply run alike.
 
     .DESCRIPTION
-        The other of the two things a deploy can be, and the one production uses.
-        It ran as top-level script for the same reason and at the same cost as
-        the branch above.
+        Production's runbook has an operator read the dry run's plan and then
+        tick apply. That approval is only worth something if the plan is what the
+        apply run goes on to do, and for as long as this pipeline has existed the
+        two were worked out separately: the dry run from the script's lists and a
+        theme discovery of its own, the overlay from its parameters and another.
+        They agreed because nobody had changed one without the other, and nothing
+        would have said so the day somebody did. Now there is one record. The dry
+        run prints it and Invoke-InPlaceOverlay hands its exclusions to robocopy
+        as they are.
 
-        What this does that the other does not is leave a way back. It copies the
-        site aside first, and it reads Rock's migration log before the copy so
-        that the advice it hands back can say whether restoring those files is
-        enough on its own. Both facts travel in the returned record; the reading
-        used to be taken in the dedicated-site branch and read here, where under
-        Set-StrictMode it was a terminating error on every in-place run that got
-        far enough to need it.
+        All of it can be worked out before anything is downloaded, which is what
+        lets a dry run report it. robocopy matches /XD and /XF against the source
+        tree, so the copy's exclusions are spelled against $ExtractPath -- a path
+        the script fixes up front and the download only fills in later -- and the
+        theme discovery reads the live site, which nothing has touched yet.
 
-        No /MIR and no /PURGE anywhere in here. Files the server legitimately
-        owns -- uploaded content, its own fonts, its theme overrides -- are on the
-        far side of this copy and a purge would take them permanently.
+        Read-only. It looks for files and builds strings; it creates nothing, so a
+        dry run that calls it still changes nothing.
 
-    .PARAMETER ExistingWebConfig
-        The site's own web.config as text, read before this was called -- the copy
-        writes the artifact's file over the top of it.
+    .PARAMETER BackupRoot
+        The root every environment's backups go under. The plan carries this
+        environment's directory beneath it and stops there: the timestamped leaf
+        is the apply run's to add, because a dry run has no moment to stamp.
+
+    .OUTPUTS
+        A hashtable. SitePath, ExtractPath and BackupDirectory say where; the
+        lists the dry run reads out -- PreservedDirectories, PreservedFiles,
+        ServerOwnedDirectories and the discovered ThemeOverrides -- say what; and
+        BackupExclusions and CopyExclusions are the robocopy arguments built from
+        them, the only part the overlay itself reads.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -2388,31 +2545,15 @@ function Invoke-InPlaceOverlay {
         [Parameter(Mandatory = $true)][string]$SitePath,
         [Parameter(Mandatory = $true)][string]$ExtractPath,
         [Parameter(Mandatory = $true)][string]$EnvironmentName,
-        [Parameter(Mandatory = $true)][string]$Sha,
         [Parameter(Mandatory = $true)][string]$BackupRoot,
-        [Parameter(Mandatory = $true)][string]$ManifestPath,
-        # As above: the empty string is what an unsupplied [string] already is,
-        # and the collections need their @() because an unsupplied [string[]] is not.
-        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ConnectionString,
-        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ExistingWebConfig,
+        # The collections need their @() because an unsupplied [string[]] is
+        # $null rather than empty, and the record hands them on to a dry run
+        # that joins them into the lines an operator reads.
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$PreservedDirectories = @(),
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$PreservedFiles = @(),
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedDirectories = @(),
         [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedThemeFiles = @()
     )
-
-    # Read before the copy, compared after the site fails to come up. See
-    # Get-MigrationFingerprint: it decides whether the rollback advice this run
-    # hands back can honestly say "restore the files". It is taken here, in the
-    # branch that makes the backup, because that advice is only ever offered
-    # where there is a backup for it to qualify. It used to be taken in the
-    # dedicated-site branch and read here, which under Set-StrictMode made the
-    # unhealthy-deploy path a terminating error on every in-place run.
-    $preDeployMigrationFingerprint = Get-MigrationFingerprint -SiteRoot $SitePath
-
-    $backupPath = Join-Path (Join-Path $BackupRoot $EnvironmentName) ((Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss") + "-$Sha")
-    Ensure-Directory -Path $backupPath
-    Write-DeployStep "Backing up $SitePath to $backupPath (excluding preserved user data)."
 
     # Back up what the deploy can actually damage: build output and config.
     # Uploaded Content is excluded because it is not being touched and copying
@@ -2422,21 +2563,10 @@ function Invoke-InPlaceOverlay {
         $backupExclusions += '/XD'
         $backupExclusions += (Join-Path $SitePath $directory)
     }
-    # Through Write-Host rather than straight out. The success stream is this
-    # function's return value now, and robocopy's job summary -- bytes copied,
-    # files skipped, retries -- would otherwise be handed back as if it were the
-    # record. Write-Host is where every other line of this deploy already goes,
-    # so the summary still reaches the log the operator reads.
-    & robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NP | Write-Host
-    $backupExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
-    if ($backupExit -gt 7) {
-        throw "Backup failed with robocopy exit code $backupExit; refusing to deploy."
-    }
-    Write-DeployStep "Backup complete."
 
-    # Copy the artifact over the live site. No /MIR and no /PURGE: files the
-    # server legitimately owns must survive, and a purge here would delete
-    # uploaded content and break the site permanently.
+    # Kept away from the copy of the artifact over the live site. There is no
+    # /MIR and no /PURGE on that copy, so these are the whole of what stands
+    # between the server's own files and the artifact's.
     $copyExclusions = @()
     foreach ($directory in $PreservedDirectories) {
         $copyExclusions += '/XD'
@@ -2472,6 +2602,219 @@ function Invoke-InPlaceOverlay {
         $copyExclusions += '/XF'
         $copyExclusions += (ConvertTo-NativePath -Path (Join-Path $ExtractPath $file))
     }
+
+    return @{
+        SitePath               = $SitePath
+        ExtractPath            = $ExtractPath
+        BackupDirectory        = (Join-Path $BackupRoot $EnvironmentName)
+        PreservedDirectories   = @($PreservedDirectories)
+        PreservedFiles         = @($PreservedFiles)
+        ServerOwnedDirectories = @($ServerOwnedDirectories)
+        ThemeOverrides         = $themeOverrides
+        BackupExclusions       = $backupExclusions
+        CopyExclusions         = $copyExclusions
+    }
+}
+
+function Write-InPlaceOverlayPlan {
+    <#
+    .SYNOPSIS
+        Tell the operator what an in-place deploy would do, and do none of it.
+
+    .DESCRIPTION
+        The dry run. Production's runbook has an operator read these lines and
+        then tick apply, so they are what that approval is given against. They
+        used to be printed by a block of top-level script, which no Pester suite
+        can run: the plan an operator approves was covered only by tests that
+        read its source. As a function it can be run against a plan and a site,
+        and held to what it prints.
+
+        Every line goes through Write-DeployStep rather than Write-Host, because
+        this plan is the whole point of a dry run. It is step 6 of the production
+        runbook -- the step that proves the agent is alive -- and the operator
+        reads these lines to check the backup root and the site path before
+        ticking apply. Write-Host is what the staging rehearsal proved can vanish
+        on the way back to the bucket, and a dry run whose plan went missing has
+        proved only half of what it was run for. The one Write-Host left is the
+        blank line that sets the plan apart on the console.
+
+        Read-only, like the plan it prints. It reads the live web.config and
+        writes nothing, so the script body can call it and return with the site
+        exactly as it found it. The return stays in the script body, because
+        only the script body can end the deploy.
+
+    .PARAMETER Plan
+        The record Get-InPlaceOverlayPlan returned. The apply run hands the same
+        record to Invoke-InPlaceOverlay, which is what makes this a preview of
+        that run rather than a second account of it.
+
+    .PARAMETER SiteName
+        Printed and nothing else. The script accepts -TargetSiteName '' and this
+        has always printed it as given, so the empty string is allowed through
+        rather than turning a dry run into a refusal.
+
+    .PARAMETER ServerOwnedAppSettings
+        appSettings keys this server owns by exact name: the list the apply run's
+        merge carries. The plan reports which of them the live web.config has.
+
+    .PARAMETER ServerOwnedAppSettingPrefixes
+        appSettings key families this server owns by prefix, reported the same way.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Plan,
+        [Parameter(Mandatory = $true)][string]$AppPoolName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SiteName,
+        [Parameter(Mandatory = $true)][string]$HostName,
+        # No default. The script always passes its own, and a second copy of it
+        # here is one more for ScriptDefaults.Tests.ps1 to hold in step.
+        [Parameter(Mandatory = $true)][int]$HealthCheckTimeoutSeconds,
+        [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedAppSettings = @(),
+        [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$ServerOwnedAppSettingPrefixes = @()
+    )
+
+    # Unpacked under the name the script body used, so every line below prints
+    # exactly what it printed when this was top-level script.
+    $SitePath = $Plan.SitePath
+
+    Write-Host ""
+    Write-DeployStep "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
+    Write-DeployStep "Would back up $($Plan.SitePath) to $(Join-Path $Plan.BackupDirectory '<timestamp>')."
+    Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
+    # Read off the overlay plan, and never off the script's lists directly.
+    # These four lines are the promise the operator approves, and the plan
+    # is what Invoke-InPlaceOverlay turns into robocopy exclusions, so a
+    # list the copy ignores cannot appear here as if it were kept.
+    #
+    # InPlace only, like the whole of this function. The dedicated-site branch
+    # replaces the directory wholesale and keeps none of these; a line that
+    # said otherwise used to sit in an arm here that could never run.
+    Write-DeployStep "Would preserve directories: $($Plan.PreservedDirectories -join ', ')"
+    Write-DeployStep "Would preserve files: $($Plan.PreservedFiles -join ', ')"
+    Write-DeployStep "Would leave server-owned paths untouched: $($Plan.ServerOwnedDirectories -join ', ')"
+    Write-DeployStep "Would keep this site's own theme override files: $(if ($Plan.ThemeOverrides.Count -gt 0) { $Plan.ThemeOverrides -join ', ' } else { 'none found' })"
+    # Asked of the merge rather than worked out again here. A dry run returns
+    # before the artifact is downloaded, so there is no incoming file yet to
+    # merge against -- but which server-owned settings this site has is the
+    # read half of that merge, and it is the half the plan is about.
+    #
+    # The operator reads this line to check that the values the site depends on
+    # are the ones the deploy has found. A production plan that reports "none
+    # found" for PasswordKey is the signal to stop. Worked out twice, the two
+    # answers drifted, and the one the operator reads was the wrong one.
+    $plannedWebConfigPath = Join-Path $SitePath 'web.config'
+    if (Test-Path $plannedWebConfigPath) {
+        $planned = Get-ServerOwnedWebConfigSettings `
+            -ExistingWebConfig (Get-Content -Raw -Path $plannedWebConfigPath) `
+            -AppSettingKeys $ServerOwnedAppSettings `
+            -AppSettingKeyPrefixes $ServerOwnedAppSettingPrefixes
+
+        $plannedCarry = @($planned.OwnedKeys)
+        if (![string]::IsNullOrWhiteSpace($planned.MachineKey)) { $plannedCarry += 'machineKey' }
+        Write-DeployStep "Would carry this site's own web.config settings across: $(if ($plannedCarry.Count -gt 0) { $plannedCarry -join ', ' } else { 'none found' })"
+
+        # Candidates, not a promise. Each one is carried only where the
+        # artifact registers no prefix of its own, and the artifact is not here
+        # yet -- so this line names what will be considered, and the apply run's
+        # own line names what was carried.
+        $plannedPrefixes = @($planned.Registrations.Keys)
+        Write-DeployStep "Would consider carrying this site's control registrations, for any the artifact does not register itself: $(if ($plannedPrefixes.Count -gt 0) { $plannedPrefixes -join ', ' } else { 'none found' })"
+    }
+    else {
+        Write-DeployStep "Would carry this site's own web.config settings across: there is no web.config at $plannedWebConfigPath."
+    }
+    Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
+    Write-DeployStep "Would set compilation debug=false and executionTimeout=600 in the deployed web.config."
+    Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
+}
+
+function Invoke-InPlaceOverlay {
+    <#
+    .SYNOPSIS
+        Copy the artifact over a site that already exists and is not ours.
+
+    .DESCRIPTION
+        The other of the two things a deploy can be, and the one production uses.
+        It ran as top-level script for the same reason and at the same cost as
+        the branch above.
+
+        What this does that the other does not is leave a way back. It copies the
+        site aside first, and it reads Rock's migration log before the copy so
+        that the advice it hands back can say whether restoring those files is
+        enough on its own. Both facts travel in the returned record; the reading
+        used to be taken in the dedicated-site branch and read here, where under
+        Set-StrictMode it was a terminating error on every in-place run that got
+        far enough to need it.
+
+        No /MIR and no /PURGE anywhere in here. Files the server legitimately
+        owns -- uploaded content, its own fonts, its theme overrides -- are on the
+        far side of this copy and a purge would take them permanently.
+
+        Which files those are is not decided here. This carries out the plan
+        Get-InPlaceOverlayPlan made, which is the plan the dry run printed, so
+        the exclusions an operator approved are the exclusions robocopy is
+        handed rather than a second working-out that happened to match.
+
+    .PARAMETER Plan
+        The record Get-InPlaceOverlayPlan returned: the site, the extracted
+        artifact, this environment's backup directory, and the robocopy
+        exclusions for the backup and for the copy.
+
+    .PARAMETER ExistingWebConfig
+        The site's own web.config as text, read before this was called -- the copy
+        writes the artifact's file over the top of it.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Plan,
+        [Parameter(Mandatory = $true)][string]$Sha,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        # No `= ''`, for the reason Invoke-DedicatedSiteReplace gives: an
+        # unsupplied [string] is already the empty string.
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ConnectionString,
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$ExistingWebConfig
+    )
+
+    # Unpacked under the names these steps have always used, so each robocopy
+    # call below still reads as the command it runs and the log lines name the
+    # same paths they always named.
+    $SitePath = $Plan.SitePath
+    $ExtractPath = $Plan.ExtractPath
+    $backupExclusions = @($Plan.BackupExclusions)
+    $copyExclusions = @($Plan.CopyExclusions)
+    $themeOverrides = @($Plan.ThemeOverrides)
+
+    # Read before the copy, compared after the site fails to come up. See
+    # Get-MigrationFingerprint: it decides whether the rollback advice this run
+    # hands back can honestly say "restore the files". It is taken here, in the
+    # branch that makes the backup, because that advice is only ever offered
+    # where there is a backup for it to qualify. It used to be taken in the
+    # dedicated-site branch and read here, which under Set-StrictMode made the
+    # unhealthy-deploy path a terminating error on every in-place run.
+    $preDeployMigrationFingerprint = Get-MigrationFingerprint -SiteRoot $SitePath
+
+    $backupPath = Join-Path $Plan.BackupDirectory ((Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss") + "-$Sha")
+    Ensure-Directory -Path $backupPath
+    Write-DeployStep "Backing up $SitePath to $backupPath (excluding preserved user data)."
+
+    # Through Write-Host rather than straight out. The success stream is this
+    # function's return value now, and robocopy's job summary -- bytes copied,
+    # files skipped, retries -- would otherwise be handed back as if it were the
+    # record. Write-Host is where every other line of this deploy already goes,
+    # so the summary still reaches the log the operator reads.
+    & robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NP | Write-Host
+    $backupExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+    if ($backupExit -gt 7) {
+        throw "Backup failed with robocopy exit code $backupExit; refusing to deploy."
+    }
+    Write-DeployStep "Backup complete."
+
+    # Copy the artifact over the live site. No /MIR and no /PURGE: files the
+    # server legitimately owns must survive, and a purge here would delete
+    # uploaded content and break the site permanently. What is kept away from
+    # the copy is the plan's $copyExclusions, unchanged -- see
+    # Get-InPlaceOverlayPlan for what each list protects and why.
     Write-DeployStep "Keeping this site's own copies of $($themeOverrides.Count) theme override file(s): $($themeOverrides -join ', ')."
 
     Write-DeployStep "Copying the artifact over $SitePath."
@@ -2516,6 +2859,28 @@ function Invoke-InPlaceOverlay {
 }
 
 function Test-EnvironmentHealth {
+    <#
+        .SYNOPSIS
+        Waits for the deployed site to answer, recycling its app pool while it
+        does not.
+
+        .DESCRIPTION
+        Returns $true on the first probe that comes back healthy and $false once
+        TimeoutSeconds pass without one. The caller turns $false into the
+        "did not become healthy" error; this function only decides.
+
+        The probe goes to the loopback carrying HostHeader when one is given, and
+        to Url otherwise. With an AppPoolName, the pool is stopped and started
+        every RecycleAfterSeconds of failure, but never in the last minute of the
+        window, where a recycle could only end the wait on a site still starting.
+        The reasons for each of these are in the body, beside the code they
+        explain.
+
+        .OUTPUTS
+        System.Boolean
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
@@ -2655,76 +3020,41 @@ try {
     Write-DeployStep "Deploy started."
     Write-DeployScriptProvenance
 
+    # One plan, made here and above the dry-run fork, so the plan a dry run
+    # prints and the plan an apply run carries out come from the same call
+    # rather than from two that have to be kept in step by hand. The operator
+    # approves the first and production gets the second.
+    #
+    # Making it this early moves the theme discovery from after the backup to
+    # before the download. Neither the download, the pool stop, nor the
+    # backup writes to the live site's Themes directory, so nothing the deploy
+    # does in between can change the answer -- and if the discovery ever
+    # throws, it now throws before the site is taken offline rather than after.
+    if ($Mode -eq 'InPlace') {
+        $overlayPlan = Get-InPlaceOverlayPlan `
+            -SitePath $SitePath `
+            -ExtractPath $ExtractPath `
+            -EnvironmentName $EnvironmentName `
+            -BackupRoot $BackupRoot `
+            -PreservedDirectories $PreservedDirectories `
+            -PreservedFiles $PreservedFiles `
+            -ServerOwnedDirectories $ServerOwnedDirectories `
+            -ServerOwnedThemeFiles $ServerOwnedThemeFiles
+    }
+
     if ($Mode -eq 'InPlace' -and -not $Apply) {
-        # Through Write-DeployStep rather than Write-Host, because this plan is the
-        # whole point of a dry run. It is step 6 of the production runbook -- the
-        # step that proves the agent is alive -- and the operator reads these lines
-        # to check the backup root and the site path before ticking apply. Write-Host
-        # is what the staging rehearsal proved can vanish on the way back to the
-        # bucket, and a dry run whose plan went missing has proved only half of what
-        # it was run for.
-        Write-Host ""
-        Write-DeployStep "DRY RUN -- no changes will be made. Re-run with -Apply to deploy."
-        Write-DeployStep "Would back up $SitePath to $(Join-Path (Join-Path $BackupRoot $EnvironmentName) '<timestamp>')."
-        Write-DeployStep "Would stop app pool '$AppPoolName', copy the artifact over $SitePath, then restart it."
-        # Mode-aware, because the two branches do opposite things with this list
-        # and a plan that promised preservation on a dedicated site would be
-        # telling the reviewer the reverse of what the apply run does.
-        if ($Mode -eq 'DedicatedSite') {
-            Write-DeployStep "Would replace $SitePath wholesale. These directories would NOT survive: $($PreservedDirectories -join ', ')"
-        }
-        else {
-            Write-DeployStep "Would preserve directories: $($PreservedDirectories -join ', ')"
-        }
-        Write-DeployStep "Would preserve files: $($PreservedFiles -join ', ')"
-        Write-DeployStep "Would leave server-owned paths untouched: $($ServerOwnedDirectories -join ', ')"
-        # Resolved the same way the apply run resolves it, not read straight off
-        # the parameter. The parameter is normally blank and the apply run falls
-        # back to the Default Web Site, so reading it directly made the plan say
-        # "none found" for a run that would restore eight files.
-        $plannedSource = if ($Mode -eq 'DedicatedSite') {
-            Resolve-SharedAssetSource -ConfiguredPath $SharedAssetSourcePath
-        }
-        else {
-            $SitePath
-        }
-        $plannedOverrides = @(Get-ServerOwnedThemeFilePaths `
-            -SiteRoot $plannedSource `
-            -FileNames $ServerOwnedThemeFiles)
-        Write-DeployStep "Would keep this site's own theme override files: $(if ($plannedOverrides.Count -gt 0) { $plannedOverrides -join ', ' } else { 'none found' })"
-        # Asked of the merge rather than worked out again here. A dry run returns
-        # before the artifact is downloaded, so there is no incoming file yet to
-        # merge against -- but which server-owned settings this site has is the
-        # read half of that merge, and it is the half the plan is about.
-        #
-        # The operator reads this line to check that the values the site depends on
-        # are the ones the deploy has found. A production plan that reports "none
-        # found" for PasswordKey is the signal to stop. Worked out twice, the two
-        # answers drifted, and the one the operator reads was the wrong one.
-        $plannedWebConfigPath = Join-Path $SitePath 'web.config'
-        if (Test-Path $plannedWebConfigPath) {
-            $planned = Get-ServerOwnedWebConfigSettings `
-                -ExistingWebConfig (Get-Content -Raw -Path $plannedWebConfigPath) `
-                -AppSettingKeys $ServerOwnedAppSettings `
-                -AppSettingKeyPrefixes $ServerOwnedAppSettingPrefixes
-
-            $plannedCarry = @($planned.OwnedKeys)
-            if (![string]::IsNullOrWhiteSpace($planned.MachineKey)) { $plannedCarry += 'machineKey' }
-            Write-DeployStep "Would carry this site's own web.config settings across: $(if ($plannedCarry.Count -gt 0) { $plannedCarry -join ', ' } else { 'none found' })"
-
-            # Candidates, not a promise. Each one is carried only where the
-            # artifact registers no prefix of its own, and the artifact is not here
-            # yet -- so this line names what will be considered, and the apply run's
-            # own line names what was carried.
-            $plannedPrefixes = @($planned.Registrations.Keys)
-            Write-DeployStep "Would consider carrying this site's control registrations, for any the artifact does not register itself: $(if ($plannedPrefixes.Count -gt 0) { $plannedPrefixes -join ', ' } else { 'none found' })"
-        }
-        else {
-            Write-DeployStep "Would carry this site's own web.config settings across: there is no web.config at $plannedWebConfigPath."
-        }
-        Write-DeployStep "Would set app pool '$AppPoolName' to AlwaysRunning with no idle timeout and a fixed 04:00 recycle, and enable preload on site '$SiteName'."
-        Write-DeployStep "Would set compilation debug=false and executionTimeout=600 in the deployed web.config."
-        Write-DeployStep "Would health check https://$HostName/ for up to $HealthCheckTimeoutSeconds seconds."
+        # The plan is printed by a function so that Pester can run it; see
+        # Write-InPlaceOverlayPlan. The return stays here, because a function
+        # can only return from itself, and this return is what keeps a dry run
+        # away from everything below it.
+        Write-InPlaceOverlayPlan `
+            -Plan $overlayPlan `
+            -AppPoolName $AppPoolName `
+            -SiteName $SiteName `
+            -HostName $HostName `
+            -HealthCheckTimeoutSeconds $HealthCheckTimeoutSeconds `
+            -ServerOwnedAppSettings $ServerOwnedAppSettings `
+            -ServerOwnedAppSettingPrefixes $ServerOwnedAppSettingPrefixes
         return
     }
 
@@ -2737,6 +3067,7 @@ try {
     # to be an error document is obvious here and nowhere else until the site 500s.
     $artifactMegabytes = [math]::Round((Get-Item $ArtifactPath).Length / 1MB, 1)
     Write-DeployStep "Artifact downloaded ($artifactMegabytes MB)."
+    Assert-ArtifactHash -Path $ArtifactPath -ExpectedSha256 $ArtifactSha256
 
     if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force }
     Ensure-Directory -Path $ExtractPath
@@ -2783,35 +3114,18 @@ try {
             -ServerOwnedThemeFiles $ServerOwnedThemeFiles
     }
     else {
+        # The plan made above the dry-run fork, so what this copies around is
+        # what a dry run of the same inputs reported.
         Invoke-InPlaceOverlay `
-            -SitePath $SitePath `
-            -ExtractPath $ExtractPath `
-            -EnvironmentName $EnvironmentName `
+            -Plan $overlayPlan `
             -Sha $Sha `
-            -BackupRoot $BackupRoot `
             -ManifestPath $ManifestPath `
             -ConnectionString $ConnectionString `
-            -ExistingWebConfig $existingWebConfig `
-            -PreservedDirectories $PreservedDirectories `
-            -PreservedFiles $PreservedFiles `
-            -ServerOwnedDirectories $ServerOwnedDirectories `
-            -ServerOwnedThemeFiles $ServerOwnedThemeFiles
+            -ExistingWebConfig $existingWebConfig
     }
 
-    $manifest = [ordered]@{
-        environmentName = $EnvironmentName
-        mode = $Mode
-        sha = $Sha
-        artifactGcsPath = $ArtifactGcsPath
-        hostName = $HostName
-        siteName = $SiteName
-        appPoolName = $AppPoolName
-        environmentPath = $EnvironmentPath
-        sitePath = $SitePath
-        status = "deployed"
-        deployedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    }
-    $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $ManifestPath -Encoding UTF8 -Force
+    Write-DeploymentManifest -Target $DeploymentTarget -EnvironmentName $EnvironmentName -Mode $Mode `
+        -Sha $Sha -ArtifactGcsPath $ArtifactGcsPath -HostName $HostName -EnvironmentPath $EnvironmentPath
 
     # Both modes, and after the copy rather than before it: an InPlace deploy
     # robocopies over a site it did not create, so this is the only point in a

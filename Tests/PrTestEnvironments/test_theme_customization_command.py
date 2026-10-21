@@ -341,7 +341,7 @@ class TheCommandCanActuallyBeRunTests(unittest.TestCase):
             step["with"]["command"]
             for job in workflow["jobs"].values()
             for step in job["steps"]
-            if str(step.get("uses", "")).endswith("queue-vm-command")
+            if str(step.get("uses", "")).endswith("run-vm-command")
         ]
 
         self.assertEqual(len(queued), 2, "expected one queued command per job")
@@ -437,7 +437,7 @@ class WorkflowGatesTests(unittest.TestCase):
             name: [
                 step["with"]["payload"]
                 for step in job["steps"]
-                if str(step.get("uses", "")).endswith("queue-vm-command")
+                if str(step.get("uses", "")).endswith("run-vm-command")
             ][0]
             for name, job in workflow["jobs"].items()
         }

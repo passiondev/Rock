@@ -36,7 +36,8 @@
     TABLE DISCOVERY MIRRORS THE MIGRATION. The same predicate: a user table, a column
     named IconCssClass, a character type. That is deliberate -- this script must reach
     exactly the set of tables the migration reached, no more. The character-type
-    filter is the fork-local narrowing from Documentation/Fork-Local-Changes.md.
+    filter is the fork's own narrowing of the migration's cursor; the comment above
+    that cursor in ReplaceFontAwesomeWithTablerIcons.cs says why.
 
     ADDRESSED, NOT DISCOVERED. The five classes are a closed, hardcoded set, and
     -ExpectedCatalog is mandatory and compared against the catalog actually connected

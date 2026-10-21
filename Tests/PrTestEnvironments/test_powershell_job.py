@@ -165,8 +165,10 @@ class ScriptsLiveInScriptFilesTests(harness.HarnessAssertions, unittest.TestCase
     # What the workflows carry now. It started at 27 when the rule was written and
     # only falls: a change that raises it is adding script code nothing can run,
     # which is the thing this file exists to stop. Extracting the deploy script
-    # drift comparison into .github/actions/report-script-drift took the first one.
-    WORKFLOW_BACKLOG = 26
+    # drift comparison into .github/actions/report-script-drift took the first one;
+    # moving the package job's zip-and-record step into New-PackagedArtifact.ps1
+    # took the second.
+    WORKFLOW_BACKLOG = 25
 
     def _inline_blocks(self, paths):
         """(file, step name, executable line count) for every `run:` block."""
@@ -533,18 +535,21 @@ class PesterJobTests(harness.HarnessAssertions, unittest.TestCase):
             # walks still has to exist, or the sweep finds nothing and passes.
             # `$Script` interpolated into the path comes from a -ForEach table, and
             # the table's entries are already checked above as bare filenames.
-            directories = [
+            # A suite can also read a file that is not a script -- the artifact
+            # suites check artifact-paths.json against the build configs it
+            # describes -- and that file has to exist for the same reason.
+            read_paths = [
                 target
                 for target in swept.findall(text)
                 if not target.endswith(".ps1") and "$" not in target
             ]
-            for target in directories:
+            for target in read_paths:
                 self.assertTrue(
-                    (harness.REPO_ROOT / target).is_dir(),
-                    f"{suite.name} sweeps {target}, which is not a directory.",
+                    (harness.REPO_ROOT / target).exists(),
+                    f"{suite.name} reads {target}, which does not exist.",
                 )
 
-            found[suite.name] = literals + directories
+            found[suite.name] = literals + read_paths
 
             for literal in literals:
                 # A literal with a path in it is resolved the way the suite itself

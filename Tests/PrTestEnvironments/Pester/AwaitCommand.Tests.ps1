@@ -18,7 +18,41 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot 'ScriptFunctions.psm1') -Force
 
     $script:ActionScript = Get-RepositoryPath '.github/actions/await-vm-command/Await-VmCommand.ps1'
-    . (Import-ScriptFunction -Path $script:ActionScript -Name 'Get-PositiveInteger', 'Get-LogTail', 'Show-CommandLog')
+    . (Import-ScriptFunction -Path $script:ActionScript -Name 'Get-PositiveInteger', 'Get-LogTail', 'Show-CommandLog', 'Read-CommandResult', 'Get-NoResultMessage')
+}
+
+Describe 'Read-CommandResult' {
+    # The results a current agent writes are read back through this in
+    # CommandQueuePass.Tests.ps1, straight from the poll pass. These are the shapes
+    # that suite cannot produce, because no current agent writes them.
+
+    It 'reads a result from an agent older than the log upload as having no log' {
+        $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"succeeded"}'
+
+        $outcome.HasSucceeded | Should -BeTrue
+        $outcome.LogObject | Should -Be ''
+        $outcome.Error | Should -Be ''
+    }
+
+    It 'does not read a result with no status as a success' {
+        # The silent green: a step that exits 0 on a result that said nothing.
+        $outcome = Read-CommandResult -Json '{"commandId":"abc"}'
+
+        $outcome.HasSucceeded | Should -BeFalse
+    }
+
+    It 'does not read any status but succeeded as a success' {
+        $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"success"}'
+
+        $outcome.HasSucceeded | Should -BeFalse
+    }
+
+    It 'keeps the parsed result for printing' {
+        $outcome = Read-CommandResult -Json '{"commandId":"abc","status":"failed","error":"boom"}'
+
+        $outcome.Result.commandId | Should -Be 'abc'
+        $outcome.Error | Should -Be 'boom'
+    }
 }
 
 Describe 'Get-PositiveInteger' {
@@ -124,5 +158,35 @@ Describe 'Show-CommandLog' {
         finally {
             Pop-Location
         }
+    }
+}
+
+Describe 'Get-NoResultMessage' {
+    BeforeAll {
+        $script:Message = Get-NoResultMessage -Label 'Production deploy' -Seconds 3600 -Bucket 'connect-file-storage' `
+            -Queue 'commands-prod' -CommandId 'deploy-production-123-1'
+    }
+
+    It 'names the command, so the reader knows which objects to look for' {
+        # Every object a command leaves behind is named after its id. Without it,
+        # a run that queued more than one command leaves the reader guessing.
+        $script:Message | Should -Match 'deploy-production-123-1'
+    }
+
+    It 'still says where an agent that never ran would have gone wrong' {
+        $script:Message | Should -Match 'connect-file-storage'
+        $script:Message | Should -Match "Rock PR Environment Command Queue"
+        $script:Message | Should -Match "queue 'commands-prod'"
+        $script:Message | Should -Match '3600 seconds'
+    }
+
+    It 'names the claim a command stranded mid-run leaves behind' {
+        $script:Message | Should -Match ([regex]::Escape('pr-environments/commands-prod/processing/deploy-production-123-1.json'))
+    }
+
+    It 'draws no conclusion from pending/' {
+        # An agent from before the claim runs a command in place under pending/,
+        # and that is the inference open item 19 retracts.
+        $script:Message | Should -Not -Match 'pending/'
     }
 }

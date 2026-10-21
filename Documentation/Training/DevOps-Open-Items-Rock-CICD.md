@@ -60,6 +60,10 @@ nothing on the other side of it. Referencing an environment that does not exist 
 GitHub creates it with no rules, so the run sails past. Worth remembering as a category: an
 approval gate is not self-evidencing, and this one read as present in every review of the YAML.
 
+**Since 2026-10-20 there is no `approve` job.** The gate moved onto the job that writes the
+command, `env-deploy-command.yml`'s `deploy`, which declares `production` whenever its queue is
+`commands-prod` (item 33). The run waits at `Deploy to production`, still after the build.
+
 Current settings, read back from the API on 2026-08-24 rather than from memory:
 
 | Setting | Value | Why |
@@ -173,10 +177,30 @@ Two independent defects, and the first one is the interesting one:
   explaining that this keeps renewal from stopping and starting the site. That reasoning does
   not hold: renewal stops `W3SVC` **service-wide** for the HTTP-01 challenge (line 189), so
   staging was already taking the full downtime and simply never got a certificate for it.
-  **Fixed:** renewal takes `-AdditionalManifestRoots` (default `C:\RockBackups`) and scans
-  direct children of those roots only — never `-Recurse`, because the siblings of that
-  manifest are timestamped site backups and recursing would bind certificates from stale
-  manifests. Hosts are de-duplicated by name.
+  **Fixed:** renewal takes `-AdditionalManifestRoots` and scans direct children of those
+  roots only — never `-Recurse`, because the siblings of that manifest are timestamped site
+  backups and recursing would bind certificates from stale manifests. Hosts are
+  de-duplicated by name.
+  **Superseded (2026-10-15): the default is now empty.** It was `C:\RockBackups` while
+  staging was deployed InPlace. Staging has since moved to DedicatedSite, so its manifest is
+  at `C:\RockTestEnvs\staging\env.json` and the walk of `C:\RockTestEnvs` finds it. That left
+  production's manifest, `C:\RockBackups\production\env.json`, as the only thing under the
+  old default — and the production bootstrap ships the renewal script, and production's queue
+  agent accepted `renew-certificate`. One such command would have stopped `W3SVC` on
+  production and rebound its https binding. (Since 2026-10-20 production's agent accepts only
+  the four verbs its own workflows send, and `renew-certificate` is not one of them — once
+  production's bootstrap has been re-run. The empty default still matters: it is what protects
+  production until then, and it should not depend on that list staying narrow.) The parameter
+  stays for a by-hand run on the test VM; `Pester/ManifestContract.Tests.ps1` fails if the
+  default reaches the backup root again.
+  **Left on the test VM: a stale `C:\RockBackups\staging\env.json`** from the InPlace days.
+  It is harmless, because renewal no longer reads that root, and nothing in the pipeline will
+  ever delete it. Remove it by hand the next time somebody is on the box. `gcloud compute ssh`
+  does not reach `connect-srv-test` (sshd does not answer there), so that means RDP. Open the
+  file first and confirm it names `staging` and `InPlace`, and delete that file only: the
+  timestamped directories beside it are the old site backups described above, which are a
+  separate decision. Not done remotely on 2026-10-20, because nothing established reaches the
+  test VM's disk without a reboot.
 
 **Still open — the reporting gap that hid all of this for months.** `succeeded` does not mean
 a certificate was issued. The script returns early with a clean exit when it finds no
@@ -613,7 +637,8 @@ mask this, and neither is a fix:
   minutes it throws "Timed out waiting for deployment lock" and writes a *failed* result for a
   command that actually succeeded.
 
-**Status: confirmed in production on 2026-08-11, trigger removed, root fix still open.**
+**Status: confirmed in production on 2026-08-11, trigger removed; fixed in code 2026-10-20, live
+on each host only after its bootstrap is dispatched (item 25).**
 
 It was caught in the act within the hour:
 
@@ -642,11 +667,33 @@ overlapping *itself*, that inline run was the only way to get two agents at once
 a pending command is now picked up by the task within 60 seconds instead. That closes the
 observed failure, and it is a mitigation, not the fix.
 
-**The fix is still the claim that was designed and never written:** copy the object to
-`processing/` and delete it from `pending/` *before* running it, with the move made conditional
-(`ifGenerationMatch`) so exactly one run wins. Until that exists, any second agent process from
-any source reintroduces this. It also makes item 16's heartbeat cheaper, because `processing/`
-would finally mean what its name says.
+**Fixed in code 2026-10-20: the claim that was designed and never written now exists.** Before
+it reads a command, `Invoke-CommandQueuePass` copies the object into `processing/` with
+`ifGenerationMatch=0`, so GCS lets exactly one copy succeed and every other run gets `412` and
+skips the command. The winner removes the `pending/` object before running it, runs from the
+claim, and removes the claim only after the result is written and the `pending/` object is
+confirmed gone. Two consequences to know:
+
+- **At most once, not at least once.** An agent that dies mid-command leaves its claim in
+  `processing/`, nothing re-runs it, and the producer's wait times out. That is the right
+  trade for deploys — a duplicate deploy is what this item is about — but it means a command
+  stranded in `processing/` is cleared by hand, after reading its log.
+- **A copy that lands but whose answer is lost is still the agent's.** Each claim carries a
+  `claimToken` in its metadata. When the copy fails with no answer or a `5xx`, the agent reads the
+  destination back, and its own token means it won and runs the command. Without the read-back,
+  every later run would get `412` from the agent's own copy and skip the command for good.
+  If the read-back fails too, the warning names the claim object, which is then cleared by hand
+  like any stranded command.
+- **The VM needs `objects.create` under `processing/`.** It already writes `results/` and
+  `logs/` with the same service account, and no IAM condition in the repo narrows that by
+  prefix. Checked against live IAM on 2026-10-20: both VMs run as the project's default compute
+  account, which holds `roles/storage.admin` on the bucket with no condition (see item 33).
+
+Neither host runs this until its bootstrap is dispatched — the agent refreshes its own script
+from the bootstrap prefix, so for the test VM that is the next `pr-test-bootstrap-command-queue`
+run, and for production the next `production-bootstrap-command-queue` run (a VM restart, with
+approval). `processing/` now means what its name says, which also makes item 16's heartbeat
+cheaper: a command in `processing/` is running or stranded, never merely waiting.
 
 > **The diagnostic lesson is worth more than the bug.** On the night of 2026-08-10 this same
 > "command sitting in `pending/`" observation was read as *the agent is dead*, and the response
@@ -1139,9 +1186,9 @@ environment's database, which left production's real customization sitting on pr
 in no repository, waiting for the first automated deploy to overwrite it.
 
 **Fixed in code 2026-08-26.** Both override files are now committed and match production byte for
-byte, so the branding rides in the artifact. `Documentation/Fork-Local-Changes.md` item 4 records
-them as fork-local, and `Tests/PrTestEnvironments/test_theme_branding.py` fails if a merge resolves
-either towards upstream. This does not replace the `RockNextGen` database settings below — v19
+byte, so the branding rides in the artifact. Git sees both as fork-local edits to Rock's own files
+(`upgrade_diff.py fork-local` lists them), and `Tests/PrTestEnvironments/test_theme_branding.py`
+fails if a merge resolves either towards upstream. This does not replace the `RockNextGen` database settings below — v19
 moves the internal site off the `Rock` theme, so both are needed — but every site still on a
 LESS theme now keeps its branding through a deploy, in both environments, without a manual step.
 
@@ -1492,9 +1539,11 @@ discovered during an incident.
 **Most of the above is now a command rather than advice.** `Deployment/Repository/upgrade_diff.py`
 takes the two refs and reports what the upgrade removed; the `Upgrade Diff` workflow is the same
 thing with a dispatch button. It answers the three questions this item kept asking people to
-remember:
+remember, and since 2026-10-21 a fourth — which of the fork's own edits the merge dropped. That
+one needs the two upstream release tags locally, which the first command fetches:
 
 ```bash
+python3 Deployment/Repository/upgrade_diff.py fetch-upstream origin/passion-18.4.1 origin/passion-19.3.4
 python3 Deployment/Repository/upgrade_diff.py cutover origin/passion-18.4.1 origin/passion-19.3.4
 ```
 
@@ -1531,16 +1580,20 @@ ever proves the tight set missed something, widen `CONFIGURATION_TABLES` and mov
 file with it. Until then, a migration that rewrites configuration through some other table is
 still a human read.
 
-**The first step still entirely human: fork-local edits.** A merge resolves those *for* you, and
-"take theirs" on one silently reverts a fix or deletes a feature with every test still green.
-`Documentation/Fork-Local-Changes.md` is the register, derived rather than hand-collected, and
-deriving it on 2026-08-20 immediately corrected the record: the belief that the icon migration's
-narrowed cursor was the only place this fork changes Rock's behaviour was wrong. There are six
-files across two unrelated changes, and the second — a FormBuilder header-image feature spanning
-a C# block, a view model and three Obsidian components — has no test coverage at all. Nothing but
-that page stands between it and a bad merge.
+**Fork-local edits are now in the report.** A merge resolves those *for* you, and "take theirs"
+on one silently reverts a fix or deletes a feature with every test still green. The cutover report
+reads each trunk's Rock version from its own tree, measures each against that upstream release
+tag, and lists under *Fork edits the new trunk no longer carries* any file the old trunk had
+changed that the new one no longer does. Run `upgrade_diff.py fetch-upstream` first so both tags
+are local; without them the report says the check did not run and counts that as a finding. This
+replaced a hand-kept register, `Fork-Local-Changes.md`, retired 2026-10-21: CI failed every pull
+request that touched a Rock-owned file until someone wrote an entry for it, and git already knew
+the list. Deriving that list on 2026-08-20 had corrected the record — the icon migration's
+narrowed cursor was not the only place this fork changes Rock's behaviour, and a FormBuilder
+header-image feature spanning a C# block, a view model and two Obsidian components still has no
+test coverage — so the report is what now stands between those edits and a bad merge.
 
-**The second: state that only exists on the VM.** `upgrade_diff.py` compares two git refs, so
+**Still human: state that only exists on the VM.** `upgrade_diff.py` compares two git refs, so
 anything not in git is invisible to it by construction — and a surprising amount of what makes
 this a Passion install rather than a stock Rock install is in that category. Verified from this
 checkout:
@@ -1562,6 +1615,161 @@ The decision this asks for is per item, and it is one of two: bring it into the 
 write down that it is VM-owned and how to restore it. What is not an option is leaving it
 undecided, because the failure mode is a deploy that succeeds and a site that comes back missing
 something nobody listed.
+
+### 33. Every workflow can write to production's queue, so the approval guards the workflows and not production
+
+**Recorded 2026-10-20. Needs the team: it is GCP IAM and GitHub environment settings, plus
+workflow changes that have to land before either.**
+
+Every workflow authenticates through `.github/actions/gcp-session` with one repository secret,
+`GCP_SA_KEY`. The key a PR deploy uses to write into `pr-environments/commands/` can write
+just as well into:
+
+- `pr-environments/commands-prod/`, which production's agent runs;
+- `pr-environments/bootstrap/prod/`, which production's startup script installs from and its
+  agent refreshes from — the agent itself included;
+- `pr-environments/production/`, where production's artifact sits between the build and the
+  deploy that unpacks it over the live site.
+
+Item 2's reviewers and branch policy gate the jobs that declare `environment: production`.
+They do not gate the key. Anyone with write access can push a branch whose workflow reads
+`GCP_SA_KEY` and writes straight into any of the three, with no approval and from any ref.
+
+**What 2026-10-20 narrowed, and what it did not.** Production's agent now accepts only the
+four verbs its own workflows send (`Get-QueueAllowedCommands` in
+`Invoke-PrEnvironmentCommandQueue.ps1`), so a `destroy`, a `stop` or a fleet `deploy` written
+into `commands-prod/` comes back refused instead of running. That takes effect only after
+production's bootstrap is re-run. It limits what an unapproved command can do to what an
+approved one can, and an approved one includes `deploy-environment` with whatever artifact the
+command names.
+
+**The fix is two halves, and the order is what matters.**
+
+1. **A production service account, held by the `production` environment.** Store its key as an
+   environment secret on `production`. A job that declares the environment then gets that key,
+   and no other job can read it. That helps only if every job that writes a production object
+   declares the environment. Until 2026-10-20 only `production-bootstrap-command-queue.yml`'s
+   `bootstrap` job did. **The workflow half landed on 2026-10-20**, and these jobs now declare it
+   too:
+   - `env-deploy-command.yml`'s `deploy` job, whenever `queue_name` is `commands-prod`.
+     `production-deploy.yml`'s separate `approve` job is gone. It held the environment while
+     the job that wrote the command did not, and keeping both would ask for two approvals.
+   - The `plan` jobs of `db-anonymize-staging.yml` and `db-set-theme-customization.yml`, and
+     `db-find-legacy-text-columns.yml`'s `find` job, on the same condition. The two apply jobs
+     switch from `staging-anonymize` and `database-write` to `production` on it too. A db-* run
+     against production now asks for two approvals, the dry run's and the write's, and has to
+     be dispatched from a branch the environment allows.
+
+   Every other queue gets an empty environment name, which GitHub runs with no environment at
+   all (checked 2026-10-20 with a throwaway workflow), so staging and the PR fleet stay
+   unattended. `test_every_job_that_can_post_to_production_waits_for_the_production_gate`
+   scans every workflow that takes a queue name, so a new one is checked on the day it is added.
+
+   **The build stays ungated; the deploy checks what it built instead.** `production-deploy.yml`
+   builds through `pr-test-artifact.yml`, which uploads production's artifact with no
+   environment, so `pr-environments/production/` stays fleet-writable. The build records the
+   zip's SHA-256 as a job output, which no bucket key can rewrite. The command carries it as
+   `artifactSha256`, and `Deploy-RockEnvironment.ps1` checks the downloaded zip against it
+   before unpacking anything (`Assert-ArtifactHash`). Staging pins its hash the same way, so
+   every push rehearses the check. Production's agent checks only once production's bootstrap
+   has been re-run: an older agent drops a field its contract does not name.
+
+   One gap remains. When nothing that compiles has changed, `pr-test-artifact.yml` repackages
+   from a base artifact it finds in the bucket, and the hash it records is of the zip it built
+   from that base. A base planted under a fleet-writable slug would be hashed and pinned like an
+   honest one. Dispatching production with `force_build` closes it for that run; closing it for
+   good needs a base record that only production's key can write.
+2. **Then narrow the fleet account.** An IAM condition on `GCP_SA_KEY`'s service account that
+   leaves it everything under `pr-environments/` except `commands-prod/` and `bootstrap/prod/`.
+   `production/` stays writable, because the hash is what protects it now. Uniform bucket-level
+   access is on (item 17), so a condition on `resource.name` is available.
+
+In the other order — the IAM change first — every production deploy, bootstrap and db-* run
+against `commands-prod` fails at its first write, because those jobs still authenticate with
+the fleet key.
+
+**Corrected later on 2026-10-20: production's VM does not have its own service account.** This
+item first said it did. Live IAM says `connect-srv-prod` and `connect-srv-test` both run as the
+project's default compute account, `6171028467-compute@developer.gserviceaccount.com`. With no
+condition, that account holds:
+
+- `roles/storage.admin` and `roles/storage.objectAdmin` on the bucket;
+- `roles/editor` on the project.
+
+The test VM carries the `cloud-platform` scope, and it runs every PR environment's code. Any
+process on it that can reach the metadata server gets that account's token. That token reaches
+further than `GCP_SA_KEY`: production's queue and bootstrap prefix, and through `roles/editor`
+the production VM and the rest of the project.
+
+So the fix needs a third half, before the IAM step above: give production's VM a service account
+of its own. Changing an instance's service account needs it stopped, so this is a production
+restart, like the bootstrap's scope change. Production's account still needs to read
+`commands-prod/` and `bootstrap/prod/`, and to write `processing/`, `results/` and `logs/` under
+its own queue. Then the test VM's account can be narrowed the same way as the fleet key.
+
+**Applied on 2026-10-20: everything except production's VM account, which waits on DevOps.**
+
+Production's key is `github-actions-rock-production@passioncitychurch-com.iam.gserviceaccount.com`.
+Its key was created 2026-10-20 at 13:22 UTC and lives in one place only: the `production`
+environment's `GCP_SA_KEY` secret. It shadows the repository secret of the same name for every
+job that declares the environment, and no other job can read it. Its bindings, all read back
+after they were applied:
+
+| Role | Where | Why |
+| --- | --- | --- |
+| `storage.objectAdmin` | Bucket, condition `production-queue-and-bootstrap`: objects under `pr-environments/commands-prod/` or `pr-environments/bootstrap/prod/` | The two prefixes production's agent reads |
+| `storage.objectViewer` | Bucket, condition `read-pr-environments`: objects under `pr-environments/` | Production's artifact, and the published scripts the drift report compares against |
+| `storage.legacyBucketReader` | Bucket, no condition | A listing is checked against the bucket, not an object, so an object-name condition never matches it |
+| `compute.instanceAdmin.v1` | `connect-srv-prod` only | The bootstrap stops, rescopes and starts it |
+| `compute.viewer` | Project | Resolving the VM by name |
+| `iam.serviceAccountUser` | The default compute account | `set-service-account` has to act as the account the VM runs as |
+
+The fleet key was narrowed at 15:57 UTC the same day. The repository's `GCP_SA_KEY` is
+`github-actions-rock-deploy@passioncitychurch-com.iam.gserviceaccount.com`. The grants below
+went on first and were read back, and then four project-wide roles came off: `storage.admin`,
+`storage.objectAdmin`, `compute.instanceAdmin.v1` and `iam.serviceAccountUser`. Those reached
+every bucket and every instance in the project, production's included. What it holds now:
+
+| Role | Where | Why |
+| --- | --- | --- |
+| `storage.objectAdmin` | Bucket, condition `fleet-pr-environments-except-production`: objects under `pr-environments/`, except `pr-environments/commands-prod/` and `pr-environments/bootstrap/prod/` | Artifacts, the test VM's queue, `bootstrap/latest/`, diagnostics, and `production/`, which the hash protects |
+| `storage.legacyBucketReader` | Bucket, no condition | Listings, and the `gsutil ls` that decides whether the bootstrap runs `gsutil mb` |
+| `compute.instanceAdmin.v1` | `connect-srv-test` only | The fleet's restarts: stop, start, rescope, startup script, serial output |
+| `compute.viewer` | Project | Resolving the VM, and waiting on zone operations |
+| `iam.serviceAccountUser` | The default compute account | `set-service-account` on the test VM |
+
+It was checked two ways. Each policy was read back. Then real runs used the key after the
+change: test bootstrap 39456185890 listed the bucket, uploaded the scripts, resolved the VM,
+staged its startup script, then stopped, rescoped and started it. PR #22's deploy and PR #21's
+lifecycle command finished on the narrowed key, and staging deploy 39456498954 built, published
+and queued under it. The negative, that the key can no longer write `commands-prod/`, rests on
+the read-back alone. Policy Troubleshooter is disabled in this project and was left disabled.
+
+To roll back, re-add the four project roles. The new bindings can stay.
+
+**Without production's own VM account, the pipeline still works.** Nothing it runs needs that
+step: every write and every approval above holds. What it leaves open is a second path to
+production that never touches `GCP_SA_KEY`:
+
+- **The test VM's metadata token is still the widest path to production.** PR code runs on that
+  VM, and the VM's token is the default compute account's: `roles/editor` on the project and
+  admin on the bucket. Nothing on this page narrows it.
+- **The fleet key can still reach that token, one step removed.** The fleet key keeps
+  `compute.instanceAdmin.v1` on `connect-srv-test` and `iam.serviceAccountUser` on the default
+  compute account, because the PR fleet restarts and rescopes that VM. Whoever holds the key can
+  set the test VM's startup script and run code as the account production runs as. The
+  narrowing removes the key's direct reach into production; it does not remove this indirect
+  one.
+- **A planted repackage base**, as described above. `force_build` closes it for one run.
+
+**The step DevOps may find easier: move the test VM, not production.** Giving `connect-srv-test`
+a service account of its own closes the first two gaps without a production restart: changing
+the account restarts the test VM only. The fleet key's `iam.serviceAccountUser` then moves to
+the test VM's new account, so the key loses its route to the default one too. Production keeps
+running as the default compute account, and that account is then used by production alone.
+Before the switch, someone has to inventory what the test VM uses its account for. From this
+repo, that means the agent's reads and writes under `pr-environments/`. Anything installed on
+the box outside this repo has to be checked on the box itself.
 
 ## P2 — hygiene
 
@@ -2227,6 +2435,9 @@ example: a build cannot verify what it never attempted, and nothing in the job e
 | The one failure in the other direction: the staging deploy reported "did not become healthy within 300 seconds" three times over while the site was serving Rock normally minutes later. ASP.NET caches an `Application_Start` failure for the lifetime of the app domain, so once one probe lands on a faulted domain, every later probe re-reads that same cached exception — retrying alone can never recover. 300 seconds also fits only about four probes at `-TimeoutSec 60` plus a 10-second sleep, which is not enough to distinguish "still running migrations" from "broken" | The window is 900 seconds (still under the queue agent's 1800s command timeout and the deploy job's 60 minutes), the probe recycles the app pool after 4 minutes of failures so a poisoned domain costs one interval instead of the whole window, each attempt logs its own error, and `SecurityProtocol` is pinned to TLS 1.2 so a protocol mismatch cannot masquerade as a dead site |
 | …and the widened window still could not pass, because the probe was aimed somewhere the VM cannot reach. `Test-EnvironmentHealth` requested the environment's **public** host name from **on the VM**, and this VM cannot reliably reach its own external address. `staging-deploy.yml` had therefore never once succeeded — 0 green in 8 runs — on deploys that were serving fine. The deploy's own diagnostics caught both sides at the same instant: on-box, `https://staging.rock-dev.connect.passion.team/` → *"The underlying connection was closed: An unexpected error occurred on a send"*; off-box, the same URL → **HTTP 302 in 0.115s**. Production CD would have hit this identically on its first real run, since both go through `env-deploy-command.yml` | The probe targets `https://127.0.0.1/` with the public name in the `Host` header — same IIS site, same app pool, same app domain, so it still answers the only question a deploy can be blamed for, without DNS or the route back in. That needs `HttpWebRequest` (`Invoke-WebRequest` refuses to set the restricted `Host` header) and `AllowAutoRedirect = $false` (Rock's 302 carries an absolute `Location`, and following it would leave the loopback for the very name being avoided). Reachability from the internet is now checked from the **GitHub runner**, which can see it. Diagnostics record both vantage points, labelled — loopback failing means the application is broken; loopback passing while the public name fails means the application is fine and the problem sits in front of it |
 | **A Rock upgrade moved a directory from committed to generated, and CI never noticed.** `RockWeb/Styles/styles-v2/` holds 178 tracked files on 18.4.1; on 19.3.4 its `.gitignore` is `*` and `Rock.Frontend.Styles` generates it. No workflow referenced that project, so the v19 artifact shipped without `styles-v2/icons/tabler-icon.css`. `_rock-core.less:243` imports it, so the LESS compile failed at startup and staging kept serving the 18.4.1 `theme.css` — 430,153 bytes, zero `ti-` rules — while the icon migration had already rewritten every `IconCssClass` in the database to Tabler. Login page fine, everything behind it unstyled | `pr-test-artifact.yml` builds `Rock.Frontend.Styles`, guarded on its lockfile so it no-ops on the 18.4.1 line. All three deploy paths share that workflow, so production's v19 cutover is covered (PR #19) |
+| **The first two `DedicatedSite` deploys through `Invoke-DedicatedSiteReplace` brought staging up and then failed** with "The property 'BackupPath' cannot be found on this object" (2026-10-20, runs 39429025335 and 39439884083). Two separate statements inside the function emitted, and each one's output joined the function's return value and made `$deployed` an array. In the first run it was the overlay helpers' robocopy calls: the quiet switches still print blank lines. In the second it was `Ensure-Website`'s last line, `$httpsBinding.AddSslCertificate(...)`, a method call whose return value goes to the caller. Every branch test stubbed the helpers, and the stubs were silent, so none of them saw it | Both robocopy calls pipe to `Write-Host`, as the in-place overlay's already did, and the binding call pipes to `Out-Null`. The replace also discards `Ensure-AppPool`'s and `Ensure-Website`'s output, because they drive the IIS provider and nothing off the box can test what it returns. Tests hold each helper to returning nothing and both deploy branches to returning exactly one hashtable, and the IIS stubs now emit so the boundary is tested too. The next two runs, 39448932589 and 39449841200, both reached "Done." on the box |
+| **The repackage path had never fetched a base.** `upload-cloud-storage` stores every artifact gzip-encoded. gsutil slices any download of 150 MB or more into ranged reads, and it cannot rebuild a gzip-encoded object from them, so every RockWeb zip failed with "Some components … were not downloaded successfully. Please retry". Its first real run, staging on 2026-10-20, failed that way twice | The store's download turns sliced downloads off (`sliced_object_download_threshold=0`). The same object then downloads cleanly, and its SHA-256 matches the build's recorded hash. Staging's next two runs, 39448932589 and 39449841200, were the first repackages ever to succeed, and each box log says "Artifact hash matches the build's" |
+| **The smoke check failed every healthy staging deploy on 2026-10-20**, saying "/Login returned 200 (3443 chars) … no `__VIEWSTATE` … Something else is answering for this site". The same page fetched from off the box was 98 KB of Rock with `__VIEWSTATE` in it. `Invoke-SiteContentProbe` read the body with one `StreamReader.Read`, which returns what has arrived so far rather than filling the buffer. Rock's login page opens with a large inline script, so the first chunk ended before `__VIEWSTATE`. The smoke check's own tests mock the probe, so none of them read a real stream | `ReadBlock`, which reads to the cap or the end of the stream. A Pester test serves a page over a loopback socket in two chunks with a pause between them, the first 3443 bytes as staging's was; it returned exactly 3443 before the change |
 
 The `startup_failure` one is worth remembering specifically: a called workflow can only
 **narrow** the caller's `GITHUB_TOKEN`, never widen it. If a callee's `permissions:` requests
@@ -2317,9 +2528,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     trunks before flipping anything: it finds deleted paths the tooling still names, directories
     that emptied because upstream started generating them, and migrations that repoint site
     configuration. Against the real 18.4.1 → 19.3.4 pair it rediscovers all three v19 incidents,
-    every one of which was originally found in production by symptom. Two steps stay human —
-    reviewing each config-writing migration, and checking `Documentation/Fork-Local-Changes.md`
-    survived the merge
+    every one of which was originally found in production by symptom. It also lists any fork
+    edit to Rock's own files the merge dropped. Reviewing each config-writing migration stays
+    human
 
 18. Item 30 — one value, either repointed or removed. It is not on the production path, but it is
     the way step 2 of the cutover checklist fails today, and the failure names a login rather than
@@ -2329,6 +2540,9 @@ does not exist on a `push` event — use `github.event.inputs`, which is simply 
     the script-refresh work that needs the same thing. The cutover itself no longer waits on it:
     the deploy timeline is written to disk and read back, so a production log covers the offline
     window whatever the stream does
+20. Item 33 — give production its own credential before production's queue carries routine
+    traffic. Write the workflow changes first, then the environment secret, then narrow the
+    fleet key; in the other order production deploys fail at their first write
 
 Items 2 and 3 are twenty minutes of clicking and they close the two largest holes: an
 approval gate with nothing behind it, and a trunk anyone can push to. Item 15 is the one that

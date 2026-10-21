@@ -7,6 +7,13 @@ Runs on the Windows IIS host through the PR environment command queue. It uses
 win-acme HTTP-01 self-hosting, so the caller must temporarily allow public TCP
 80 to this VM while the command runs. IIS is stopped only for the ACME challenge
 window, then restarted and each renewed certificate is rebound to its PR site.
+
+Staging is renewed too: it is deployed as a DedicatedSite, so its manifest is at
+C:\RockTestEnvs\staging\env.json, inside the tree this walks.
+
+Production is never renewed here, and must not be. Its manifest is under the
+backup root, which this script leaves alone unless an operator names it in
+-AdditionalManifestRoots by hand. See that parameter.
 #>
 
 [CmdletBinding()]
@@ -15,14 +22,32 @@ param(
     [string]
     $EnvironmentRoot = "C:\RockTestEnvs",
 
-    # In-place environments such as staging keep their manifest outside
-    # $EnvironmentRoot on purpose, so walking that one tree missed them entirely
-    # and staging was never issued a certificate. Renewal already stops W3SVC
-    # service-wide for the HTTP-01 challenge, so including these sites costs no
-    # downtime that the PR environments were not already causing them.
+    # Roots holding InPlace manifests, one level down (<root>\<name>\env.json).
+    # Empty by default, and it has to stay empty.
+    #
+    # This used to default to C:\RockBackups, back when staging was deployed
+    # InPlace and kept its manifest there. Staging is a DedicatedSite now, under
+    # $EnvironmentRoot, and the only InPlace manifest left anywhere is
+    # production's -- at C:\RockBackups\production\env.json, which is where
+    # Deploy-RockEnvironment.ps1 puts it precisely so renewal will not find it.
+    #
+    # And this script runs on production too. The production bootstrap publishes
+    # every script in this directory, and production's queue agent accepted
+    # renew-certificate like any other verb until Get-QueueAllowedCommands
+    # narrowed it. With the old default, one such command would have found
+    # production's manifest, stopped W3SVC for the HTTP-01 challenge, and rebound
+    # production's https binding. The default stays empty all the same: the
+    # narrower list reaches production only with its next bootstrap, and this
+    # guard should not depend on that list staying narrow.
+    #
+    # Kept as a parameter for an operator running this by hand on the test VM
+    # who knows which root they mean. The queue cannot pass it: the
+    # renew-certificate row in Invoke-PrEnvironmentCommandQueue.ps1 marks it
+    # Unreachable. ManifestContract.Tests.ps1 fails if the default reaches the
+    # backup root again.
     [Parameter(Mandatory = $false)]
     [string[]]
-    $AdditionalManifestRoots = @("C:\RockBackups"),
+    $AdditionalManifestRoots = @(),
 
     [Parameter(Mandatory = $false)]
     [string]
@@ -198,7 +223,12 @@ if (@($manifests).Length -eq 0) {
     # Say this loudly and name every root that was searched. A silent early
     # return here is indistinguishable from a successful renewal in the command
     # result, which is exactly how staging went months without a certificate.
-    Write-Warning "RENEWAL ISSUED NOTHING: no manifest with status 'deployed' was found under any of: $($EnvironmentRoot), $($AdditionalManifestRoots -join ', '). No certificate was requested or bound."
+    #
+    # Only the roots actually searched: with no additional roots, joining the
+    # parameter as it stands printed a trailing ", " that read as a root with
+    # no name.
+    $searchedRoots = @($EnvironmentRoot) + @($AdditionalManifestRoots | Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+    Write-Warning "RENEWAL ISSUED NOTHING: no manifest with status 'deployed' was found under any of: $($searchedRoots -join ', '). No certificate was requested or bound."
     return
 }
 

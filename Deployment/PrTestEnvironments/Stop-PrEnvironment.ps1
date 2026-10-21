@@ -56,6 +56,55 @@ function ConvertTo-ManifestHashtable {
     return $result
 }
 
+# Marks a PR environment's manifest stopped, keeping everything the deploy wrote.
+#
+# Merged into the existing file rather than rewritten: the deploy's fields --
+# its host name and sha among them -- stay on record beside the stop. Cleanup
+# then measures idleness from the newest timestamp the file carries, which is
+# this stop, not the deploy. A manifest that is missing (the directory survived,
+# the file did not) is started fresh rather than failing the stop.
+#
+# A function so ManifestContract.Tests.ps1 can run it over a manifest the real
+# deploy writer produced, and hand the result to cleanup's real reader. Paths
+# come in as parameters, not from this script's scope, for the same reason.
+function Write-StoppedManifest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]
+        $Path,
+
+        [Parameter(Mandatory = $true)]
+        [int]
+        $PrNumber,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $SiteName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $AppPoolName,
+
+        [Parameter(Mandatory = $true)]
+        [string]
+        $EnvironmentPath
+    )
+
+    $manifest = @{}
+    if (Test-Path $Path) {
+        $manifest = ConvertTo-ManifestHashtable -Json (Get-Content $Path -Raw)
+    }
+
+    $manifest.prNumber = $PrNumber
+    $manifest.siteName = $SiteName
+    $manifest.appPoolName = $AppPoolName
+    $manifest.environmentPath = $EnvironmentPath
+    $manifest.status = "stopped"
+    $manifest.stoppedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $Path -Encoding UTF8 -Force
+}
+
 $SiteName = "rock-pr-$PrNumber"
 $AppPoolName = "rock-pr-$PrNumber"
 $EnvironmentPath = Join-Path $EnvironmentRoot "pr-$PrNumber"
@@ -76,18 +125,8 @@ if (Test-Path "IIS:\Sites\$SiteName") {
 }
 
 if (Test-Path $EnvironmentPath) {
-    $manifest = @{}
-    if (Test-Path $ManifestPath) {
-        $manifest = ConvertTo-ManifestHashtable -Json (Get-Content $ManifestPath -Raw)
-    }
-
-    $manifest.prNumber = $PrNumber
-    $manifest.siteName = $SiteName
-    $manifest.appPoolName = $AppPoolName
-    $manifest.environmentPath = $EnvironmentPath
-    $manifest.status = "stopped"
-    $manifest.stoppedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    $manifest | ConvertTo-Json -Depth 5 | Out-File -FilePath $ManifestPath -Encoding UTF8 -Force
+    Write-StoppedManifest -Path $ManifestPath -PrNumber $PrNumber -SiteName $SiteName `
+        -AppPoolName $AppPoolName -EnvironmentPath $EnvironmentPath
 }
 
 Write-Host "Stopped $SiteName if it existed."

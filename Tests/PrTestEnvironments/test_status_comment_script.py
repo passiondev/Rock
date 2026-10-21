@@ -1,3 +1,5 @@
+import json
+import shutil
 import unittest
 
 import pipeline_harness as harness
@@ -42,28 +44,77 @@ class PrTestStatusCommentScriptTests(unittest.TestCase):
         self.assertIn("rock:destroy", text)
         self.assertIn("rock:auto", text)
 
-    def test_status_script_reconciles_labels_for_deployed_failed_stopped_and_destroyed(self):
-        text = STATUS_SCRIPT.read_text()
-
-        self.assertIn("async function reconcilePrTestLabels", text)
-        for state in ["deployed", "failed", "stopped", "destroyed"]:
-            self.assertIn(state, text)
-        for label in [
-            "rock:queued",
-            "rock:building",
-            "rock:deploying",
-            "rock:deployed",
-            "rock:failed",
-            "rock:stopped",
-        ]:
-            self.assertIn(label, text)
-
     def test_deploy_workflow_updates_sticky_comment_instead_of_creating_comment_spam(self):
         text = DEPLOY_WORKFLOW.read_text()
 
         self.assertIn("pr-test-status.js", text)
         self.assertIn("updatePrTestStatus", text)
         self.assertNotIn("github.rest.issues.createComment", text)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class ReconcileLabelsTests(unittest.TestCase):
+    """A pull request carries one state label at a time. The developer docs call the
+    set a status light, and `pr-test-destroy-all.yml` reads any one of them as "this
+    pull request may still have a site on the box".
+
+    Every transition goes through `reconcilePrTestLabels`, so this is where that
+    rule is held. Until the deploy workflow's two middle transitions came here too,
+    each carried its own shorter list: building left `rock:stopped` and
+    `rock:deploying` in place, and deploying left `rock:stopped`. A stop that
+    finished between two jobs of a deploy left the pull request showing two states.
+
+    These run the module under node rather than reading it. The test this replaced
+    asserted that the six label names and the word `destroyed` appeared somewhere
+    in the file, which stays true of a function that removes none of them.
+    """
+
+    # The status each caller passes, and the one label it leaves. `destroyed` leaves
+    # none: the environment is gone, so nothing should advertise it.
+    LABEL_FOR_STATUS = {
+        "queued": "rock:queued",
+        "building": "rock:building",
+        "deploying": "rock:deploying",
+        "deployed": "rock:deployed",
+        "failed": "rock:failed",
+        "stopped": "rock:stopped",
+        "destroyed": None,
+    }
+
+    EVERY_STATE_LABEL = [
+        "rock:queued",
+        "rock:building",
+        "rock:deploying",
+        "rock:deployed",
+        "rock:failed",
+        "rock:stopped",
+    ]
+
+    def reconcile(self, held, status):
+        """The labels pull request 42 holds after reconciling `held` to `status`."""
+        body = (
+            "const { reconcilePrTestLabels } = require('./.github/scripts/pr-test-status.js');\n"
+            "await reconcilePrTestLabels({ github, owner: 'passiondev', repo: 'Rock', "
+            f"issue_number: 42, status: {json.dumps(status)} }});\n"
+        )
+        return harness.run_github_script(body, labels={42: held})["labels"][42]
+
+    def test_a_status_leaves_its_own_label_and_no_other_state(self):
+        """From every state at once, and from none. The second is the path real runs
+        take most -- the labels being removed are mostly not there -- and GitHub
+        answers each of those with a 404 that has to be read as "already done".
+
+        `rock:auto` stands for every label that is not a state. Those are the
+        operator's, and reconciling a state must not touch them."""
+        starts = {
+            "every state label": self.EVERY_STATE_LABEL + ["rock:auto"],
+            "no state label": ["rock:auto"],
+        }
+        for start, held in starts.items():
+            for status, label in self.LABEL_FOR_STATUS.items():
+                with self.subTest(start=start, status=status):
+                    expected = sorted(["rock:auto"] + ([label] if label else []))
+                    self.assertEqual(expected, self.reconcile(held, status))
 
 
 class StatusScriptPermissionTests(harness.HarnessAssertions, unittest.TestCase):

@@ -136,11 +136,15 @@ jobs:
     name: Dry run
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Production's queue is written only from behind the `production` gate, here as
+    # in env-deploy-command.yml, where the reasoning is; every other queue gets an
+    # empty name and runs with no environment. A dry run still posts a command, so
+    # against production it waits for a reviewer too. Open item 33.
+    environment: ${{ inputs.queue_name == 'commands-prod' && 'production' || '' }}
     defaults:
       run:
         shell: pwsh
     env:
-      COMMAND_ID: theme-plan-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       THEME_NAME: ${{ inputs.theme_name }}
       VARIABLE_VALUES: ${{ inputs.variable_values }}
@@ -193,12 +197,15 @@ jobs:
           "| Variables | ``$env:VARIABLE_VALUES`` |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Mode | dry run |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Queue the dry run
-        uses: ./.github/actions/queue-vm-command
+      # The log goes in the summary whole, not as a tail. The before-and-after lines
+      # ARE the output, and they are what the approver on the next job is being
+      # asked to approve.
+      - name: Queue the dry run and wait for the plan
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
           queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: theme-plan
           command: set-theme-customization
           # toJSON, not a quoted interpolation. variable_values is a
           # free-text list of name=value pairs and theme_name is a free-text
@@ -212,27 +219,10 @@ jobs:
               "apply": false
             }
           secret-value: ${{ env.CONNECTION_STRING }}
-
-      - name: Wait for the VM to report the plan
-        id: await
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.GCS_BUCKET }}
-          queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
           label: The dry run
           attempts: ${{ env.POLL_ATTEMPTS }}
           interval-seconds: '10'
-
-      # Whole, not a tail. The before-and-after lines ARE the output, and they are
-      # what the approver on the next job is being asked to approve.
-      - name: Put the plan in the job summary
-        if: always() && steps.await.outputs.log-path != ''
-        run: |
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          log-to-summary: 'true'
 
   apply:
     name: Apply
@@ -246,13 +236,15 @@ jobs:
     #
     # Worth knowing: an environment with no required reviewers approves itself. This
     # job declaring one is necessary and not sufficient.
+    #
+    # Against production's queue the gate is `production` instead, which holds the
+    # only key that can write there. Open item 33.
     environment:
-      name: database-write
+      name: ${{ inputs.queue_name == 'commands-prod' && 'production' || 'database-write' }}
     defaults:
       run:
         shell: pwsh
     env:
-      COMMAND_ID: theme-apply-${{ github.run_id }}-${{ github.run_attempt }}
       QUEUE_NAME: ${{ inputs.queue_name }}
       THEME_NAME: ${{ inputs.theme_name }}
       VARIABLE_VALUES: ${{ inputs.variable_values }}
@@ -296,12 +288,12 @@ jobs:
           "| Approved by | ${{ github.actor }} |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| Rollback | the .sql the script writes on the VM, before the write |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Queue the apply
-        uses: ./.github/actions/queue-vm-command
+      - name: Queue the write and wait for the VM to report it
+        uses: ./.github/actions/run-vm-command
         with:
           bucket: ${{ env.GCS_BUCKET }}
           queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
+          command-id-prefix: theme-apply
           command: set-theme-customization
           # toJSON, not a quoted interpolation. variable_values is a
           # free-text list of name=value pairs and theme_name is a free-text
@@ -315,22 +307,7 @@ jobs:
               "apply": true
             }
           secret-value: ${{ env.CONNECTION_STRING }}
-
-      - name: Wait for the VM to report the write
-        id: await
-        uses: ./.github/actions/await-vm-command
-        with:
-          bucket: ${{ env.GCS_BUCKET }}
-          queue-name: ${{ env.QUEUE_NAME }}
-          command-id: ${{ env.COMMAND_ID }}
           label: The write
           attempts: ${{ env.POLL_ATTEMPTS }}
           interval-seconds: '10'
-
-      - name: Put the result in the job summary
-        if: always() && steps.await.outputs.log-path != ''
-        run: |
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          Get-Content '${{ steps.await.outputs.log-path }}' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          log-to-summary: 'true'

@@ -20,10 +20,14 @@ check.
 """
 
 import copy
+import dataclasses
 import functools
+import json
+import os
 import pathlib
 import re
 import subprocess
+import tempfile
 from collections import Counter
 
 import yaml
@@ -150,6 +154,26 @@ def steps(parsed, job=None):
     return found
 
 
+def step(parsed, name, job=None):
+    """The one step called `name`, in a parsed workflow -- or in one of its jobs --
+    or in a parsed composite action.
+
+    Raises unless exactly one step matches. Sixteen places did this lookup by hand,
+    and a missing step was a bare StopIteration in ten of them, an assertion in
+    five and None in one. Steps are found by their name, which is prose and gets
+    edited, so a renamed step is the ordinary case rather than the rare one. Two
+    matches raise too: picking the first is how a test ends up asserting about the
+    build job's copy of a step while the deploy job's copy is the one that
+    changed.
+    """
+    candidates = action_steps(parsed) if "runs" in parsed else steps(parsed, job)
+    matching = [candidate for candidate in candidates if candidate.get("name") == name]
+    if len(matching) != 1:
+        where = f" in job {job!r}" if job else ""
+        raise AssertionError(f"expected one step named {name!r}{where}, found {len(matching)}")
+    return matching[0]
+
+
 # The T-SQL a script issues when it changes something. One list, because two
 # tests read it for opposite purposes -- proving the read-only finder contains
 # none of these, and sorting `Deployment/Database` into the scripts that write and
@@ -186,6 +210,17 @@ def strip_powershell_comments(text):
     the explanation is about."""
     text = re.sub(r"<#.*?#>", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.DOTALL)
     return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+
+def strip_bash_comments(text):
+    """`text` with full-line comments blanked, line numbers preserved.
+
+    Only lines that start with `#`. A `#` later in a line is not always a comment
+    -- `$#`, `${name#prefix}` and quoted text all carry one -- and telling them
+    apart means parsing the shell. set-trunk-protection.sh loops on `$#`, so
+    splitting at the first `#` would cut that line in half rather than drop a
+    comment. Two files had a copy of this, both full-line only."""
+    return "\n".join("" if line.lstrip().startswith("#") else line for line in text.splitlines())
 
 
 def powershell_function(text, name):
@@ -371,6 +406,232 @@ def tracked_under(directory, suffix=""):
     become something a test demands the pipeline account for."""
     prefix = directory.relative_to(REPO_ROOT).as_posix() + "/"
     return [p for p in tracked() if p.startswith(prefix) and p.endswith(suffix)]
+
+
+# The node half of `run_github_script`. It stands in for the three things a
+# github-script body reaches for -- `github`, `core` and `require` -- and nothing
+# else, so a body that grows a fourth fails here by name instead of passing.
+#
+# The fake GitHub holds one thing: the labels on each pull request. It answers a
+# missing label or an unknown pull request with a 404, as GitHub does, so a body
+# that sends the wrong issue number fails on the add rather than quietly labelling
+# nothing. Labels are what these bodies exist to change, and what a test asserts.
+#
+# `require` resolves a relative path against the working directory, which is how
+# github-script resolves it against the workspace. The runner starts node at the
+# repository root, so the module a body requires is the one in this tree -- the
+# one the job's checkout would have put there.
+_GITHUB_SCRIPT_DRIVER = r"""
+const path = require('path');
+const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+
+const pulls = new Map(Object.entries(input.labels).map(([number, names]) => [Number(number), new Set(names)]));
+
+function notFound(what) {
+  const error = new Error(`Not Found: ${what}`);
+  error.status = 404;
+  return error;
+}
+
+function labelsOf(issue_number) {
+  if (!pulls.has(issue_number)) {
+    throw notFound(`pull request ${issue_number}`);
+  }
+  return pulls.get(issue_number);
+}
+
+const github = {
+  rest: {
+    issues: {
+      async removeLabel({ issue_number, name }) {
+        if (!labelsOf(issue_number).delete(name)) {
+          throw notFound(`label ${name}`);
+        }
+      },
+      async addLabels({ issue_number, labels }) {
+        const held = labelsOf(issue_number);
+        for (const name of labels) {
+          held.add(name);
+        }
+      }
+    },
+    repos: {
+      async getContent({ path: filePath }) {
+        if (!(filePath in input.files)) {
+          throw notFound(filePath);
+        }
+        return { data: { content: Buffer.from(input.files[filePath]).toString('base64') } };
+      }
+    }
+  }
+};
+
+const outputs = {};
+let failed = null;
+const core = {
+  setOutput(name, value) { outputs[name] = String(value); },
+  setFailed(message) { failed = String(message); },
+  info() {},
+  warning() {}
+};
+
+const context = { repo: { owner: 'passiondev', repo: 'Rock' }, ...input.context };
+const workspaceRequire = (id) => require(id.startsWith('.') ? path.resolve(id) : id);
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+
+new AsyncFunction('github', 'context', 'core', 'require', input.body)(github, context, core, workspaceRequire)
+  .then(() => {
+    const labels = Object.fromEntries([...pulls].map(([number, held]) => [number, [...held].sort()]));
+    process.stdout.write(JSON.stringify({ labels, outputs, failed }));
+  });
+"""
+
+
+def run_github_script(body, labels, context=None, expressions=None, files=None):
+    """Run an `actions/github-script` body under node against a fake GitHub, and
+    return what it left behind: `labels` (pull request number to its sorted label
+    names), `outputs` (what it passed to `core.setOutput`) and `failed` (what it
+    passed to `core.setFailed`, or None).
+
+    `labels` is the starting state, `{42: ["rock:queued"]}`. `files` is what
+    `repos.getContent` serves, by path. `expressions` maps each `${{ }}` in the body
+    to the text Actions would paste in its place. Pasting is what Actions does
+    before node ever sees the body, so the runner does the same -- and refuses a
+    body with one left over, because node would read it as a string, turn the
+    number in it into NaN, and fail somewhere unrelated.
+
+    Reading a `script:` body as text proves a word is in it. Running it proves
+    what it does to the pull request, which is the only thing the step is for.
+    A node failure raises with node's own stderr; it is never a quiet empty result.
+    """
+    for expression, value in (expressions or {}).items():
+        body = body.replace("${{ " + expression + " }}", value)
+    leftover = re.search(r"\$\{\{.*?\}\}", body)
+    if leftover:
+        raise AssertionError(f"no value supplied for {leftover.group(0)}; pass it in `expressions`")
+
+    completed = subprocess.run(
+        ["node", "-e", _GITHUB_SCRIPT_DRIVER],
+        input=json.dumps({
+            "body": body,
+            "labels": {str(number): names for number, names in labels.items()},
+            "context": context or {},
+            "files": files or {},
+        }),
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"the script failed under node:\n{completed.stderr}")
+
+    result = json.loads(completed.stdout)
+    result["labels"] = {int(number): names for number, names in result["labels"].items()}
+    return result
+
+
+# What the runner starts for a `shell: bash` step: `bash --noprofile --norc -eo
+# pipefail {0}`. Not `-u` -- two files here added it, and no step they ran is given
+# it, so those runs failed on things CI lets through and could pass on a refusal
+# CI never makes.
+_ACTIONS_BASH = ("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c")
+
+
+@dataclasses.dataclass
+class BashRun:
+    """What one `run_bash` left behind. `outputs` is what the step wrote to
+    $GITHUB_OUTPUT, and `summary` what it wrote to $GITHUB_STEP_SUMMARY."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+    outputs: dict
+    summary: str
+
+    @property
+    def output(self):
+        """Both streams, as the run log shows them."""
+        return self.stdout + self.stderr
+
+
+def _github_outputs(text):
+    """$GITHUB_OUTPUT read back: `name=value` lines, and `name<<DELIMITER` blocks
+    for a value that spans lines."""
+    outputs = {}
+    lines = iter(text.splitlines())
+    for line in lines:
+        if "<<" in line and ("=" not in line or line.index("<<") < line.index("=")):
+            name, delimiter = line.split("<<", 1)
+            value = []
+            for continued in lines:
+                if continued == delimiter:
+                    break
+                value.append(continued)
+            outputs[name] = "\n".join(value)
+        elif "=" in line:
+            name, value = line.split("=", 1)
+            outputs[name] = value
+    return outputs
+
+
+def run_bash(script, env=None, stubs=None, cwd=None, timeout=60):
+    """Run `script` the way the runner runs a bash step, and return a `BashRun`.
+
+    The step gets the flags Actions gives it, a $GITHUB_OUTPUT and a
+    $GITHUB_STEP_SUMMARY of its own, and $GITHUB_WORKSPACE set to this checkout,
+    which is where every step here finds `.github/scripts`. `env` goes on top of
+    all of that, so a test can point any of them somewhere else. The suite's own
+    environment is underneath: inside CI that environment has a GITHUB_OUTPUT of
+    its own, and a step that inherited it would write into the suite's job.
+
+    `stubs` maps a command name to the body of a bash script that stands in for it.
+    Each goes on PATH ahead of the real one, under a shebang. `cwd` defaults to an
+    empty directory, so a step that reads relative paths reads a fixture tree only
+    when the test hands it one.
+
+    Five files did this for themselves before it was here, and no two built the
+    same job around the step.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        scratch = pathlib.Path(scratch)
+        stub_dir = scratch / "bin"
+        stub_dir.mkdir()
+        for name, body in (stubs or {}).items():
+            stub = stub_dir / name
+            stub.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+            stub.chmod(0o755)
+
+        output_file = scratch / "github_output"
+        summary_file = scratch / "step_summary.md"
+        output_file.touch()
+        summary_file.touch()
+        workdir = scratch / "work"
+        workdir.mkdir()
+
+        run_env = {
+            **os.environ,
+            "GITHUB_WORKSPACE": str(REPO_ROOT),
+            "GITHUB_OUTPUT": str(output_file),
+            "GITHUB_STEP_SUMMARY": str(summary_file),
+            **(env or {}),
+        }
+        run_env["PATH"] = f"{stub_dir}{os.pathsep}{run_env['PATH']}"
+
+        completed = subprocess.run(
+            [*_ACTIONS_BASH, script],
+            cwd=str(cwd or workdir),
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return BashRun(
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            outputs=_github_outputs(output_file.read_text(encoding="utf-8")),
+            summary=summary_file.read_text(encoding="utf-8"),
+        )
 
 
 class HarnessAssertions:

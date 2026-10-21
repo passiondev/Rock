@@ -11,8 +11,11 @@
     running: it says the log tail slices without an error, and says nothing about
     which sixty lines it takes.
 
-    The three functions below are the parts with a wrong answer available to
-    them. Tests/PrTestEnvironments/Pester/AwaitCommand.Tests.ps1 executes them.
+    The five functions below are the parts with a wrong answer available to
+    them. Tests/PrTestEnvironments/Pester/AwaitCommand.Tests.ps1 executes them,
+    and CommandQueuePass.Tests.ps1 reads the VM agent's results back through
+    Read-CommandResult, so the two ends of the queue are tested against each
+    other rather than against two descriptions of the same JSON.
 
     Kept to Windows PowerShell 5.1 syntax, matching its sibling.
 #>
@@ -126,6 +129,97 @@ function Show-CommandLog {
     return (Resolve-Path command-output.log).Path
 }
 
+function Read-CommandResult {
+    <#
+    .SYNOPSIS
+        What a result object written by the VM agent says happened.
+    .DESCRIPTION
+        The one place this side of the queue decides what the agent's JSON means.
+        It used to be three reads inline in the poll loop below, where nothing
+        could reach them, so the agent's result shape and this reading of it were
+        each checked only against a description of the other.
+
+        Anything but an explicit 'succeeded' is a failure. A result with no status
+        at all is not something the agent writes, and reading it as a success is
+        the silent green this pipeline keeps paying for.
+
+        Every field is read through PSObject, because a result from an older agent
+        carries no logObject and a malformed one may carry no error.
+    .PARAMETER Json
+        The text of results/<commandId>.json.
+    .OUTPUTS
+        HasSucceeded; Error and LogObject as strings, empty when absent; and Result,
+        the parsed object, for printing.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory = $true)][string]$Json
+    )
+
+    $parsed = $Json | ConvertFrom-Json
+    $names = @($parsed.PSObject.Properties.Name)
+
+    $status = ''
+    if ($names -contains 'status') {
+        $status = [string]$parsed.status
+    }
+
+    $errorText = ''
+    if ($names -contains 'error') {
+        $errorText = [string]$parsed.error
+    }
+
+    $logObject = ''
+    if ($names -contains 'logObject') {
+        $logObject = [string]$parsed.logObject
+    }
+
+    return [pscustomobject]@{
+        HasSucceeded = ($status -eq 'succeeded')
+        Error     = $errorText
+        LogObject = $logObject
+        Result    = $parsed
+    }
+}
+
+function Get-NoResultMessage {
+    <#
+    .SYNOPSIS
+        What to say when the wait runs out with no result object.
+    .DESCRIPTION
+        No result at all usually means the queue worker never ran: the VM is off,
+        the scheduled task is missing, or its service account lost bucket access.
+        It says so, because "timed out" alone sends people to the wrong place.
+
+        It names the command id, because that is the file name of every object
+        the command left behind, and a run that dispatched several commands
+        otherwise leaves the reader guessing which one this was. It names the
+        claim as well: since the agent began claiming commands, a command in
+        processing/ was taken and never reported, and nothing will run it
+        again. It says nothing about pending/. An agent from before the claim
+        runs a command in place there, so on such a host pending/ cannot tell a
+        command nobody took from one still running.
+    .OUTPUTS
+        The message, without the ::error:: prefix.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][int]$Seconds,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Bucket,
+        [Parameter(Mandatory = $true)][string]$Queue,
+        [Parameter(Mandatory = $true)][string]$CommandId
+    )
+
+    return ("No result for $Label (command $CommandId) after $Seconds seconds. " +
+        "Check that $Bucket is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running " +
+        "on the target VM against queue '$Queue'. If pr-environments/$Queue/processing/$CommandId.json exists, the " +
+        "agent took the command and stopped before reporting it; nothing will run it again, so read the VM before " +
+        "removing that object.")
+}
+
 # Dot-sourcing this file to test the functions must not start polling. action.yml
 # sets AWAIT_INVOKED to a literal; a Pester run does not.
 #
@@ -149,39 +243,33 @@ $resultUri = "gs://$bucket/pr-environments/$($env:AWAIT_QUEUE)/results/$($env:AW
 for ($i = 0; $i -lt $attempts; $i++) {
     gsutil -q cp $resultUri result.json 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
-        $result = Get-Content result.json -Raw | ConvertFrom-Json
-        $result | ConvertTo-Json -Depth 10
+        $outcome = Read-CommandResult -Json (Get-Content result.json -Raw)
+        $outcome.Result | ConvertTo-Json -Depth 10
 
-        $logObject = ''
-        if ($result.PSObject.Properties.Name -contains 'logObject') {
-            $logObject = [string]$result.logObject
-        }
-
-        if ($result.status -eq 'succeeded') {
-            $logPath = Show-CommandLog -Bucket $bucket -LogObject $logObject
+        if ($outcome.HasSucceeded) {
+            $logPath = Show-CommandLog -Bucket $bucket -LogObject $outcome.LogObject
             "log-path=$logPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 0
         }
 
         $hint = if ([string]::IsNullOrWhiteSpace($env:AWAIT_FAILURE_HINT)) { '' } else { " $($env:AWAIT_FAILURE_HINT)" }
-        Write-Host "::error::$label failed on the VM: $($result.error)$hint"
+        Write-Host "::error::$label failed on the VM: $($outcome.Error)$hint"
         if ($env:GITHUB_STEP_SUMMARY) {
             "### $label failed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            "$($result.error)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "$($outcome.Error)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             "``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
         }
-        $logPath = Show-CommandLog -Bucket $bucket -LogObject $logObject -AppendToSummary
+        $logPath = Show-CommandLog -Bucket $bucket -LogObject $outcome.LogObject -AppendToSummary
         "log-path=$logPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
         exit 1
     }
     Start-Sleep -Seconds $interval
 }
 
-# No result object at all means the queue worker never ran: the VM is off, the
-# scheduled task is missing, or its service account lost bucket access. Say so,
-# because "timed out" alone sends people to the wrong place.
-Write-Host "::error::No result for $label after $($attempts * $interval) seconds. Check that $bucket is reachable and that the 'Rock PR Environment Command Queue' scheduled task is running on the target VM against queue '$($env:AWAIT_QUEUE)'."
+$noResult = Get-NoResultMessage -Label $label -Seconds ($attempts * $interval) -Bucket $bucket `
+    -Queue $env:AWAIT_QUEUE -CommandId $env:AWAIT_COMMAND_ID
+Write-Host "::error::$noResult"
 exit 1

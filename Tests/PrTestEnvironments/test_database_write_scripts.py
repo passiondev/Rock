@@ -52,14 +52,20 @@ NO_GENERATED_ROLLBACK = {
 # of the four write scripts have that shape, and it is checkable without knowing
 # what any single statement does.
 #
-# The anonymizer does not have it, on purpose. It executes through helper
-# functions declared at the top of the file, and it runs one read before the gate
-# -- the catalog identity check -- because refusing the wrong catalog has to
-# happen before anything else does. Its gate is proven statement by statement
-# instead, by the class named here. The entry exists so that exempting a script
-# means naming what covers it, and the test below fails if that is not there.
+# The anonymizer does not have it, on purpose. It executes through a SQL adapter
+# it is handed, and it runs reads before the gate -- the catalog identity check
+# and the computed-column guard -- because refusing the wrong catalog or an
+# UPDATE SQL Server will reject has to happen before anything else does. Its
+# gate is proven by running it instead: the Pester suite named here drives the
+# script's own function against a recording adapter and asserts that a dry run
+# issues no write and that every write follows every check. The entry exists so
+# that exempting a script means naming what covers it, and the test below fails
+# if that is not there.
 GATE_PROVEN_ELSEWHERE = {
-    "Invoke-StagingAnonymization.ps1": ("test_staging_anonymization.py", "DryRunByDefaultTests"),
+    "Invoke-StagingAnonymization.ps1": (
+        "StagingAnonymization.Tests.ps1",
+        "Describe 'Invoke-StagingAnonymization'",
+    ),
 }
 
 EXECUTES = re.compile(r"Execute(NonQuery|Scalar)")
@@ -200,8 +206,10 @@ class DryRunIsTheDefaultTests(harness.HarnessAssertions, unittest.TestCase):
     def test_a_script_exempted_from_the_gate_rule_names_what_proves_it_instead(self):
         """The exemption is the dangerous part of this file. An entry with nothing
         behind it turns an ungated write script green, so the entry has to name a
-        test that exists and a class inside it that does."""
-        for name, (test_file, class_name) in GATE_PROVEN_ELSEWHERE.items():
+        Pester suite that exists, a Describe block inside it that does, and the
+        suite has to load the script it is standing in for -- a suite that tests
+        some other file proves nothing about this one."""
+        for name, (suite, describe) in GATE_PROVEN_ELSEWHERE.items():
             with self.subTest(script=name):
                 self.assertIn(
                     name,
@@ -209,13 +217,19 @@ class DryRunIsTheDefaultTests(harness.HarnessAssertions, unittest.TestCase):
                     f"{name} is exempted from the gate rule and is not a write script",
                 )
                 # Spelled out one quoted segment at a time, per ADR-0003.
-                proof = REPO_ROOT / "Tests" / "PrTestEnvironments" / test_file
-                self.assertTrue(proof.exists(), f"{name} points at {test_file}, which does not exist")
+                proof = REPO_ROOT / "Tests" / "PrTestEnvironments" / "Pester" / suite
+                self.assertTrue(proof.exists(), f"{name} points at {suite}, which does not exist")
+                text = proof.read_text(encoding="utf-8")
                 self.assertIn(
-                    f"class {class_name}",
-                    proof.read_text(encoding="utf-8"),
-                    f"{name} says {test_file} proves its gate in {class_name}, and that "
-                    "class is not there",
+                    describe,
+                    text,
+                    f"{name} says {suite} proves its gate in {describe}, and that "
+                    "block is not there",
+                )
+                self.assertIn(
+                    f"Deployment/Database/{name}",
+                    text,
+                    f"{suite} does not load {name}, so it cannot be what proves its gate",
                 )
 
 

@@ -34,8 +34,8 @@ name: Deploy Staging
 #
 # The fallback is therefore not a safe steady state but a migration path, and the
 # guard below refuses to walk back down it: with STAGING_DB_NAME unset, a deploy
-# carrying a different Rock minor than the pinned base branch fails rather than
-# migrating the fleet's catalog. Note that no restore is actually running --
+# carrying a different Rock minor (19.4 of 19.4.4) than the pinned base branch
+# fails rather than migrating the fleet's catalog. Note that no restore is actually running --
 # measured 2026-08-17, the sandbox has had no data load since 2026-04-14 -- so the
 # fallback does not eat a Rock upgrade the way this comment used to claim. See open
 # item 7 in Documentation/Training/DevOps-Open-Items-Rock-CICD.md.
@@ -68,6 +68,13 @@ name: Deploy Staging
         required: false
         default: passion-19.4.4
         type: string
+      force_build:
+        description: >-
+          Build from source even if an existing artifact could be repackaged. For a
+          repackage that failed, or one whose site does not show the change.
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # A newer commit supersedes an in-flight staging deploy. Two deploys writing the
@@ -84,6 +91,7 @@ permissions:
   # permissions in every workflow reached through `uses:` below.
   contents: read
   actions: read
+  pull-requests: read
 
 jobs:
   resolve:
@@ -114,7 +122,7 @@ jobs:
       # trunk is what defines that -- pr-test-deploy.yml uses the same oracle for
       # the same reason. Reading the deployed ref's own copy would let a v19
       # branch that had already bumped its config authorise its own deploy.
-      - name: Read the fleet's pinned Rock minor
+      - name: Read the fleet's pinned Rock version
         id: pin
         uses: actions/github-script@v7
         with:
@@ -155,31 +163,6 @@ jobs:
           fleet_db_name="${PR_TEST_DB_NAME:-}"
           pinned_branch="${PINNED_BASE_BRANCH:-}"
 
-          # Two layouts, because the cutover this guard protects is also the
-          # commit that moves the version. Which two files, in which order, and
-          # read with which pattern, are all in .github/scripts/rock-version.sh --
-          # shared with production-deploy.yml's version guard, which answered the
-          # same question in the opposite order until 2026-09-15 and agreed with
-          # this one only because the tree carries one of the two files.
-          #
-          # Addressed through GITHUB_WORKSPACE rather than relatively, so that the
-          # tests can run this step with the working directory pointed at a
-          # fixture tree -- which is how the order is checked against a layout
-          # this branch does not currently have.
-          . "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"
-
-          if ! artifact_version="$(rock_version_of_tree)"; then
-            echo "::error::Refusing rather than guessing which minor this artifact is."
-            exit 1
-          fi
-          artifact_minor="${artifact_version%%.*}"
-
-          pinned_minor="$(printf '%s\n' "$pinned_branch" | sed -n 's/^passion-\([0-9][0-9]*\)\..*$/\1/p')"
-          if [ -z "$pinned_minor" ]; then
-            echo "::error::Could not read the fleet's pinned Rock minor from '$pinned_branch'. Refusing rather than assuming it matches."
-            exit 1
-          fi
-
           # The mirror image of the refusal below, and the case the original guard
           # could not see. Its escape hatch was STAGING_DB_NAME being set at all, so
           # the moment staging owned a catalog it stopped asking *which* catalog the
@@ -189,24 +172,64 @@ jobs:
           # Case-folded on purpose. SQL Server catalog names are not case sensitive
           # under the default collation, so 'rockstaging' and 'RockStaging' open the
           # same database and a raw string compare would wave the collision through.
+          #
+          # First, and before any version is read: it needs none, and a pin that
+          # cannot be read must not be what reports a collision it never got to.
           staging_key="$(printf '%s' "$staging_db_name" | tr '[:upper:]' '[:lower:]')"
           fleet_key="$(printf '%s' "$fleet_db_name" | tr '[:upper:]' '[:lower:]')"
           if [ -n "$staging_key" ] && [ "$staging_key" = "$fleet_key" ]; then
-            echo "::error::Refusing to deploy Rock $artifact_version to staging. STAGING_DB_NAME and PR_TEST_DB_NAME both name '$staging_db_name', so staging and every pr-* site would run on one catalog. Rock migrates at Application_Start, so whichever site is hit first migrates the schema out from under the others -- that is what put pr-3 on a permanent HTTP 500 on 2026-08-11. Give one of the two a catalog of its own."
+            echo "::error::Refusing to deploy to staging. STAGING_DB_NAME and PR_TEST_DB_NAME both name '$staging_db_name', so staging and every pr-* site would run on one catalog. Rock migrates at Application_Start, so whichever site is hit first migrates the schema out from under the others -- that is what put pr-3 on a permanent HTTP 500 on 2026-08-11. Give one of the two a catalog of its own."
             exit 1
           fi
 
+          # The version comparison protects the shared catalog and nothing else, so
+          # it is only made there. It used to come first, which refused every deploy
+          # onto staging's own catalog whenever either version could not be read --
+          # a trunk pinned to a passion-19.4.4-hotfix, say -- for a comparison whose
+          # answer the next line threw away.
           if [ -n "$staging_db_name" ]; then
-            echo "staging has its own catalog ($staging_db_name), so Rock $artifact_version can migrate it without touching the pr-* fleet."
+            echo "staging has its own catalog ($staging_db_name), so this artifact can migrate it without touching the pr-* fleet."
             exit 0
           fi
 
-          if [ "$artifact_minor" != "$pinned_minor" ]; then
-            echo "::error::Refusing to deploy Rock $artifact_version to staging. STAGING_DB_NAME is unset, so this deploy would land on the sandbox catalog shared with every pr-* site, and that catalog is on the ${pinned_minor}.x line (pinned to $pinned_branch). Rock migrates on startup, so a ${artifact_minor}.x artifact would begin migrating a ${pinned_minor}.x catalog on the first request. Give staging its own database and set the STAGING_DB_NAME repository variable first."
+          # Two layouts, because the cutover this guard protects is also the
+          # commit that moves the version. Which two files, in which order, and
+          # read with which pattern, are all in .github/scripts/rock-version.sh --
+          # shared with production-deploy.yml's version guard, which answered the
+          # same question in the opposite order until 2026-09-15 and agreed with
+          # this one only because the tree carries one of the two files. So are
+          # reading a version out of the pin's branch name and taking a version's
+          # minor, which this step used to do with a sed and a slice of its own.
+          #
+          # Addressed through GITHUB_WORKSPACE rather than relatively, so that the
+          # tests can run this step with the working directory pointed at a
+          # fixture tree -- which is how the order is checked against a layout
+          # this branch does not currently have.
+          . "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"
+
+          if ! artifact_version="$(rock_version_of_tree)"; then
+            echo "::error::Refusing rather than guessing which Rock version this artifact is."
             exit 1
           fi
 
-          echo "Rock $artifact_version is on the pinned ${pinned_minor}.x line; the shared catalog stays consistent."
+          if ! pinned_version="$(rock_version_of_branch "$pinned_branch")"; then
+            echo "::error::Could not read the fleet's pinned Rock version from '$pinned_branch'. Refusing rather than assuming it matches."
+            exit 1
+          fi
+
+          # The minor -- 19.4 of 19.4.4 -- the same part production-deploy.yml
+          # compares. Until 2026-10-20 this compared the line, 19, and allowed
+          # 18.4.1 -> 18.5.0 onto the shared catalog; Rock ships schema migrations
+          # in minor releases, so that was the 2026-08-18 hazard at a smaller size.
+          artifact_minor="$(rock_minor_of_version "$artifact_version")" || exit 1
+          pinned_minor="$(rock_minor_of_version "$pinned_version")" || exit 1
+
+          if [ "$artifact_minor" != "$pinned_minor" ]; then
+            echo "::error::Refusing to deploy Rock $artifact_version to staging. STAGING_DB_NAME is unset, so this deploy would land on the sandbox catalog shared with every pr-* site, and that catalog is on Rock $pinned_minor (pinned to $pinned_branch). Rock migrates on startup, so a $artifact_minor artifact would begin migrating a $pinned_minor catalog on the first request. Give staging its own database and set the STAGING_DB_NAME repository variable first."
+            exit 1
+          fi
+
+          echo "Rock $artifact_version is on the pinned $pinned_minor minor; the shared catalog stays consistent."
 
   build:
     name: Build staging artifact
@@ -216,6 +239,9 @@ jobs:
       head_sha: ${{ needs.resolve.outputs.sha }}
       host_name: staging.connect.passion.team
       artifact_slug: staging
+      # github.event.inputs for the reason resolve's checkout gives: a string
+      # on dispatch, null on push, so anything but a ticked box is false.
+      force_build: ${{ github.event.inputs.force_build == 'true' }}
     secrets: inherit
 
   deploy:
@@ -227,6 +253,8 @@ jobs:
       host_name: staging.connect.passion.team
       sha: ${{ needs.resolve.outputs.sha }}
       artifact_gcs_object_path: ${{ needs.build.outputs.artifact_gcs_object_path }}
+      # The same pin production sends, so staging rehearses the VM's check of it.
+      artifact_sha256: ${{ needs.build.outputs.artifact_sha256 }}
       mode: DedicatedSite
       queue_name: commands
       write_connection_string: true

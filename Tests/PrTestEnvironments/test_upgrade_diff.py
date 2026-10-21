@@ -35,9 +35,7 @@ import io
 import os
 import pathlib
 import re
-import shlex
 import subprocess
-import sys
 import unittest
 from unittest import mock
 
@@ -50,7 +48,6 @@ REPO_ROOT = harness.REPO_ROOT
 UPGRADE_DIFF = REPO_ROOT / "Deployment" / "Repository" / "upgrade_diff.py"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deployment-pipeline-tests.yml"
 DISPATCH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "upgrade-diff.yml"
-FORK_LOCAL_REGISTER = REPO_ROOT / "Documentation" / "Fork-Local-Changes.md"
 BUILD_PROPS = REPO_ROOT / "Directory.Build.props"
 
 
@@ -721,8 +718,8 @@ class CommandLineTests(unittest.TestCase):
         self.assertNotIn("## Migrations that repoint site configuration", filtered)
 
     def test_a_missing_subcommand_is_an_error_rather_than_a_default(self):
-        """Two reports share this entry point and they answer different questions. Guessing
-        which was meant is how someone reads a fork-local list as an upgrade report."""
+        """Several commands share this entry point and they answer different questions.
+        Guessing which was meant is how someone reads a fork-local list as an upgrade report."""
         with self.assertRaises(SystemExit) as raised:
             with contextlib.redirect_stderr(io.StringIO()):
                 upgrade_diff.main([])
@@ -777,35 +774,41 @@ class TheseTestsActuallyRunInCiTests(unittest.TestCase):
         self.assertIn("baseBranch", body)
         self.assertIn("productionBranch", body)
 
-    def test_the_pipeline_workflow_fetches_the_upstream_release(self):
-        """The fork-local register claims to be derived and therefore unable to fall
-        behind. That claim needs the upstream tag, which origin does not carry, so without
-        this step both derivation tests skip and the only thing CI checks about the
-        register is that its version string matches Directory.Build.props."""
-        body = "\n".join(step["run"] for step in self._fetch_steps())
+    def _upstream_fetch_steps(self):
+        workflow = yaml.safe_load(CI_WORKFLOW.read_text())
+        return [
+            step for step in workflow["jobs"]["test"]["steps"]
+            if "fetch-upstream" in (step.get("run") or "")
+        ]
 
-        self.assertIn(
-            "Fork-Local-Changes.md",
-            body,
-            "no fetch step reads the upstream tag out of the register, so the derivation "
-            "tests behind it cannot run in CI",
+    def test_the_pipeline_workflow_fetches_the_upstream_releases(self):
+        """Each trunk is measured against the upstream tag its own version names, and
+        origin carries no tags. Without this step `ForkEditsAcrossTheRealCutoverTests`
+        cannot run in CI at all."""
+        self.assertTrue(
+            self._upstream_fetch_steps(),
+            "no step in deployment-pipeline-tests.yml runs `upgrade_diff.py fetch-upstream`, "
+            "so the fork-edit tests have no upstream tags to measure the trunks against",
         )
-        self.assertIn("refs/tags/", body)
 
-    def test_the_upstream_fetch_names_neither_the_tag_nor_the_remote_itself(self):
-        """Both live in the register, which is also where a cutover updates them. Writing
-        either here makes this a second place to remember, and its only symptom when
-        forgotten is tests going quiet."""
-        body = "\n".join(step["run"] for step in self._fetch_steps())
-        register = FORK_LOCAL_REGISTER.read_text()
+    def test_the_upstream_fetch_names_neither_a_release_nor_the_remote(self):
+        """The tool reads each release from the trunk and owns the remote. Writing either
+        here makes this a second place a cutover has to remember, and its only symptom
+        when forgotten is a fetch of the wrong tag."""
+        for step in self._upstream_fetch_steps():
+            self.assertIsNone(
+                re.search(r"\b\d+\.\d+\.\d+\b", step["run"]),
+                f"the {step.get('name')!r} step names a release; the tool reads it from the trunk",
+            )
+            self.assertNotIn("SparkDevNetwork", step["run"])
 
-        for value in (
-            re.search(r"\*\*Measured against upstream\*\* `([^`]+)`", register).group(1),
-            re.search(r"\*\*Upstream remote\*\* `([^`]+)`", register).group(1),
-        ):
-            self.assertNotIn(
-                value, body,
-                f"{value!r} is hard-coded in the fetch step as well as in the register",
+    def test_the_upstream_fetch_cannot_fail_the_suite(self):
+        """It reaches a network the suite does not control. `_require_ref` turns a fetch
+        that stopped working into red tests, so the step itself may fail quietly."""
+        for step in self._upstream_fetch_steps():
+            self.assertTrue(
+                step.get("continue-on-error"),
+                f"the {step.get('name')!r} step can fail the whole suite over a network fetch",
             )
 
     def test_the_fetch_cannot_fail_the_suite(self):
@@ -892,6 +895,21 @@ class DispatchWorkflowTests(unittest.TestCase):
 
         self.assertEqual(["workflow_dispatch"], list(triggers))
 
+    def test_it_fetches_the_upstream_releases_before_reporting(self):
+        """Without the tags the fork-edit section reports itself unchecked, which counts as
+        a finding. Every dispatch would then go red for a reason unrelated to the upgrade."""
+        runs = [
+            step.get("run") or ""
+            for job in self.workflow["jobs"].values()
+            for step in job["steps"]
+        ]
+        fetching = [index for index, run in enumerate(runs) if "fetch-upstream" in run]
+        reporting = [index for index, run in enumerate(runs) if "upgrade_diff.py cutover" in run]
+
+        self.assertTrue(fetching, "the dispatch workflow never fetches the upstream tags")
+        self.assertTrue(reporting, "the dispatch workflow no longer runs the cutover report")
+        self.assertLess(fetching[0], reporting[0])
+
     def test_the_report_keeps_its_exit_code_through_the_pipe(self):
         """`run:` defaults to `bash -e` without pipefail, so piping the tool into tee
         would report tee's success and turn a report full of findings into a green run --
@@ -965,140 +983,159 @@ class ForkLocalChangesTests(unittest.TestCase):
         self.assertEqual(["Rock/Real.cs"], modified)
 
 
-class ForkLocalRegisterTests(unittest.TestCase):
-    """The register is prose because it has to say *why* each edit exists, which no diff
-    can derive. What a diff can derive is the file list, so the suite carries that -- the
-    same bargain trap7 makes for its counts."""
+class DroppedForkEditsTests(unittest.TestCase):
+    """What replaced the hand-kept register of fork-local files.
 
-    def setUp(self):
-        if not FORK_LOCAL_REGISTER.exists():
-            self.fail(f"{FORK_LOCAL_REGISTER.name} is missing; it is what a merge is checked against")
-        self.text = FORK_LOCAL_REGISTER.read_text()
+    The register listed every Rock file the fork had edited, and CI failed any pull request
+    that touched one until its author added a line -- a list git could already derive,
+    enforced on people who had never heard of it. What the register was actually for was
+    the merge: knowing which edits an upgrade must not lose. Both trunks' lists are derived
+    now, so the only thing left to judge is what disappeared between them."""
 
-    def _fork_local_changes(self):
-        """The derived set the register is checked against.
-
-        The upstream ref comes from the register itself, so the file names the release it
-        was measured from and the check reads the same value -- there is no second place
-        to update. Absent locally this skips; absent in CI it fails, because CI has a step
-        whose job is to fetch it.
-        """
-        upstream_ref = re.search(
-            r"\*\*Measured against upstream\*\* `([^`]+)`", self.text
-        ).group(1)
-        _require_ref(
-            f"{upstream_ref}^{{tree}}",
-            "the upgrade-diff fetch step should have provided it; locally, add the "
-            "SparkDevNetwork/Rock remote and fetch its tags",
-        )
-        return upgrade_diff.fork_local_changes(
-            upgrade_diff.tracked_blobs(upstream_ref, REPO_ROOT),
-            upgrade_diff.tracked_blobs("HEAD", REPO_ROOT),
+    def test_an_edit_the_new_trunk_no_longer_carries_is_reported(self):
+        dropped = upgrade_diff.dropped_fork_edits(
+            ["Rock/Kept.cs", "Rock/Lost.cs"],
+            ["Rock/Kept.cs"],
         )
 
-    def test_it_pins_the_upstream_version_it_was_measured_against(self):
-        """A list of fork-local edits is only meaningful next to the upstream release it
-        was measured from. This is the assertion that needs no remote at all: noticing
-        that Rock's version moved and the register did not takes nothing but two files."""
-        declared = re.search(r"\*\*Measured against upstream\*\* `([^`]+)`", self.text)
-        self.assertTrue(
-            declared,
-            "the register no longer states which upstream release it was measured against, "
-            "so there is no way to tell whether it describes this version of Rock",
+        self.assertEqual(["Rock/Lost.cs"], dropped)
+
+    def test_a_new_edit_is_not_a_dropped_one(self):
+        """Every pull request that edits a Rock file adds one of these. Flagging them is
+        what the register's CI check did, and it is the rule this replaced."""
+        dropped = upgrade_diff.dropped_fork_edits(
+            ["Rock/Kept.cs"],
+            ["Rock/Kept.cs", "Rock/New.cs"],
         )
 
-        version = re.search(r"<Version>([^<]+)</Version>", BUILD_PROPS.read_text()).group(1)
+        self.assertEqual([], dropped)
 
-        self.assertEqual(
-            version,
-            declared.group(1),
-            f"Directory.Build.props declares Rock {version} and the register was measured "
-            f"against {declared.group(1)}. Re-derive it with the command the register "
-            "documents, then update both the list and this line.",
+    def test_the_result_is_sorted(self):
+        dropped = upgrade_diff.dropped_fork_edits(["z.cs", "a.cs", "m.cs"], [])
+
+        self.assertEqual(["a.cs", "m.cs", "z.cs"], dropped)
+
+
+class RockVersionTests(unittest.TestCase):
+    """Which upstream tag a trunk is measured against. It is read from the trunk itself,
+    so a cutover has nothing to update by hand -- the register's header line, which named
+    the tag, had to be bumped at every upgrade and had a test of its own to say so."""
+
+    def test_rock_19_reads_directory_build_props(self):
+        version = upgrade_diff.rock_version({
+            "Directory.Build.props": "<Project>\n  <PropertyGroup>\n    <Version>19.4.4</Version>\n",
+        })
+
+        self.assertEqual("19.4.4", version)
+
+    def test_rock_18_reads_assembly_shared_info(self):
+        """Production's cutover starts from 18.4.1, which predates Directory.Build.props.
+        Reading only the newer file would leave the cutover that matters most unchecked."""
+        version = upgrade_diff.rock_version({
+            "Rock.Version/AssemblySharedInfo.cs": '[assembly: AssemblyVersion( "18.4.1" )]\n',
+        })
+
+        self.assertEqual("18.4.1", version)
+
+    def test_a_tree_that_names_no_version_reads_as_none(self):
+        self.assertIsNone(upgrade_diff.rock_version({}))
+
+    def test_head_is_measured_against_the_release_it_builds(self):
+        """Wired to git through `_read_at_ref`, on the one ref every checkout has."""
+        declared = re.search(r"<Version>([^<]+)</Version>", BUILD_PROPS.read_text()).group(1)
+
+        self.assertEqual(declared, upgrade_diff.release_at("HEAD", REPO_ROOT))
+
+
+class ForkEditsInTheReportTests(unittest.TestCase):
+    def test_a_dropped_edit_is_a_finding(self):
+        """Nothing else notices a lost edit. It compiles, every test passes, and the
+        feature is simply gone, so this section has to be able to turn the run red."""
+        report, exit_code = upgrade_diff.render_report(
+            old_ref="a", new_ref="b", referenced={}, emptied=[], config_writes=[],
+            dropped_edits=["Rock.Blocks/WorkFlow/FormBuilder/FormBuilderDetail.cs"],
         )
 
-    def test_it_names_every_rock_file_the_fork_has_edited(self):
-        """Derived, so the register cannot quietly fall behind -- see `_fork_local_changes`
-        for what happens when the upstream ref is missing."""
-        modified = self._fork_local_changes()
+        self.assertEqual(1, exit_code)
+        self.assertIn("Rock.Blocks/WorkFlow/FormBuilder/FormBuilderDetail.cs", report)
 
-        missing = [path for path in modified if path not in self.text]
-
-        self.assertEqual(
-            [],
-            missing,
-            "these files differ from upstream and the register does not list them, so a "
-            "trunk merge could drop them without anything noticing:\n  "
-            + "\n  ".join(missing),
+    def test_it_says_how_to_tell_a_lost_edit_from_an_absorbed_one(self):
+        """The report cannot tell the merge taking upstream's side from upstream shipping
+        the same change. A diff between the trunks can, so the report gives that command
+        with the real refs filled in."""
+        report, _ = upgrade_diff.render_report(
+            old_ref="origin/passion-19.3.4", new_ref="origin/passion-19.4.4",
+            referenced={}, emptied=[], config_writes=[],
+            dropped_edits=["Rock/Lost.cs"],
         )
 
-    def test_it_lists_nothing_that_is_no_longer_fork_local(self):
-        """A stale entry is worse than a missing one: it sends whoever is doing the merge
-        to protect an edit upstream has already taken, and teaches them the register is
-        approximate."""
-        modified = set(self._fork_local_changes())
+        self.assertIn("git diff origin/passion-19.3.4 origin/passion-19.4.4 --", report)
 
-        # Only lines that are listing a path, so the prose may mention anything it likes.
-        listed = set(re.findall(r"^\s*[-*] `([^`]+\.(?:cs|ts|obs|less|scss))`", self.text, re.M))
-
-        self.assertEqual(
-            set(),
-            listed - modified,
-            f"the register lists these as fork-local and they now match upstream: "
-            f"{sorted(listed - modified)}",
+    def test_a_comparison_that_could_not_run_is_a_finding(self):
+        """A check that quietly did not run reads exactly like one that found nothing, and
+        "Nothing to review" would then be a claim about fork edits nobody looked at."""
+        report, exit_code = upgrade_diff.render_report(
+            old_ref="a", new_ref="b", referenced={}, emptied=[], config_writes=[],
+            fork_edits_unchecked="upstream tag 19.4.4, which b is built from, is not in this checkout",
         )
 
+        self.assertEqual(1, exit_code)
+        self.assertIn("is not in this checkout", report)
+        self.assertNotIn("Nothing to review", report)
 
-class TheRegisterDocumentsARealCommandTests(unittest.TestCase):
-    """A runbook that names a flag the tool does not have is worse than no runbook: it is
-    followed, it fails, and the person following it concludes the tool is broken. Item 26
-    was a workflow that had stopped existing while the documentation still described it."""
+    def test_a_missing_tag_is_reported_rather_than_raised(self):
+        """The rest of the report is still worth reading when the upstream fetch failed,
+        so the gap comes back as a reason and the other sections still print."""
+        with mock.patch.object(upgrade_diff, "release_at", return_value="0.0.0-not-a-tag"):
+            dropped, unchecked = upgrade_diff.fork_edits_across("HEAD", "HEAD", REPO_ROOT)
+
+        self.assertEqual([], dropped)
+        self.assertIn("0.0.0-not-a-tag", unchecked)
+        self.assertIn("fetch-upstream", unchecked)
+
+    def test_a_ref_that_names_no_version_is_reported_rather_than_raised(self):
+        with mock.patch.object(upgrade_diff, "release_at", return_value=None):
+            dropped, unchecked = upgrade_diff.fork_edits_across("HEAD", "HEAD", REPO_ROOT)
+
+        self.assertEqual([], dropped)
+        self.assertIn("declares no Rock version", unchecked)
+
+
+class ForkEditsAcrossTheRealCutoverTests(unittest.TestCase):
+    """The functions above, wired to git: each trunk's version read at the ref, its tag
+    resolved, both sides derived.
+
+    This asserts on the wiring and on what a frozen trunk carried, and deliberately not on
+    which edits HEAD carries. Pinning that here would make this test the hand-kept list
+    again, failing whoever reverts an edit on purpose."""
+
+    OLD = "origin/passion-18.4.1"
+    NEW = "origin/passion-19.4.4"
 
     @classmethod
     def setUpClass(cls):
-        cls.register = FORK_LOCAL_REGISTER.read_text()
-        cls.upstream_ref = re.search(
-            r"\*\*Measured against upstream\*\* `([^`]+)`", cls.register
-        ).group(1)
+        for ref in (cls.OLD, cls.NEW, "refs/tags/18.4.1", "refs/tags/19.4.4"):
+            _require_ref(
+                ref,
+                "the pipeline-tests fetch steps should have provided it; locally, run "
+                f"`upgrade_diff.py fetch-upstream {cls.OLD} {cls.NEW}`",
+            )
 
-    def _documented_invocations(self):
-        """Every `upgrade_diff.py ...` command line the register tells the reader to run."""
-        found = re.findall(r"upgrade_diff\.py ([^\n`]+)", self.register)
-        self.assertTrue(found, "the register no longer shows how to re-derive itself")
-        return found
+    def test_the_18_trunk_is_measured_against_18_4_1(self):
+        self.assertEqual("18.4.1", upgrade_diff.release_at(self.OLD, REPO_ROOT))
 
-    def test_the_documented_flag_exists(self):
-        documented = self._documented_invocations()
+    def test_the_comparison_runs(self):
+        _, unchecked = upgrade_diff.fork_edits_across(self.OLD, self.NEW, REPO_ROOT)
 
-        for invocation in documented:
-            for flag in re.findall(r"(--[a-z-]+)", invocation):
-                self.assertIn(
-                    flag,
-                    UPGRADE_DIFF.read_text(),
-                    f"the register tells the reader to run `upgrade_diff.py {invocation}` "
-                    f"and {flag} is not a flag the tool accepts",
-                )
+        self.assertIsNone(unchecked)
 
-    def test_the_documented_invocation_actually_runs(self):
-        """Runs the real command, not `--help`.
-
-        The earlier version of this appended `--help`, which argparse handles and exits on
-        before any of the code under test is reached -- so it stayed green while asserting
-        nothing beyond argparse being able to print its own help. Measuring against
-        upstream needs the upstream remote, so the command is pointed at a ref this
-        checkout always has and the assertion is on the report it prints.
-        """
-        invocation = self._documented_invocations()[0]
-        arguments = shlex.split(invocation)
-        # Same subcommand and flags the register documents, with the upstream ref swapped
-        # for one every clone has. If the register renames the subcommand, this moves too.
-        arguments = ["HEAD" if argument == self.upstream_ref else argument for argument in arguments]
-
-        result = subprocess.run(
-            [sys.executable, str(UPGRADE_DIFF), *arguments],
-            capture_output=True, text=True,
+    def test_the_old_trunk_is_seen_to_carry_its_fork_edits(self):
+        """passion-18.4.1 is frozen, so what it had edited is a fixed fact. If this came
+        back empty the comparison would be reading the wrong trees, and every cutover would
+        report that nothing was dropped."""
+        before = upgrade_diff.fork_local_changes(
+            upgrade_diff.tracked_blobs("refs/tags/18.4.1", REPO_ROOT),
+            upgrade_diff.tracked_blobs(self.OLD, REPO_ROOT),
         )
 
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("Rock files this fork has edited", result.stdout)
-        self.assertIn("file(s).", result.stdout)
+        self.assertIn("Rock.Blocks/WorkFlow/FormBuilder/FormBuilderDetail.cs", before)

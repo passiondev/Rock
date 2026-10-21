@@ -18,10 +18,8 @@ matters is the exit code for a given combination of catalog and version -- a sha
 assertion would have passed against a guard that printed the right words and
 exited 0."""
 
-import os
 import pathlib
 import re
-import subprocess
 import tempfile
 import unittest
 
@@ -46,16 +44,10 @@ GUARD_STEP_NAME = "Refuse a Rock minor change on the shared catalog"
 def _guard_script():
     """Pull the guard's `run:` block out of the workflow so the test executes the
     same text CI does. Keyed to the step *name* rather than a line range so the
-    step can move within the job without silently unhooking the test."""
-    workflow = yaml.safe_load(STAGING_WORKFLOW.read_text())
-    for job in workflow["jobs"].values():
-        for step in job.get("steps", []):
-            if step.get("name") == GUARD_STEP_NAME:
-                return step["run"]
-    raise AssertionError(
-        f"no step named {GUARD_STEP_NAME!r} in {STAGING_WORKFLOW.name}; "
-        "the staging deploy no longer guards the shared catalog"
-    )
+    step can move within the job without silently unhooking the test. A missing
+    step fails in `harness.step`, which here means the staging deploy no longer
+    guards the shared catalog."""
+    return harness.step(yaml.safe_load(STAGING_WORKFLOW.read_text()), GUARD_STEP_NAME)["run"]
 
 
 def _write_version(workdir, version, layout):
@@ -96,30 +88,21 @@ def _run_guard(version, pinned_branch, staging_db_name, layout="assemblyinfo", f
     `fleet_db_name` is `vars.PR_TEST_DB_NAME`. It defaults to empty because that is
     what it was for the whole period these tests were written in, and the tests
     above still describe that state."""
-    script = _guard_script()
-
     with tempfile.TemporaryDirectory() as workdir:
         _write_version(workdir, version, layout)
-
-        env = dict(os.environ)
         # The guard sources .github/scripts/rock-version.sh through
-        # $GITHUB_WORKSPACE, which Actions sets to the checkout and these runs
-        # have to supply -- the working directory is a fixture tree, so a
-        # relative path would not find it.
-        env["GITHUB_WORKSPACE"] = str(REPO_ROOT)
-        env["PINNED_BASE_BRANCH"] = pinned_branch
-        env["STAGING_DB_NAME"] = staging_db_name
-        env["PR_TEST_DB_NAME"] = fleet_db_name
-        env["GITHUB_OUTPUT"] = str(pathlib.Path(workdir) / "github_output")
-
-        completed = subprocess.run(
-            ["bash", "-euo", "pipefail", "-c", script],
+        # $GITHUB_WORKSPACE, which run_bash points at this checkout -- the working
+        # directory is a fixture tree, so a relative path would not find it.
+        result = harness.run_bash(
+            _guard_script(),
+            env={
+                "PINNED_BASE_BRANCH": pinned_branch,
+                "STAGING_DB_NAME": staging_db_name,
+                "PR_TEST_DB_NAME": fleet_db_name,
+            },
             cwd=workdir,
-            env=env,
-            capture_output=True,
-            text=True,
         )
-        return completed.returncode, completed.stdout + completed.stderr
+    return result.returncode, result.output
 
 
 class StagingCatalogVersionGuardTests(unittest.TestCase):
@@ -132,14 +115,33 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
                 self.assertEqual(code, 0, f"a same-minor staging deploy was refused:\n{output}")
 
     def test_a_patch_bump_within_the_pinned_minor_is_allowed(self):
-        """18.4.1 -> 18.5.0 does not cross a minor, so it does not migrate the
-        catalog onto a version the pr-* fleet cannot read. Blocking this would make
-        the guard a blanket freeze on staging, and a guard that stops ordinary work
+        """18.4.1 -> 18.4.2 stays on the 18.4 minor. Blocking it would make the
+        guard a blanket freeze on staging, and a guard that stops ordinary work
         gets switched off."""
         for layout in LAYOUTS:
             with self.subTest(layout=layout):
+                code, output = _run_guard("18.4.2", "passion-18.4.1", "", layout)
+                self.assertEqual(code, 0, f"a same-minor staging deploy was refused:\n{output}")
+
+    def test_a_minor_bump_within_the_pinned_line_is_refused(self):
+        """18.4.1 -> 18.5.0 crosses a minor and stays on the 18 line.
+
+        This case was allowed until 2026-10-20, pinned by a test written as a patch
+        bump "within the pinned minor", which it is not: the guard compared the
+        line, 18, while production's compared the minor. Rock ships schema
+        migrations in minor releases, so a minor bump on a shared catalog is the
+        same hazard as the 2026-08-18 line change, only smaller. Staging moved to
+        the minor on 2026-10-20, and this is the test that flipped."""
+        for layout in LAYOUTS:
+            with self.subTest(layout=layout):
                 code, output = _run_guard("18.5.0", "passion-18.4.1", "", layout)
-                self.assertEqual(code, 0, f"an in-minor staging deploy was refused:\n{output}")
+                self.assertNotEqual(
+                    code,
+                    0,
+                    f"an 18.5 artifact was allowed onto the shared 18.4 catalog:\n{output}",
+                )
+                self.assertIn("18.5", output)
+                self.assertIn("18.4", output)
 
     def test_a_minor_change_on_the_shared_catalog_is_refused(self):
         """The 2026-08-18 deploy, exactly. This is the case the guard exists for."""
@@ -225,23 +227,14 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
         """A guard that cannot tell which minor it is deploying must not assume the
         safe answer. Renaming or reformatting AssemblySharedInfo.cs would otherwise
         turn this into a no-op that still reports success on every run."""
-        script = _guard_script()
-        with tempfile.TemporaryDirectory() as workdir:
-            env = dict(os.environ)
-            env["GITHUB_WORKSPACE"] = str(REPO_ROOT)
-            env["PINNED_BASE_BRANCH"] = "passion-18.4.1"
-            env["STAGING_DB_NAME"] = ""
-            env["GITHUB_OUTPUT"] = str(pathlib.Path(workdir) / "github_output")
-            completed = subprocess.run(
-                ["bash", "-euo", "pipefail", "-c", script],
-                cwd=workdir,
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-        output = completed.stdout + completed.stderr
+        # No `cwd`: run_bash's default working directory is empty, so there is no
+        # version file at all.
+        result = harness.run_bash(
+            _guard_script(), env={"PINNED_BASE_BRANCH": "passion-18.4.1", "STAGING_DB_NAME": ""}
+        )
+        output = result.output
         self.assertNotEqual(
-            completed.returncode,
+            result.returncode,
             0,
             f"the guard passed with no version file at all, so it would pass against "
             f"a renamed one too:\n{output}",
@@ -268,10 +261,10 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
         )
         # Also exit-code-invisible: drop the check and an empty pin falls into the
         # mismatch branch, where "19" != "" refuses anyway -- but it refuses by
-        # reporting a version mismatch against a catalog minor it never read,
+        # reporting a version mismatch against a catalog line it never read,
         # telling whoever is on the deploy to go fix the wrong thing.
         self.assertIn(
-            "pinned Rock minor",
+            "pinned Rock version",
             output,
             f"the guard did not say the pin was the unreadable part:\n{output}",
         )
@@ -281,6 +274,53 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
             "the guard reported a version mismatch it never established, because it "
             f"compared against an empty pin:\n{output}",
         )
+
+    def test_no_version_is_read_once_staging_owns_its_catalog(self):
+        """The comparison only protects the shared catalog, so it is only made
+        there. Staging has owned a catalog since 2026-08-24, and a guard that still
+        read both versions first refused every staging deploy whenever either one
+        could not be read -- a trunk pinned to passion-19.4.4-hotfix, say -- for a
+        comparison whose answer it was about to throw away."""
+        for pinned_branch in ("", "passion-19.4.4-hotfix"):
+            with self.subTest(pinned_branch=pinned_branch):
+                code, output = _run_guard(
+                    "19.4.4",
+                    pinned_branch,
+                    "RockStaging20260824",
+                    fleet_db_name="RockStaging",
+                )
+                self.assertEqual(
+                    code,
+                    0,
+                    f"staging was refused a deploy onto its own catalog over a pin it "
+                    f"does not need:\n{output}",
+                )
+
+        # No `cwd`, so no version file either.
+        result = harness.run_bash(
+            _guard_script(),
+            env={
+                "PINNED_BASE_BRANCH": "passion-19.4.4",
+                "STAGING_DB_NAME": "RockStaging20260824",
+                "PR_TEST_DB_NAME": "RockStaging",
+            },
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"staging was refused a deploy onto its own catalog over a version it "
+            f"does not need:\n{result.output}",
+        )
+
+    def test_a_collision_is_refused_even_when_the_pin_is_unreadable(self):
+        """The collision check needs no version, so it runs before any is read. A
+        pin that cannot be read must not be what reports a deploy that would put
+        staging and the fleet on one catalog -- the operator would go and fix the
+        pin and come straight back to the real refusal."""
+        code, output = _run_guard("19.4.4", "", "RockStaging", fleet_db_name="RockStaging")
+        self.assertNotEqual(code, 0, f"a shared catalog was allowed:\n{output}")
+        self.assertIn("would run on one catalog", output)
+        self.assertNotIn("pinned Rock version", output)
 
     def test_the_guard_reads_a_version_this_repository_actually_declares(self):
         """_run_guard fabricates the version file, so every test above would still
@@ -303,22 +343,14 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
             "form the guard can parse; the guard would refuse every staging deploy",
         )
 
-        script = _guard_script()
-        env = dict(os.environ)
-        env["GITHUB_WORKSPACE"] = str(REPO_ROOT)
-        env["PINNED_BASE_BRANCH"] = f"passion-{declared}"
-        env["STAGING_DB_NAME"] = ""
-        env["GITHUB_OUTPUT"] = os.devnull
-        completed = subprocess.run(
-            ["bash", "-eo", "pipefail", "-c", script],
+        result = harness.run_bash(
+            _guard_script(),
+            env={"PINNED_BASE_BRANCH": f"passion-{declared}", "STAGING_DB_NAME": ""},
             cwd=REPO_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
         )
-        output = completed.stdout + completed.stderr
+        output = result.output
         self.assertEqual(
-            completed.returncode,
+            result.returncode,
             0,
             f"the guard could not read the version this branch declares ({declared}):\n{output}",
         )
@@ -329,28 +361,20 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
         declaration, so a leftover attribute must not out-vote it -- reading the
         stale one would let a 19.x artifact look like 18.x and walk straight past
         the guard, which is the failure this whole change exists to stop."""
-        script = _guard_script()
         with tempfile.TemporaryDirectory() as workdir:
             _write_version(workdir, "19.3.4", "props")
             stale = pathlib.Path(workdir) / "Rock.Version" / "AssemblySharedInfo.cs"
             stale.parent.mkdir(parents=True)
             stale.write_text('[assembly: AssemblyVersion( "18.4.1" )]\n')
 
-            env = dict(os.environ)
-            env["GITHUB_WORKSPACE"] = str(REPO_ROOT)
-            env["PINNED_BASE_BRANCH"] = "passion-18.4.1"
-            env["STAGING_DB_NAME"] = ""
-            env["GITHUB_OUTPUT"] = str(pathlib.Path(workdir) / "github_output")
-            completed = subprocess.run(
-                ["bash", "-euo", "pipefail", "-c", script],
+            result = harness.run_bash(
+                _guard_script(),
+                env={"PINNED_BASE_BRANCH": "passion-18.4.1", "STAGING_DB_NAME": ""},
                 cwd=workdir,
-                env=env,
-                capture_output=True,
-                text=True,
             )
-        output = completed.stdout + completed.stderr
+        output = result.output
         self.assertNotEqual(
-            completed.returncode,
+            result.returncode,
             0,
             f"a stale 18.4.1 attribute masked the real 19.3.4 version in props:\n{output}",
         )
@@ -364,8 +388,8 @@ class StagingCatalogVersionGuardTests(unittest.TestCase):
 
         guard_jobs = [
             name
-            for name, job in jobs.items()
-            if any(step.get("name") == GUARD_STEP_NAME for step in job.get("steps", []))
+            for name in jobs
+            if GUARD_STEP_NAME in [step.get("name") for step in harness.steps(workflow, job=name)]
         ]
         self.assertEqual(len(guard_jobs), 1, f"expected exactly one guard step, found in {guard_jobs}")
         guard_job = guard_jobs[0]

@@ -150,12 +150,12 @@ jobs:
           # seconds anyway -- and running it here as well is the one thing that makes
           # two agents overlap.
           #
-          # Nothing claims a command: Invoke-PrEnvironmentCommandQueue.ps1:206 lists
-          # pending/ and runs what it finds, and the object is not deleted until the
-          # command completes (line 305). Two runs therefore both see the same command
-          # and both execute it. schtasks defaults to MultipleInstances: IgnoreNew, so
-          # the scheduled task can never overlap *itself* -- this inline run was the
-          # only way to get a second agent, and it did:
+          # Until 2026-10-20 nothing claimed a command: the agent listed pending/ and
+          # ran what it found, and the object was not deleted until the command
+          # completed. Two runs therefore both saw the same command and both executed
+          # it. schtasks defaults to MultipleInstances: IgnoreNew, so the scheduled
+          # task can never overlap *itself* -- this inline run was the only way to get
+          # a second agent, and it did:
           #
           #   00:47:43  task installed
           #   00:47:44  this inline run claimed deploy-staging-31444814051-1, took the
@@ -165,9 +165,9 @@ jobs:
           #             wrote a FAILED result for a deploy that was working
           #
           # GitHub reported that staging deploy as a failure while the site was serving
-          # HTTP 302 in 0.1s. Losing 60 seconds at boot is a good trade for not doing
-          # that. The real fix is claim semantics on the queue (see open item 19);
-          # this removes the only trigger until that lands.
+          # HTTP 302 in 0.1s. The agent now claims each command before running it
+          # (open item 19), so a second agent would skip the command rather than
+          # re-run it. Leaving the inline run out still costs only 60 seconds at boot.
           "@
 
           $startupScript | Out-File -FilePath (Join-Path $env:RUNNER_TEMP 'startup.ps1') -Encoding utf8

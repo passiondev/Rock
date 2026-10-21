@@ -339,6 +339,13 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    back with a result object. That is step 6, and until it comes back the agent is unproven --
    a production deploy that queues into silence looks exactly like one that is still working.
 
+   The production agent runs only four verbs: `deploy-environment`, `set-theme-customization`,
+   `find-legacy-text-columns` and `anonymize-staging`. Anything else queued to `commands-prod`
+   -- a PR `deploy`, a `destroy` -- comes back as a failed result naming those four. The list
+   lives in the agent, keyed by queue name, not on the task's command line: Windows caps that
+   line at 261 characters and production's was already 249. So there is nothing to read for it
+   on the VM; it arrives with the agent script this bootstrap installs.
+
    **The prefix is the whole isolation story.** The queue name keeps the two hosts from taking
    each other's commands. It does not keep them from running each other's code. Both hosts
    re-download their scripts once a minute from whatever prefix their installed task names, so
@@ -400,7 +407,8 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    could have caught a fault here.
 
 7. **Deploy.** Same dispatch with `apply` ticked. One of the two named reviewers approves
-   the `production` environment -- `Record approval` in the run is that gate. Self-review is
+   the `production` environment -- the run waits at its `Deploy to production` job, the one
+   that writes the command to production's queue, until they do. Self-review is
    allowed, so it can be the same person who dispatched it. The VM-side script backs the site
    up to `C:\RockBackups\production\<utc>-<sha>` before it copies anything, stops the app pool,
    copies over the site preserving `Content`, `App_Data`, `Logs`, `Uploads` and
@@ -665,8 +673,9 @@ They are listed so the answer is already written down.
   between `hotfix-18.4` and `hotfix-19.3`. Every workflow form that shows the campus
   field will refuse to submit without one, where 18.4.1 accepted a blank. This is stock
   Rock 19 behaviour rather than a fork change, so reverting it means deliberately
-  diverging from upstream on a file the fork already patches for layout -- check
-  `Documentation/Fork-Local-Changes.md` item 3 before touching it.
+  diverging from upstream on a file the fork already patches for layout. The fork's edit
+  there is layout only -- the primary person editor is full width and the spouse editor
+  has a row of its own -- so keep that and take upstream's `rules="required"` at a merge.
 
 - **The first load after the deploy is slow, and some health-check attempts fail.**
   Covered in step 8. Worth repeating here because it is the single most likely thing to

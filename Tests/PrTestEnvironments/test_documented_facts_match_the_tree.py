@@ -26,7 +26,6 @@ ENGINEERING_GUIDE = REPO_ROOT / "Documentation" / "Local-Engineering-Training-Ed
 OPERATOR_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Operator-Runbook.md"
 DEVELOPER_RUNBOOK = REPO_ROOT / "Documentation" / "PR-Test-Environments-Developer-Runbook.md"
 MAKING_A_CHANGE = REPO_ROOT / "Documentation" / "Making-A-Change-To-Rock.md"
-FORK_LOCAL_CHANGES = REPO_ROOT / "Documentation" / "Fork-Local-Changes.md"
 DEVOPS_OPEN_ITEMS = REPO_ROOT / "Documentation" / "Training" / "DevOps-Open-Items-Rock-CICD.md"
 FACILITATOR_SCRIPT = REPO_ROOT / "Documentation" / "Training" / "Facilitator-Script-Rock-CICD-Training.md"
 
@@ -41,7 +40,6 @@ REFERENCE_DOCS = [
     OPERATOR_RUNBOOK,
     DEVELOPER_RUNBOOK,
     MAKING_A_CHANGE,
-    FORK_LOCAL_CHANGES,
     DEVOPS_OPEN_ITEMS,
     FACILITATOR_SCRIPT,
     CONTEXT_DOC,
@@ -221,10 +219,6 @@ class ReferencedPathsExistTests(harness.HarnessAssertions, unittest.TestCase):
         self.assertGreater(found, 100, "the path scan matched almost nothing -- it has stopped working")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 PRODUCTION_UPGRADE_RUNBOOK = REPO_ROOT / "Documentation" / "Production-Upgrade-Runbook.md"
 COMMAND_QUEUE_AGENT = (
     REPO_ROOT / "Deployment" / "PrTestEnvironments" / "Invoke-PrEnvironmentCommandQueue.ps1"
@@ -335,3 +329,7 @@ class RunbookHealthCheckNumbersMatchTheDeployScriptTests(
             "failures, and the runbook does not say so. Without it the recycle in "
             "the log reads as the deploy restarting itself.",
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

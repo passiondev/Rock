@@ -250,9 +250,10 @@ function Clear-StaleResult {
         picks the work up and leaves the result for the poller to find.
 
         So an id that repeats reads as an instant success or an instant failure
-        that no VM produced. Every producer now puts github.run_attempt in the id,
-        which is what stops the repeat. This is the half that does not depend on
-        six workflows each remembering: clear the slot, then fill it.
+        that no VM produced. run-vm-command appends github.run_id and
+        github.run_attempt to every producer's prefix, which is what stops the
+        repeat. This is the half that does not depend on how the id was built:
+        clear the slot, then fill it.
 
         A result found here means two commands shared an id, which should not
         happen now. The caller says so in the log rather than passing over it.

@@ -6,14 +6,16 @@
 #
 #     . "$GITHUB_WORKSPACE/.github/scripts/rock-version.sh"
 #
-# Two deploy guards refuse a deploy whose Rock minor does not match what the
-# target already runs -- production-deploy.yml against the pinned production
-# branch, staging-deploy.yml against the catalog the pr-* fleet shares. Both used
-# to read the version themselves, in different orders, with different patterns,
-# each commented as the correct one and each pinned by a test asserting the
-# opposite of the other. They agreed on this tree for one reason: only one of the
-# two files it could read exists. This file is the one answer, so a disagreement
-# is no longer something the tree's shape is hiding.
+# Two deploy guards refuse a deploy whose Rock version does not match what the
+# target already runs, both on the minor -- production-deploy.yml against the
+# pinned production branch, staging-deploy.yml against the catalog the pr-* fleet
+# shares. Both used to read the version themselves, in different
+# orders, with different patterns, each commented as the correct one and each
+# pinned by a test asserting the opposite of the other. They agreed on this tree
+# for one reason: only one of the two files it could read exists. This file is
+# the one answer, so a disagreement is no longer something the tree's shape is
+# hiding. It also answers which part of the version the guards compare; see
+# rock_minor_of_version at the end.
 
 # The probe order, and the whole of what the order decides.
 #
@@ -106,5 +108,84 @@ rock_version_of_tree() {
     done
 
     echo "::error::Could not read the Rock version from $root (looked in: ${ROCK_VERSION_FILES[*]})." >&2
+    return 1
+}
+
+rock_version_of_branch() {
+    # The Rock version a branch is named for -- 19.4.4 for passion-19.4.4 -- on
+    # stdout.
+    #
+    # The staging guard's pin arrives as a branch name (`baseBranch` in
+    # .github/pr-test-environments.json), and that name is the only version it
+    # has for the fleet. The guard used to cut the major out of the name with a
+    # sed of its own; this hands back the whole version, so the guard takes the
+    # minor from both sides through the same function.
+    #
+    # Only for the passion-<version> trunks, and the whole name or nothing. Other
+    # branches here are not named for what they declare -- `develop` is 19.0.3,
+    # `staging` is 17.6.1 -- and a suffix such as passion-19.4.4-hotfix is a name
+    # the guard would have to guess at. Both refuse the way rock_version_of_tree
+    # does. The old sed took a major from anything shaped passion-19.<anything>;
+    # every pin this repository has used is a bare passion-<version>.
+    #
+    # What counts as a version is rock_minor_of_version's to decide, so the name
+    # is checked by it rather than by a second pattern here. Its own annotation is
+    # dropped: the one below names the branch, which is what the operator has to
+    # go and fix.
+    local branch="${1:-}"
+    local version="${branch#passion-}"
+
+    if [ "$version" != "$branch" ] && rock_minor_of_version "$version" >/dev/null 2>&1; then
+        printf '%s\n' "$version"
+        return 0
+    fi
+
+    echo "::error::Branch '$branch' is not named for a Rock version (expected passion-<version>, such as passion-19.4.4)." >&2
+    return 1
+}
+
+# The part of a version the guards compare.
+#
+# A version's **minor** is its major and minor: 19.4 of 19.4.4. Its **line** is
+# its major alone: 19. Production has always refused a ref on a different minor
+# from the production branch. Staging refused an artifact on a different line
+# from the fleet's pin, and allowed 18.4.1 -> 18.5.0, until 2026-10-20, when it
+# moved to the minor as well: Rock ships schema migrations in minor releases, so
+# a minor bump on a shared catalog is the line change's hazard at a smaller
+# size. rock_line_of_version went with the last guard that called it.
+#
+# Both guards used to read the version through this file and then slice it
+# themselves, with `${version%.*}` and `${version%%.*}`, each commented as "the
+# minor". One character apart, two different answers, and nothing in either step
+# said which it was. Named here so both call the one answer.
+
+rock_minor_of_version() {
+    # The minor of the version $1 -- 19.4 for 19.4.4, and for 19.4 -- on stdout.
+    #
+    # Also the one place that decides what a version looks like: two or three
+    # numbers joined by single dots. rock_version_of_file reads [0-9][0-9.]* and so
+    # can hand back "19." or "19..4"; the old slices made a minor out of those and
+    # the guard compared it. Anything else refuses the way rock_version_of_tree
+    # does -- non-zero, nothing on stdout, an annotation on stderr -- because a
+    # guard that cannot tell must not compare an empty answer with another one and
+    # call them equal.
+    #
+    # A bare major ("19") is refused, and so are four parts. Neither declaration
+    # Rock has used carries either: both are three parts, 18.4.1 and 19.4.4. The
+    # four-part shape is the old Rock 1.x numbering, 1.19.4.4, whose first two
+    # parts are "1.19" -- a minor that compares with nothing a guard means.
+    #
+    # The pattern sits in a variable because that is the one spelling of `=~`
+    # that every bash from 3.2 onward reads as a regex rather than a literal
+    # string. The tests run under macOS's /bin/bash 3.2; the runners have bash 5.
+    local version="${1:-}"
+    local pattern='^([0-9]+\.[0-9]+)(\.[0-9]+)?$'
+
+    if [[ $version =~ $pattern ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    echo "::error::'$version' is not a Rock version (expected two or three numbers joined by dots, such as 19.4.4)." >&2
     return 1
 }

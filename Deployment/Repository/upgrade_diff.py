@@ -3,6 +3,7 @@
 
 Run this against the outgoing and incoming trunk while both still exist:
 
+    python3 Deployment/Repository/upgrade_diff.py fetch-upstream origin/passion-18.4.1 origin/passion-19.3.4
     python3 Deployment/Repository/upgrade_diff.py cutover origin/passion-18.4.1 origin/passion-19.3.4
 
 Every other check in the deployment suite re-derives its facts from the current
@@ -25,6 +26,14 @@ database or a build:
      from "upstream generates this now", which want opposite responses.
   3. Migrations that repoint site configuration. `UPDATE [Site] SET [Theme]` is how the
      internal site became RockNextGen without anyone choosing it.
+
+A fourth finding guards the other direction -- what the fork added to Rock rather than
+what Rock took away. Each trunk is measured against the upstream release its own version
+file names, and any Passion edit to a Rock file that the old trunk carried and the new one
+does not is listed. Either the merge took upstream's side or upstream shipped the same
+change; a diff of the file says which. This replaced a hand-kept register of those files,
+which CI enforced on every pull request that touched one. Git already knows the list, so
+nobody has to write it down. `fetch-upstream` provides the two tags.
 
 This is deliberately not a pull-request gate. It is dispatched by hand at a cutover,
 because its whole subject is a comparison between two long-lived branches, and a check
@@ -76,6 +85,15 @@ FORK_INFRASTRUCTURE = (
     "Tests/PrTestEnvironments/",
 )
 FORK_INFRASTRUCTURE_FILES = (".gitignore",)
+
+# Where a trunk records the Rock release it was built from. Rock 19 moved the version out
+# of AssemblySharedInfo.cs into Directory.Build.props, and production's cutover starts from
+# an 18.x trunk, so both are read. Upstream tags each release with that same bare number.
+VERSION_SOURCES = (
+    ("Directory.Build.props", re.compile(r"<Version>([^<]+)</Version>")),
+    ("Rock.Version/AssemblySharedInfo.cs", re.compile(r'AssemblyVersion\(\s*"([^"]+)"\s*\)')),
+)
+UPSTREAM_REMOTE = "https://github.com/SparkDevNetwork/Rock.git"
 
 # Tables where a migration's write repoints how the application presents itself, which
 # is the class of change that produced a visible production surprise and the class a
@@ -457,6 +475,102 @@ def fork_local_changes(upstream_blobs, fork_blobs):
     )
 
 
+def dropped_fork_edits(before, after):
+    """The fork-local paths in `before` that `after` no longer has.
+
+    `before` is the old trunk measured against its upstream release, `after` the new trunk
+    against its own. A path on both survived the merge, and a path only on `after` is a new
+    edit that nothing can have lost yet. A path only on `before` now matches upstream, or
+    upstream deleted it -- the merge took upstream's side, or upstream shipped the same
+    change. Only a human reading the file can tell those apart.
+    """
+    return sorted(set(before) - set(after))
+
+
+def rock_version(sources):
+    """The Rock version declared by `sources` (`{path: text}`), or None if neither file
+    names one. Directory.Build.props is read first because it is the one Rock 19 builds from.
+    """
+    for path, pattern in VERSION_SOURCES:
+        match = pattern.search(sources.get(path, ""))
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def release_at(ref, repo_root):
+    """The upstream release `ref` is built from, read from the ref's own version file."""
+    return rock_version(_read_at_ref([path for path, _ in VERSION_SOURCES], ref, repo_root))
+
+
+def _has_tree(ref, repo_root):
+    """Whether `ref` resolves to a tree in this checkout.
+
+    Not routed through `_git`, which raises on a bad ref by design. Here absence is the
+    answer being asked for, not an error.
+    """
+    return subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"{ref}^{{tree}}"],
+        capture_output=True,
+    ).returncode == 0
+
+
+def fork_edits_across(old_ref, new_ref, repo_root):
+    """`(dropped, unchecked)` for moving the trunk from `old_ref` to `new_ref`.
+
+    `dropped` compares each trunk against the upstream tag its own version names, so the
+    fork-local set is derived fresh on both sides and nobody keeps a list of it. `unchecked`
+    is None when that comparison ran and otherwise says why it could not. It is returned
+    rather than raised so the rest of the report still prints, and the report counts it
+    as a finding, because a check that quietly did not run reads exactly like a clean one.
+    """
+    measured = []
+    for ref in (old_ref, new_ref):
+        version = release_at(ref, repo_root)
+        if version is None:
+            return [], f"{ref} declares no Rock version, so there is no upstream release to measure it against"
+
+        tag = f"refs/tags/{version}"
+        if not _has_tree(tag, repo_root):
+            return [], (
+                f"upstream tag {version}, which {ref} is built from, is not in this checkout. "
+                f"Run `upgrade_diff.py fetch-upstream {old_ref} {new_ref}` and report again"
+            )
+
+        measured.append(fork_local_changes(tracked_blobs(tag, repo_root), tracked_blobs(ref, repo_root)))
+
+    return dropped_fork_edits(*measured), None
+
+
+def fetch_upstream_releases(refs, repo_root):
+    """Fetch the upstream tag each of `refs` is built from, where this checkout lacks it.
+
+    For a CI runner, whose checkout has neither the upstream remote nor its tags. The fetch
+    is `--depth=1` only when the checkout is already shallow: on a full clone that flag would
+    graft a shallow boundary into someone's working copy as a side effect of a report.
+
+    Returns a line per ref it could not provide a tag for, so the caller can exit non-zero.
+    """
+    shallow = _git(["rev-parse", "--is-shallow-repository"], repo_root).strip() == "true"
+    failed = []
+    for ref in refs:
+        version = release_at(ref, repo_root)
+        if version is None:
+            failed.append(f"{ref}: declares no Rock version")
+            continue
+
+        tag = f"refs/tags/{version}"
+        if _has_tree(tag, repo_root):
+            continue
+
+        depth = ["--depth=1"] if shallow else []
+        try:
+            _git(["fetch", "--no-tags", *depth, UPSTREAM_REMOTE, f"{tag}:{tag}"], repo_root)
+        except subprocess.CalledProcessError as error:
+            failed.append(f"{ref}: could not fetch upstream tag {version} -- {error.stderr.strip()}")
+    return failed
+
+
 def _git(args, repo_root):
     """Run git in `repo_root` and return its stdout, raising on a non-zero exit.
 
@@ -565,7 +679,10 @@ def _read_at_ref(paths, ref, repo_root):
     return contents
 
 
-def render_report(*, old_ref, new_ref, referenced, emptied, config_writes, newly_ignored=None):
+def render_report(
+    *, old_ref, new_ref, referenced, emptied, config_writes, newly_ignored=None,
+    dropped_edits=(), fork_edits_unchecked=None,
+):
     """The report text and the exit code that goes with it.
 
     Findings exit 1. This is dispatched by hand before a cutover, so the exit code is
@@ -655,13 +772,41 @@ def render_report(*, old_ref, new_ref, referenced, emptied, config_writes, newly
             lines.append(f"      [{write.table}]  {write.statement}")
         lines.append("")
 
-    findings = len(referenced) + len(emptied) + len(config_writes) + len(by_rule)
+    if dropped_edits:
+        lines += [
+            "## Fork edits the new trunk no longer carries",
+            "",
+            "Each was a Passion edit to one of Rock's own files on the old ref, and on the new",
+            "one it matches upstream or is gone. Either the merge took upstream's side or",
+            "upstream shipped the same change. Nothing else notices a lost edit -- it compiles",
+            f"and every test passes -- so read `git diff {old_ref} {new_ref} -- <path>` for each.",
+            "",
+        ]
+        for path in dropped_edits:
+            lines.append(f"  {path}")
+        lines.append("")
+
+    if fork_edits_unchecked:
+        lines += [
+            "## Fork edits not checked",
+            "",
+            f"{fork_edits_unchecked}.",
+            "Until it runs, this report cannot say whether the upgrade kept the fork's edits",
+            "to Rock's own files.",
+            "",
+        ]
+
+    findings = (
+        len(referenced) + len(emptied) + len(config_writes) + len(by_rule)
+        + len(dropped_edits) + (1 if fork_edits_unchecked else 0)
+    )
     if not findings:
         lines += [
             "Nothing to review.",
             "",
             "No deleted path is still named by tooling or newly covered by an ignore rule,",
-            "no directory emptied, and no added migration writes to site configuration. That",
+            "no directory emptied, no added migration writes to site configuration, and the",
+            "new trunk still carries every edit the fork had made to Rock's own files. That",
             "is a statement about what this tool checks, not a clean bill of health.",
         ]
         return "\n".join(lines), 0
@@ -671,11 +816,11 @@ def render_report(*, old_ref, new_ref, referenced, emptied, config_writes, newly
 
 
 def _report_fork_local(args):
-    """The list Documentation/Fork-Local-Changes.md is derived from.
+    """Rock's own files the fork has edited, derived from git whenever it is asked for.
 
-    Always exits 0. This is a derivation, not a gate -- having fork-local edits is normal
-    and expected. What is checked is whether the register still matches, and that check
-    lives in the test suite where it runs on its own.
+    Always exits 0. This is a listing, not a gate -- having fork-local edits is normal and
+    expected. Whether an upgrade kept them is the cutover report's question, and it answers
+    it by deriving this list on both trunks.
     """
     modified = fork_local_changes(
         tracked_blobs(args.upstream_ref, args.repo_root),
@@ -690,7 +835,7 @@ def _report_fork_local(args):
         print(f"  {path}")
     print()
     print(f"{len(modified)} file(s). Each one is something a merge can resolve away.")
-    print("Documentation/Fork-Local-Changes.md says why each exists; keep the two in step.")
+    print("`cutover` names any of them a trunk move dropped; `git diff` against the tag shows each edit.")
     return 0
 
 
@@ -755,8 +900,7 @@ def main(argv=None):
         help="Rock's own files this fork has edited",
         description=(
             "List Rock's own files this fork has edited, against an upstream release. "
-            "Needs the SparkDevNetwork/Rock remote. This is what "
-            "Documentation/Fork-Local-Changes.md is derived from."
+            "Needs that release's tag, which fetch-upstream provides."
         ),
     )
     fork_local.add_argument("upstream_ref", help="the upstream release to measure against")
@@ -767,10 +911,28 @@ def main(argv=None):
     )
     _add_repo_root(fork_local)
 
+    fetch_upstream = subcommands.add_parser(
+        "fetch-upstream",
+        help="fetch the upstream release tags the given trunks are built from",
+        description=(
+            f"Fetch from {UPSTREAM_REMOTE} the release tag each REF's own version file "
+            "names, skipping any already present. The cutover report needs both trunks' "
+            "tags to tell which of Rock's files each one had edited."
+        ),
+    )
+    fetch_upstream.add_argument("refs", nargs="+", metavar="REF", help="a trunk the cutover report will compare")
+    _add_repo_root(fetch_upstream)
+
     args = parser.parse_args(argv)
 
     if args.command == "fork-local":
         return _report_fork_local(args)
+
+    if args.command == "fetch-upstream":
+        failed = fetch_upstream_releases(args.refs, args.repo_root)
+        for line in failed:
+            print(line, file=sys.stderr)
+        return 1 if failed else 0
 
     old_files = tracked_files(args.old_ref, args.repo_root)
     new_files = tracked_files(args.new_ref, args.repo_root)
@@ -778,6 +940,7 @@ def main(argv=None):
     newly_ignored = paths_newly_ignored(
         deleted, added_ignore_rules(args.old_ref, args.new_ref, args.repo_root)
     )
+    dropped_edits, fork_edits_unchecked = fork_edits_across(args.old_ref, args.new_ref, args.repo_root)
 
     report, exit_code = render_report(
         old_ref=args.old_ref,
@@ -794,6 +957,8 @@ def main(argv=None):
             added_migrations(args.old_ref, args.new_ref, args.repo_root, args.since_migration)
         ),
         newly_ignored=newly_ignored,
+        dropped_edits=dropped_edits,
+        fork_edits_unchecked=fork_edits_unchecked,
     )
 
     print(report)

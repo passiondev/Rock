@@ -161,7 +161,7 @@ Describe 'Get-StepLogPath' {
     }
 
     It 'drops the pending object''s .json extension rather than burying it mid-name' {
-        # $CommandId is still the pending object's file name at the point this is
+        # $commandId is still the pending object's file name at the point this is
         # called, so naming from it directly produced the extension mid-name:
         # deploy-staging-1234-1.json-steps.log.
         $path = Get-StepLogPath -DeployRoot $script:DeployRoot -CommandObjectName 'deploy-staging-1234-1.json'
@@ -190,38 +190,10 @@ Describe 'Get-StepLogPath' {
     }
 }
 
-Describe 'The dry run plan' {
-    BeforeAll {
-        $source = Get-Content -Path $script:DeployScript -Raw
-
-        # The dry-run block is the InPlace/-not $Apply guard up to its own `return`.
-        # Matched from the source rather than executed: it lives in the script's main
-        # body, not in a function, so there is nothing to import and call.
-        $script:DryRunBlock = [regex]::Match(
-            $source, '(?s)-not \$Apply\) \{(.*?)return').Groups[1].Value
-    }
-
-    It 'is where this test thinks it is' {
-        $script:DryRunBlock | Should -Not -BeNullOrEmpty
-        $script:DryRunBlock | Should -Match 'DRY RUN'
-    }
-
-    It 'writes every line of the plan through Write-DeployStep' {
-        # A dry run is step 6 of the production runbook -- the one that proves the
-        # agent is alive before anybody deploys. The operator reads its plan to
-        # confirm the backup root and the site path before ticking apply. Write-Host
-        # is exactly what the staging rehearsal proved can vanish between the job and
-        # the bucket, so the plan must not depend on it.
-        # Comments are excluded deliberately. -match is case-insensitive in
-        # PowerShell, so prose about "a dry run" in a comment reads as a plan line
-        # and the test fails on its own explanation.
-        $planLines = $script:DryRunBlock -split "`n" |
-            Where-Object { $_.TrimStart() -notlike '#*' } |
-            Where-Object { $_ -cmatch 'DRY RUN|Would ' }
-
-        $planLines.Count | Should -BeGreaterThan 4
-        foreach ($line in $planLines) {
-            $line | Should -Match 'Write-DeployStep'
-        }
-    }
-}
+# The dry run plan used to be held here, by slicing the script's source from the
+# InPlace guard to its return and checking each plan line named Write-DeployStep.
+# It was read rather than run because it was top-level script. It is now the
+# function Write-InPlaceOverlayPlan, and DeployBranch.Tests.ps1 runs it: the
+# Describe named for it compares what it reports line for line, and counts the
+# Write-Host calls it makes. Running it holds more than the slice did, and the
+# slice would now find only the call.
