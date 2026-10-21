@@ -195,7 +195,8 @@ The consequence of the fix is that **"move the default branch" is now a required
   cannot decide, or its whole job fails, it builds and leaves a warning. A failed
   repackage does fail the run, and does not fall back: rerun with a full build. For a
   PR that is the `rock:full-build` label plus `rock:start`; for staging or production,
-  dispatch `staging-deploy.yml` or `production-deploy.yml` with `force_build` checked.
+  dispatch `staging-deploy.yml` or `production-deploy.yml` with `force_build` checked
+  (production's starts checked).
 - A path a repackage patched but should have built: add a `build` rule for it to
   `.github/scripts/artifact-paths.json`, above the `RockWeb/**` patch rule. Rules are
   tried in order and an unmatched path already builds, so the file only ever needs a

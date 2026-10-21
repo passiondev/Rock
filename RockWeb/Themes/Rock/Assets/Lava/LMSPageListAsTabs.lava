@@ -4,7 +4,7 @@
           under it, like a single course. Semesters only appears for
           calendar-based programs — On-Demand programs hide it.
   NEEDS:  Enabled Lava Commands must include: Sql
-  LAST MODIFIED: 2026-08-26 by BN
+  LAST MODIFIED: 2026-10-21 by JB
 -/
 
 <style>
@@ -13,19 +13,23 @@
   }
 </style>
 
-//- ===== SECTION 1: is this program On-Demand?  (advanced — the data query) =====
+//- ===== SECTION 1: is this program calendar-based?  (advanced — the data query) =====
+/-
+  ConfigurationMode 0 is AcademicCalendar and 1 is OnDemandLearning
+  (Rock.Enums/Lms/ConfigurationMode.cs). Only calendar programs have semesters.
+-/
 {% assign programId = PageParameter['LearningProgramId'] | FromIdHash %}
-{% assign programIsOnDemand = false %}
+{% assign programUsesAcademicCalendar = false %}
 {% if programId != empty %}
     {% sql programId:'{{ programId }}'%}
         SELECT 1
         FROM [LearningProgram]
         WHERE [Id] = @programId
-            AND [ConfigurationMode] = 0 /* On-Demand */
+            AND [ConfigurationMode] = 0 /* AcademicCalendar */
     {% endsql %}
 
     {% if results != empty %}
-        {% assign programIsOnDemand = true %}
+        {% assign programUsesAcademicCalendar = true %}
     {% endif %}
 {% endif %}
 
@@ -54,7 +58,7 @@
         </li>
     {% endfor %}
     {% for childPage in Page.Pages %}
-      {% if childPage.Title == 'Semesters' and programIsOnDemand == false %}{% continue %}{% endif %}
+      {% if childPage.Title == 'Semesters' and programUsesAcademicCalendar == false %}{% continue %}{% endif %}
             {% assign tabIsActive = childPage.Current %}
             {% if childPage.Title == 'Courses' and currentCourseId != '' %}
                 {% assign tabIsActive = true %}

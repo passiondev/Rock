@@ -254,13 +254,14 @@ people, and it is the only path to the live site.
 
 2. In the left sidebar, choose **Deploy Production**.
 
-3. Click **Run workflow**. Three fields appear:
+3. Click **Run workflow**. Four fields appear:
 
    | Field | What to put |
    | --- | --- |
    | Branch, tag or SHA to deploy | Leave it. It defaults to the branch production is pinned to, which is what you want unless you are rolling back. Note this is **not** always the repository default: during a Rock upgrade production deliberately lags. |
    | Actually deploy | **Leave this unchecked the first time.** |
    | Only for a real Rock upgrade | Leave unchecked. This is only for a Rock version upgrade. |
+   | Build from source rather than repackage | Leave it checked. Unchecking it reuses a zip already in the bucket and saves about 25 minutes, but the PR test sites can write to that bucket too. |
 
 4. Click the green **Run workflow** button.
 
@@ -289,15 +290,16 @@ Run **Deploy Production** again and give it the previous good commit instead of 
 name. Rolling back and going forward are the same operation, on purpose, so there is no
 separate emergency procedure to get wrong under pressure.
 
-If you need it faster than a build takes, the previous version of the site is still sitting on
-the server under `C:\RockBackups\production\`. That is a conversation with DevOps.
+If you need it faster than a build takes, uncheck **Build from source rather than repackage**:
+when the bucket still holds that commit's zip, the run reuses it and starts deploying within
+minutes. Failing that, the previous version of the site is still sitting on the server under
+`C:\RockBackups\production\`. That is a conversation with DevOps.
 
-> **Status, as of 11 August 2026**
+> **Status, as of 21 October 2026**
 >
-> The production path is built and gated, but the final piece (the agent on the production
-> server that picks up and runs the deploy) **is not installed yet**. Until DevOps installs
-> it, a production run will build and wait for approval correctly, and then have nothing to
-> hand the work to.
+> The production path is built and gated, and the agent on the production server that picks
+> up and runs the deploy is installed. It answered its first dry run on 21 October 2026. No
+> real deploy has gone through it yet.
 >
 > **Confirm with DevOps before the first real production deploy.** It needs a brief window
 > where Rock stops and starts, so it gets scheduled rather than squeezed in.

@@ -93,6 +93,13 @@ namespace Rock.Blocks.Workflow.FormBuilder
         /// The key of the entity attribute on <see cref="WorkflowType"/> that holds
         /// the image shown at the top of the user facing form.
         /// </summary>
+        /// <remarks>
+        /// The header image is this fork's addition and is not in upstream Rock. It
+        /// spans this block, <see cref="FormGeneralViewModel.HeaderImage"/>,
+        /// generalSettings.partial.obs and types.partial.ts, so a Rock upgrade has to
+        /// keep all four. Losing all of them compiles cleanly and forms simply stop
+        /// showing their image.
+        /// </remarks>
         private const string HeaderImageAttributeKey = "HeaderImage";
 
         #region Methods

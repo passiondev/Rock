@@ -1677,8 +1677,9 @@ command names.
    One gap remains. When nothing that compiles has changed, `pr-test-artifact.yml` repackages
    from a base artifact it finds in the bucket, and the hash it records is of the zip it built
    from that base. A base planted under a fleet-writable slug would be hashed and pinned like an
-   honest one. Dispatching production with `force_build` closes it for that run; closing it for
-   good needs a base record that only production's key can write.
+   honest one. Since 2026-10-21 production's `force_build` starts checked, so a production run
+   builds from source and reads no base; unchecking it reopens the gap for that run. Closing it
+   for good needs a base record that only production's key can write.
 2. **Then narrow the fleet account.** An IAM condition on `GCP_SA_KEY`'s service account that
    leaves it everything under `pr-environments/` except `commands-prod/` and `bootstrap/prod/`.
    `production/` stays writable, because the hash is what protects it now. Uniform bucket-level
@@ -1760,7 +1761,8 @@ production that never touches `GCP_SA_KEY`:
   set the test VM's startup script and run code as the account production runs as. The
   narrowing removes the key's direct reach into production; it does not remove this indirect
   one.
-- **A planted repackage base**, as described above. `force_build` closes it for one run.
+- **A planted repackage base**, as described above. Production builds by default, which closes
+  it for every run that leaves `force_build` checked.
 
 **The step DevOps may find easier: move the test VM, not production.** Giving `connect-srv-test`
 a service account of its own closes the first two gaps without a production restart: changing

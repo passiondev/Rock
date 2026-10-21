@@ -871,11 +871,11 @@ re-diagnosing them. All verified 2026-08-10.
    nothing to do now says `RENEWAL ISSUED NOTHING` instead of passing quietly.
    Workflow: `.github/workflows/pr-test-renew-certificates.yml`.
 
-2. **The production command-queue agent is not installed yet.** Everything upstream of it —
-   build, approval gate, backup, copy, health check — is proven against staging. Until the
-   scheduled task exists on the production VM against queue `commands-prod`, a production
-   deploy will build, gate, queue, and then time out. Being done with DevOps rather than
-   unattended.
+2. **The production command-queue agent is installed, but no real deploy has used it.** The
+   scheduled task has existed on the production VM against queue `commands-prod` since
+   2026-10-21, and answered a dry run that day. Everything after the dry run — backup, copy,
+   health check — is proven against staging only. The first real deploy is being done with
+   DevOps rather than unattended.
 
 3. **Production deploys from the production branch, and only that.** Note the wording: it read
    "from the trunk, and only the trunk" until 2026-08-19, and the cutover made that wrong.
@@ -899,6 +899,10 @@ re-diagnosing them. All verified 2026-08-10.
    the 18.3.1 → 18.4.1 migrations at startup. That needs a verified database backup taken
    immediately beforehand, which is why the production path is built and proven but
    deliberately unfired.
+
+   **Since 2026-09-14 the pin is `passion-19.4.4`** (commit `dfb83c02a9`), so the branch
+   names above are history. The migration question is now the jump to 19.4.4, which
+   `Documentation/Production-Upgrade-Runbook.md` covers.
 
 4. **`GCP_COMPUTE_PROJECT_ID` is a dead secret** — no workflow references it. Worth removing
    so the secret list reflects reality.

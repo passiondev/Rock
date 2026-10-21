@@ -66,7 +66,7 @@ history, on this clone.
 | New plugin hotfixes | 308 `AddConnectedServices`, 309 `EnableRockIntelligence`, 314 `FixEventItemAttributeCorruption6962` | run at `Application_Start` with the rest; see step 8 |
 | Upstream delta | 384 files, 34,404 insertions | large, but confined to files the fork does not touch -- zero overlap with the fork's own set |
 | Test suites | 618 Python, 266 Pester, all green on this branch | the same counts as 19.3.4; no suite was weakened to get there |
-| Cutover report | `upgrade_diff.py cutover origin/passion-18.4.1 origin/passion-19.4.4` is byte-identical to the 19.3.4 report except its header line -- 14 findings, the same 14 | 19.4 adds nothing to production's cutover surface; every finding already reviewed for 19.3.4 carries over unchanged and there are no new ones |
+| Cutover report | `upgrade_diff.py cutover origin/passion-18.4.1 origin/passion-19.4.4` is byte-identical to the 19.3.4 report except its header line -- 14 findings, the same 14 | 19.4 adds nothing to production's cutover surface; every finding already reviewed for 19.3.4 carries over unchanged and there are no new ones. It reads 15 since 2026-10-15, and the extra one is ours, not upstream's: `ArtifactPlan.Tests.ps1` names `RockWeb/Themes/RockNextGen/Styles/theme.css`, a generated path, so the report lists it as build output to confirm |
 | Artifact build | green in CI on this branch (run 34905832824), from the same reusable workflow production deploys from | the one open risk the bump raised is closed; see the `Rock.AI.Agent` note below |
 
 **`Rock.AI.Agent` is new in 19.4 and it does reach the artifact.** It was worth checking
@@ -257,7 +257,8 @@ Each step says what proves it worked. A step with no evidence behind it has not 
    styles-v2 178 -> 1 and newly ignored, `Site` the only table written, and the five emptied
    directories plus two config writes the tests count. The whole report is 14 findings across
    four sections, and it is byte-identical to the 18.4.1 -> 19.3.4 one but for its header line --
-   19.4 adds nothing to production's cutover surface.
+   19.4 adds nothing to production's cutover surface. (That was 2026-09-14. It reads 15 now, because
+   a test added on 2026-10-15 names one more generated path; see the table at the top.)
    `previousProductionBranch` stays `passion-18.4.1`, because that is the branch production is
    coming *from*; it is not the previous value of the key above.
 

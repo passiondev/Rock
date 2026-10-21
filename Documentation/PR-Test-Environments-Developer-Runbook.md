@@ -38,7 +38,8 @@ markup and its code-behind, theme `.less`, images and scripts under `RockWeb/` a
 copied into the artifact as they are. When every file your PR changed since an
 earlier artifact is like that, the pipeline **repackages** that artifact with your
 files swapped in, and the deploy starts within minutes. The same applies to staging
-after a merge and to production promoting what staging already built.
+after a merge. Production builds by default; unchecking its *Build from source* box
+lets it promote what staging already built.
 
 It is automatic. The run's summary says which it did: *Artifact plan* names the base
 artifact and lists the files patched in, or says why it built. A change anywhere a

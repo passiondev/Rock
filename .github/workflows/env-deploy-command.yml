@@ -247,10 +247,15 @@ jobs:
       # The failure summary is the action's, because that is what had drifted across
       # the six copies. This is the success half, which is this caller's alone: no
       # other workflow deploys a named environment to a known host at a known commit.
+      #
+      # The heading follows Deploy-RockEnvironment.ps1's own test for a dry run --
+      # InPlace with apply off -- because `apply` defaults to false and means nothing
+      # to a DedicatedSite deploy. Production's dry runs used to be headed "Deployed".
       - name: Summarize the deploy
         run: |
-          "### Deployed $env:ENVIRONMENT_NAME" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $isDryRun = $env:DEPLOY_MODE -eq 'InPlace' -and $env:APPLY -ne 'true'
+          $heading = if ($isDryRun) { "Dry run against $env:ENVIRONMENT_NAME -- nothing was changed" } else { "Deployed $env:ENVIRONMENT_NAME" }
+          "### $heading", "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| | |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "| URL | https://$env:HOST_NAME |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append

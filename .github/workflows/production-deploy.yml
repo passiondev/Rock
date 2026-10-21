@@ -49,10 +49,12 @@ name: Deploy Production
         type: boolean
       force_build:
         description: >-
-          Build from source even if an existing artifact could be repackaged. For a
-          repackage that failed, or one whose site does not show the change.
+          Build from source rather than repackage an artifact already in the bucket.
+          Checked by default, because the PR fleet can write that bucket and a planted
+          base would be hashed like an honest one. Uncheck it to promote staging's zip
+          in a couple of minutes instead of half an hour.
         required: false
-        default: false
+        default: true
         type: boolean
 
 concurrency:

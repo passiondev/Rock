@@ -313,18 +313,24 @@ class AFullBuildCanBeForcedTests(harness.HarnessAssertions, unittest.TestCase):
         """Each in its own workflow's idiom. Staging also runs on push, where the
         `inputs` context does not exist and referencing it is a startup failure, so
         it reads github.event.inputs -- a string on dispatch, null on push, and
-        false either way unless the box was ticked. Production is dispatch-only."""
+        false either way unless the box was ticked. Production is dispatch-only.
+
+        Production's box starts ticked. A repackage base comes from a bucket the PR
+        fleet can write, and the hash the deploy checks is taken after the base is
+        copied, so it cannot tell a planted base from an honest one. A build reads
+        nothing from the bucket. Production waits on a reviewer anyway, so the
+        build's extra half hour costs little; unticking it promotes staging's zip."""
         passed = {
-            "staging-deploy.yml": "${{ github.event.inputs.force_build == 'true' }}",
-            "production-deploy.yml": "${{ inputs.force_build }}",
+            "staging-deploy.yml": ("${{ github.event.inputs.force_build == 'true' }}", False),
+            "production-deploy.yml": ("${{ inputs.force_build }}", True),
         }
-        for name, expression in passed.items():
+        for name, (expression, default) in passed.items():
             with self.subTest(workflow=name):
                 caller = harness.workflow(name)
                 declared = (harness.triggers(caller)["workflow_dispatch"].get("inputs") or {}).get("force_build")
                 self.assertIsNotNone(declared, f"{name} cannot be dispatched with a full build")
                 self.assertEqual("boolean", declared.get("type"))
-                self.assertIs(False, declared.get("default", False))
+                self.assertIs(default, declared.get("default", False))
                 self.assertEqual(expression, (caller["jobs"]["build"].get("with") or {}).get("force_build"))
 
     def test_both_triggers_take_force_build(self):
