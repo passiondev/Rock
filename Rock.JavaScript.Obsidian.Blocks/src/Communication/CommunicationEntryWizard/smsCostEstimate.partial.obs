@@ -1,0 +1,229 @@
+<!-- Copyright by the Spark Development Network; Licensed under the Rock Community License -->
+<!-- This file is this fork's addition (PTP-18775) and is not in upstream Rock. -->
+<template>
+    <NotificationBox v-if="estimate" class="sms-cost-estimate" :alertType="alertType">
+        <div v-if="recipientCount > 0" class="sms-cost-estimate-line">
+            <strong>Estimated cost: {{ totalCostText }}</strong> for {{ recipientCountText }} ({{ totalMessagesText }})
+        </div>
+
+        <div class="sms-cost-estimate-line">{{ perRecipientText }}</div>
+
+        <div v-if="unicodeWarningText" class="sms-cost-estimate-line">{{ unicodeWarningText }}</div>
+
+        <div v-if="estimate.isLargeSend" class="sms-cost-estimate-line">
+            This send is over the {{ largeSendCostThresholdText }} caution level. Make sure that every recipient needs it.
+        </div>
+
+        <div v-if="hasMergeFields" class="sms-cost-estimate-line text-muted small">
+            Merge fields change the length for each recipient. This estimate uses the preview.
+        </div>
+
+        <div class="sms-cost-estimate-line text-muted small">
+            {{ ratesText }}<span v-if="isLoading"> Updating…</span>
+        </div>
+    </NotificationBox>
+</template>
+
+<style scoped>
+.sms-cost-estimate-line + .sms-cost-estimate-line {
+    margin-top: var(--spacing-tiny);
+}
+</style>
+
+<script setup lang="ts">
+    import { computed, PropType } from "vue";
+    import { getSmsSendEstimate, largeSendCostThreshold, mmsMessageCost, SmsSendEstimate, smsSegmentCost } from "./smsSegmentCalculator.partial";
+    import NotificationBox from "@Obsidian/Controls/notificationBox.obs";
+    import { AlertType } from "@Obsidian/Enums/Controls/alertType";
+    import { asFormattedString, toCurrencyOrNull } from "@Obsidian/Utility/numberUtils";
+    import { pluralConditional } from "@Obsidian/Utility/stringUtils";
+
+    const props = defineProps({
+        /** True when the message has an attachment, which makes Twilio send it as MMS. */
+        hasAttachment: {
+            type: Boolean as PropType<boolean>,
+            default: false
+        },
+
+        /** True when the message source has Lava, so the length differs per recipient. */
+        hasMergeFields: {
+            type: Boolean as PropType<boolean>,
+            default: false
+        },
+
+        /** True while a new preview loads. The last estimate stays until it arrives. */
+        isLoading: {
+            type: Boolean as PropType<boolean>,
+            default: false
+        },
+
+        /** The resolved preview text, which is the body that Twilio gets for one person. */
+        message: {
+            type: String as PropType<string>,
+            required: true
+        },
+
+        /** The number of recipients that get the message as SMS. */
+        recipientCount: {
+            type: Number as PropType<number>,
+            required: true
+        }
+    });
+
+    /** The most characters that the Unicode warning lists before it adds an ellipsis. */
+    const maximumListedUnicodeCharacters = 6;
+
+    // #region Computed Values
+
+    /** The estimate, or null when there is no preview text to estimate. */
+    const estimate = computed<SmsSendEstimate | null>(() => {
+        if (!props.message || props.message.trim() === "") {
+            return null;
+        }
+
+        return getSmsSendEstimate({
+            message: props.message,
+            recipientCount: props.recipientCount,
+            hasAttachment: props.hasAttachment
+        });
+    });
+
+    /** A warning when the send costs more than it needs to, otherwise info. */
+    const alertType = computed<AlertType>(() => {
+        const value = estimate.value;
+        const isWarning = !!value
+            && (value.encoding === "UCS-2" || value.mmsMessagesPerRecipient > 0 || value.isLargeSend);
+
+        return isWarning ? AlertType.Warning : AlertType.Info;
+    });
+
+    const totalCostText = computed<string>(() => {
+        return toCurrencyOrNull(estimate.value?.totalCost ?? 0) ?? "";
+    });
+
+    const recipientCountText = computed<string>(() => {
+        return formatCount(props.recipientCount, "recipient", "recipients");
+    });
+
+    /** The total segments and MMS messages for the whole send. */
+    const totalMessagesText = computed<string>(() => {
+        const value = estimate.value;
+
+        if (!value) {
+            return "";
+        }
+
+        const parts: string[] = [];
+
+        if (value.totalSegments > 0 || value.totalMmsMessages === 0) {
+            parts.push(formatCount(value.totalSegments, "segment", "segments"));
+        }
+
+        if (value.totalMmsMessages > 0) {
+            parts.push(formatCount(value.totalMmsMessages, "MMS message", "MMS messages"));
+        }
+
+        return parts.join(" and ");
+    });
+
+    /** What each recipient gets: segments and encoding, or the MMS message. */
+    const perRecipientText = computed<string>(() => {
+        const value = estimate.value;
+
+        if (!value) {
+            return "";
+        }
+
+        const separateTextsSuffix = value.chunks.length > 1
+            ? `, sent as ${asFormattedString(value.chunks.length, 0)} separate texts`
+            : "";
+
+        const segmentsText = formatCount(value.smsSegmentsPerRecipient, "segment", "segments");
+
+        if (value.mmsMessagesPerRecipient > 0) {
+            const smsPartText = value.smsSegmentsPerRecipient > 0
+                ? ` and ${segmentsText} (${value.encoding})`
+                : "";
+
+            return `Sent as MMS because of the attachment: 1 MMS message${smsPartText} per recipient${separateTextsSuffix}.`;
+        }
+
+        const remainingText = formatCount(value.remainingInSegment ?? 0, "character", "characters");
+
+        return `${segmentsText} per recipient (${value.encoding}, ${remainingText} left in this segment)${separateTextsSuffix}.`;
+    });
+
+    /** The characters that force Unicode, and what removing them saves. */
+    const unicodeWarningText = computed<string>(() => {
+        const value = estimate.value;
+
+        if (!value || value.unicodeCharacters.length === 0) {
+            return "";
+        }
+
+        const listedCharacters = value.unicodeCharacters
+            .slice(0, maximumListedUnicodeCharacters)
+            .map(describeCharacter)
+            .join(" ");
+
+        const ellipsis = value.unicodeCharacters.length > maximumListedUnicodeCharacters ? " …" : "";
+
+        let text = `These characters switch the message to Unicode, which fits 70 characters per segment instead of 160: ${listedCharacters}${ellipsis}`;
+
+        const segmentsWithoutUnicode = value.smsSegmentsPerRecipientWithoutUnicode;
+
+        if (segmentsWithoutUnicode !== null && segmentsWithoutUnicode < value.smsSegmentsPerRecipient) {
+            text += ` Without them, it is ${formatCount(segmentsWithoutUnicode, "segment", "segments")} per recipient instead of ${asFormattedString(value.smsSegmentsPerRecipient, 0)}.`;
+        }
+
+        return text;
+    });
+
+    const largeSendCostThresholdText = computed<string>(() => {
+        return `$${asFormattedString(largeSendCostThreshold, 0)}`;
+    });
+
+    /** The rates come from the constants, so the text always agrees with the math. */
+    const ratesText = computed<string>(() => {
+        return `Estimate only, at $${asFormattedString(smsSegmentCost, 4)} per segment and $${asFormattedString(mmsMessageCost, 4)} per MMS.`;
+    });
+
+    // #endregion Computed Values
+
+    // #region Functions
+
+    /**
+     * Formats a count with a grouping separator and the singular or plural noun.
+     *
+     * @param count The count.
+     * @param singular The noun for a count of 1.
+     * @param plural The noun for any other count.
+     *
+     * @returns The text, such as "1,250 recipients".
+     */
+    function formatCount(count: number, singular: string, plural: string): string {
+        return `${asFormattedString(count, 0)} ${pluralConditional(count, singular, plural)}`;
+    }
+
+    /**
+     * Describes one character for the Unicode warning. A space or an invisible
+     * character shows as its code point, because the author cannot see it.
+     *
+     * @param character The character.
+     *
+     * @returns The character, or its code point such as "U+00A0".
+     */
+    function describeCharacter(character: string): string {
+        const isInvisible = /^[\s\u00AD\u200B-\u200F\u2060-\u2064\uFEFF]$/.test(character);
+
+        if (!isInvisible) {
+            return character;
+        }
+
+        const codePoint = (character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0");
+
+        return `U+${codePoint}`;
+    }
+
+    // #endregion Functions
+</script>
