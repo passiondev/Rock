@@ -142,6 +142,11 @@ namespace Rock.ViewModels.Blocks.Communication.CommunicationEntryWizard
         public int SmsMediaSizeLimitBytes { get; set; }
 
         /// <summary>
+        /// Gets or sets the estimated SMS send cost in US dollars that triggers a caution. Null or a nonpositive amount disables it.
+        /// </summary>
+        public decimal? SmsCostCautionAmount { get; set; }
+
+        /// <summary>
         /// Gets or sets the video provider names.
         /// </summary>
         public List<string> VideoProviderNames { get; set; }

@@ -40,5 +40,10 @@ namespace Rock.ViewModels.Blocks.Communication.CommunicationEntryWizard
         /// Gets or sets the description for the "Is Not Bulk" option.
         /// </summary>
         public string IsNotBulkOptionDescription { get; set; }
+
+        /// <summary>
+        /// Gets or sets the cost caution template, rendered with CautionAmount, EstimatedCost and RecipientCount.
+        /// </summary>
+        public string SmsCostCautionText { get; set; }
     }
 }

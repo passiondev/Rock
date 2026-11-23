@@ -10,9 +10,7 @@
 
         <div v-if="unicodeWarningText" class="sms-cost-estimate-line">{{ unicodeWarningText }}</div>
 
-        <div v-if="estimate.isLargeSend" class="sms-cost-estimate-line">
-            This send is over the {{ largeSendCostThresholdText }} caution level. Make sure that every recipient needs it.
-        </div>
+        <div v-if="estimate.isLargeSend" class="sms-cost-estimate-line">{{ cautionText }}</div>
 
         <div v-if="hasMergeFields" class="sms-cost-estimate-line text-muted small">
             Merge fields change the length for each recipient. This estimate uses the preview.
@@ -32,13 +30,26 @@
 
 <script setup lang="ts">
     import { computed, PropType } from "vue";
-    import { getSmsSendEstimate, largeSendCostThreshold, mmsMessageCost, SmsSendEstimate, smsSegmentCost } from "./smsSegmentCalculator.partial";
+    import { getSmsSendEstimate, mmsMessageCost, SmsSendEstimate, smsSegmentCost } from "./smsSegmentCalculator.partial";
     import NotificationBox from "@Obsidian/Controls/notificationBox.obs";
     import { AlertType } from "@Obsidian/Enums/Controls/alertType";
+    import { resolveMergeFields } from "@Obsidian/Utility/lava";
     import { asFormattedString, toCurrencyOrNull } from "@Obsidian/Utility/numberUtils";
     import { pluralConditional } from "@Obsidian/Utility/stringUtils";
 
     const props = defineProps({
+        /** The estimated cost in US dollars at which the caution shows. Null or 0 turns it off. */
+        cautionAmount: {
+            type: Number as PropType<number | null>,
+            default: null
+        },
+
+        /** The caution Lava template from the block settings. Blank uses the default text. */
+        cautionTemplate: {
+            type: String as PropType<string>,
+            default: ""
+        },
+
         /** True when the message has an attachment, which makes Twilio send it as MMS. */
         hasAttachment: {
             type: Boolean as PropType<boolean>,
@@ -84,7 +95,8 @@
         return getSmsSendEstimate({
             message: props.message,
             recipientCount: props.recipientCount,
-            hasAttachment: props.hasAttachment
+            hasAttachment: props.hasAttachment,
+            cautionAmount: props.cautionAmount
         });
     });
 
@@ -179,8 +191,27 @@
         return text;
     });
 
-    const largeSendCostThresholdText = computed<string>(() => {
-        return `$${asFormattedString(largeSendCostThreshold, 0)}`;
+    const cautionText = computed<string>(() => {
+        const cautionAmount = props.cautionAmount ?? 0;
+        const cautionAmountText = `$${asFormattedString(cautionAmount, Number.isInteger(cautionAmount) ? 0 : 2)}`;
+        const defaultCautionText = `This send is over the ${cautionAmountText} caution level. Make sure that every recipient needs it.`;
+
+        if (!props.cautionTemplate.trim()) {
+            return defaultCautionText;
+        }
+
+        try {
+            const renderedCautionText = resolveMergeFields(props.cautionTemplate, {
+                CautionAmount: cautionAmountText,
+                EstimatedCost: totalCostText.value,
+                RecipientCount: asFormattedString(props.recipientCount, 0)
+            });
+
+            return renderedCautionText.trim() ? renderedCautionText : defaultCautionText;
+        }
+        catch {
+            return defaultCautionText;
+        }
     });
 
     /** The rates come from the constants, so the text always agrees with the math. */

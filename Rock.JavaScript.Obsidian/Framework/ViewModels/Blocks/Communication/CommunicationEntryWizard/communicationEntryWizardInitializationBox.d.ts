@@ -127,6 +127,9 @@ export type CommunicationEntryWizardInitializationBox = {
     /** Gets or sets the SMS accepted MIME types. */
     smsAcceptedMimeTypes?: string[] | null;
 
+    /** Gets or sets the estimated SMS send cost in US dollars that triggers a caution. Null or a nonpositive amount disables it. */
+    smsCostCautionAmount?: number | null;
+
     /** Gets or sets the SMS "from" numbers. */
     smsFromNumbers?: SmsFromNumberListItemBag[] | null;
 

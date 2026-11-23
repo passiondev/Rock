@@ -126,6 +126,8 @@
                            :shortLinkTokenMinLength="config.minimumShortLinkTokenLength"
                            :smsAcceptedMimeTypes="config.smsAcceptedMimeTypes"
                            :smsAttachmentLinks="smsAttachmentLinks"
+                           :smsCostCautionAmount="config.smsCostCautionAmount"
+                           :smsCostCautionText="customText.smsCostCautionText"
                            :smsFromNumberName="smsFromNumberName"
                            :smsFromNumbers="config.smsFromNumbers ?? []"
                            :smsMediaSizeLimitBytes="config.smsMediaSizeLimitBytes"
@@ -497,7 +499,9 @@
             isNotBulkOptionDescription: config.customText?.isNotBulkOptionDescription
                 ?? "Marking this communication as not bulk will allow it to be sent to individuals regardless of their bulk communication preferences. This is typically used for communications such as event reminders or account notifications that are important for individuals to receive.",
             isNotBulkOptionTitle: config.customText?.isNotBulkOptionTitle
-                ?? "Is Not Bulk Communication"
+                ?? "Is Not Bulk Communication",
+            smsCostCautionText: config.customText?.smsCostCautionText
+                ?? ""
         };
     });
 
