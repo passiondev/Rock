@@ -31,13 +31,6 @@ export const smsSegmentCost = 0.0106;
 /** All-in cost in US dollars of one outbound MMS message, refreshed the same way. */
 export const mmsMessageCost = 0.0251;
 
-/**
- * Estimated cost in US dollars at which the estimate turns into a warning. Twilio spend
- * averaged about $22 per day for Aug 1-23 2026 and about $19 per day for Nov 1-23 2026,
- * so one send above this is more than a typical day's total.
- */
-export const largeSendCostThreshold = 25;
-
 // #endregion Rates
 
 // #region Types
@@ -73,6 +66,9 @@ export type SmsSendEstimateOptions = {
 
     /** True when the message has an attachment, which makes Twilio send it as MMS. */
     hasAttachment: boolean;
+
+    /** The cost in US dollars that triggers a caution. Null or a nonpositive amount disables it. */
+    cautionAmount: number | null;
 };
 
 /** The estimated segments, messages and cost of one send. */
@@ -113,7 +109,7 @@ export type SmsSendEstimate = {
     /** The estimated cost in US dollars for every recipient together. */
     totalCost: number;
 
-    /** True when the total cost reaches the caution level. */
+    /** True when a caution amount is set and the total cost reaches it. */
     isLargeSend: boolean;
 };
 
@@ -366,6 +362,8 @@ export function getSmsSendEstimate(options: SmsSendEstimateOptions): SmsSendEsti
     // the caution level.
     const totalCost = Math.round(costPerRecipient * recipientCount * 100) / 100;
 
+    const cautionAmount = options.cautionAmount ?? 0;
+
     return {
         chunks,
         smsSegmentsPerRecipient,
@@ -378,7 +376,7 @@ export function getSmsSendEstimate(options: SmsSendEstimateOptions): SmsSendEsti
         totalSegments: smsSegmentsPerRecipient * recipientCount,
         totalMmsMessages: mmsMessagesPerRecipient * recipientCount,
         totalCost,
-        isLargeSend: totalCost >= largeSendCostThreshold
+        isLargeSend: cautionAmount > 0 && totalCost >= cautionAmount
     };
 }
 

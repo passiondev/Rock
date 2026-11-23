@@ -81,13 +81,15 @@
                                 </div>
 
                                 <!-- The SMS cost estimate is this fork's addition and is not in upstream Rock. It spans
-                                     this file, communicationEntryWizard.obs (the smsRecipientCount prop),
+                                     this file, communicationEntryWizard.obs (the smsRecipientCount and smsCostCaution props),
                                      smsCostEstimate.partial.obs and smsSegmentCalculator.partial.ts, so a Rock upgrade
                                      has to keep all four. -->
                                 <div class="row">
                                     <div class="col-sm-12">
                                         <SmsCostEstimate :message="messagePreview"
                                                          :recipientCount="smsRecipientCount"
+                                                         :cautionAmount="smsCostCautionAmount"
+                                                         :cautionTemplate="smsCostCautionText"
                                                          :hasAttachment="!isNullish(currentAttachment)"
                                                          :hasMergeFields="hasMergeFields"
                                                          :isLoading="isPreviewLoading" />
@@ -362,6 +364,18 @@
         smsMediaSizeLimitBytes: {
             type: Number as PropType<number>,
             required: true
+        },
+
+        /** The estimated cost at which the cost estimate shows a caution. Null or 0 turns it off (PTP-18775). */
+        smsCostCautionAmount: {
+            type: Number as PropType<number | null>,
+            default: null
+        },
+
+        /** The caution Lava template for the cost estimate. Blank uses the default text (PTP-18775). */
+        smsCostCautionText: {
+            type: String as PropType<string>,
+            default: ""
         },
 
         /** The number of recipients that get SMS, for the cost estimate (PTP-18775). */

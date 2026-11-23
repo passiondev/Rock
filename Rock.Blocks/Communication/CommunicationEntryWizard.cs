@@ -210,6 +210,23 @@ namespace Rock.Blocks.Communication
         Category = BlockAttributeCategory.CustomText_MessageClassification,
         Order = 3 )]
 
+    [DecimalField(
+        "SMS Cost Caution Amount",
+        Key = AttributeKey.SmsCostCautionAmount,
+        Description = "The estimated cost, in US dollars, at which the SMS Editor step shows a cost caution. A blank amount uses the $25 default. Set to 0 to turn the cost caution off.",
+        DefaultDecimalValue = 25.00,
+        IsRequired = false,
+        Order = 16 )]
+
+    [TextField(
+        "SMS Cost Caution",
+        Key = AttributeKey.SmsCostCautionText,
+        Description = "The warning shown when a send reaches the SMS Cost Caution Amount. Available merge fields: {{ CautionAmount }}, {{ EstimatedCost }} and {{ RecipientCount }}. Rock's Lava filters are not available here.",
+        DefaultValue = "This send is over the {{ CautionAmount }} caution level. Make sure that every recipient needs it.",
+        IsRequired = false,
+        Category = BlockAttributeCategory.CustomText_SmsCostEstimate,
+        Order = 0 )]
+
     #endregion Block Attributes
 
     [Rock.SystemGuid.EntityTypeGuid( "26917C58-C8A2-4BF5-98CB-378A02761CD7" )]
@@ -246,6 +263,9 @@ namespace Rock.Blocks.Communication
             
             public const string IsBulkOptionTitle = "IsBulkOptionTitle";
             public const string IsBulkOptionDescription = "IsBulkOptionDescription";
+
+            public const string SmsCostCautionAmount = "SmsCostCautionAmount";
+            public const string SmsCostCautionText = "SmsCostCautionText";
         }
 
         /// <summary>
@@ -255,6 +275,7 @@ namespace Rock.Blocks.Communication
         {
             public const string Advanced = "Advanced";
             public const string CustomText_MessageClassification = "Customize Text^Message Classification";
+            public const string CustomText_SmsCostEstimate = "Customize Text^SMS Cost Estimate";
         }
 
         #endregion Attribute Keys
@@ -322,6 +343,12 @@ namespace Rock.Blocks.Communication
         private string SimpleCommunicationPageUrl => this.GetLinkedPageUrl( AttributeKey.SimpleCommunicationPage, PageParameterKey.CommunicationId, "((Key))" );
 
         private int MinimumShortLinkTokenLength => this.GetAttributeValue( AttributeKey.MinimumShortLinkTokenLength ).AsInteger();
+
+        /// <summary>
+        /// Gets the estimated SMS send cost, in US dollars, that triggers the cost caution.
+        /// A nonpositive amount disables it.
+        /// </summary>
+        private decimal? SmsCostCautionAmount => GetAttributeValue( AttributeKey.SmsCostCautionAmount ).AsDecimalOrNull();
 
         /// <summary>
         /// Gets the Communication entity key passed to the "CommunicationId" page parameter.
@@ -431,6 +458,7 @@ namespace Rock.Blocks.Communication
                 box.Recipients = GetRecipientBags( this.RockContext, communicationBag );
                 box.SecurityGrantToken = GetSecurityGrantToken();
                 box.ShortLinkSites = GetShortLinkEnabledSites();
+                box.SmsCostCautionAmount = this.SmsCostCautionAmount;
                 box.SmsFromNumbers = GetSmsFromNumberBags( currentPerson );
                 // The Twilio transport was used by the old block to validate SMS attachments.
                 box.SmsAcceptedMimeTypes = Rock.Communication.Transport.Twilio.AcceptedMimeTypes.ToList();
@@ -1147,6 +1175,8 @@ namespace Rock.Blocks.Communication
 
                 IsNotBulkOptionTitle = GetAttributeValue( AttributeKey.IsNotBulkOptionTitle ),
                 IsNotBulkOptionDescription = GetAttributeValue( AttributeKey.IsNotBulkOptionDescription ),
+
+                SmsCostCautionText = GetAttributeValue( AttributeKey.SmsCostCautionText ),
             };
         }
 

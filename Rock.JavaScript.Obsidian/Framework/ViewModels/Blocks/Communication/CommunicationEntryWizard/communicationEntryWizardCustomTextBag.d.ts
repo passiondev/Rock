@@ -34,4 +34,7 @@ export type CommunicationEntryWizardCustomTextBag = {
 
     /** Gets or sets the name for the "Is Not Bulk" option.  */
     isNotBulkOptionTitle?: string | null;
+
+    /** Gets or sets the cost caution template, rendered with CautionAmount, EstimatedCost and RecipientCount. */
+    smsCostCautionText?: string | null;
 };
