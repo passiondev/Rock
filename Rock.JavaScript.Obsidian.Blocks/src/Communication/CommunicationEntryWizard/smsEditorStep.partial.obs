@@ -79,6 +79,20 @@
                                         <NotificationBox v-if="mimeTypeMessageHtml" :alertType="mimeTypeAlertType" v-html="mimeTypeMessageHtml" />
                                     </div>
                                 </div>
+
+                                <!-- The SMS cost estimate is this fork's addition and is not in upstream Rock. It spans
+                                     this file, communicationEntryWizard.obs (the smsRecipientCount prop),
+                                     smsCostEstimate.partial.obs and smsSegmentCalculator.partial.ts, so a Rock upgrade
+                                     has to keep all four. -->
+                                <div class="row">
+                                    <div class="col-sm-12">
+                                        <SmsCostEstimate :message="messagePreview"
+                                                         :recipientCount="smsRecipientCount"
+                                                         :hasAttachment="!isNullish(currentAttachment)"
+                                                         :hasMergeFields="hasMergeFields"
+                                                         :isLoading="isPreviewLoading" />
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="col-xs-12 col-sm-7">
@@ -205,6 +219,7 @@
     import { computed, onBeforeMount, PropType, ref, watch } from "vue";
     import LoadingOverlay from "./loadingOverlay.partial.obs";
     import PreviewAs from "./previewAs.partial.obs";
+    import SmsCostEstimate from "./smsCostEstimate.partial.obs";
     import { BinaryFileAttachment, BlockActionCallbacks, PreviewAsType } from "./types.partial";
     import { useBreakpointHelper } from "./utils.partial";
     import DropDownList from "@Obsidian/Controls/dropDownList.obs";
@@ -349,6 +364,12 @@
             required: true
         },
 
+        /** The number of recipients that get SMS, for the cost estimate (PTP-18775). */
+        smsRecipientCount: {
+            type: Number as PropType<number>,
+            required: true
+        },
+
         smsSupportedMimeTypes: {
             type: Object as PropType<string[] | null | undefined>,
             required: true
@@ -468,6 +489,14 @@
 
             return resizedFile;
         };
+    });
+
+    /**
+     * True when the message source has Lava. The cost estimate then notes that
+     * the length changes for each recipient (PTP-18775).
+     */
+    const hasMergeFields = computed<boolean>(() => {
+        return /\{\{|\{%/.test(internalMessage.value ?? "");
     });
 
     const smsFromSystemPhoneNumberGuidOrEmptyString = computed<string>({

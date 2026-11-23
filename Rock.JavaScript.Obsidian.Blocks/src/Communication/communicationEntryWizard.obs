@@ -129,6 +129,7 @@
                            :smsFromNumberName="smsFromNumberName"
                            :smsFromNumbers="config.smsFromNumbers ?? []"
                            :smsMediaSizeLimitBytes="config.smsMediaSizeLimitBytes"
+                           :smsRecipientCount="smsRecipients.length"
                            :smsSupportedMimeTypes="config.smsSupportedMimeTypes"
                            :title="step"
                            @nextStep="onNextStepClicked"
