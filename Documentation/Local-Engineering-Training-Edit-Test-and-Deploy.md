@@ -518,11 +518,9 @@ files under that directory (`.gitignore` and `readme.txt`) and **zero** paths ma
 is why that branch cannot be deleted yet. They are just not on the branch you work from.) The
 353 core WebForms blocks under `RockWeb/Blocks/` are tracked normally.
 
-**That block count moves with every Rock upgrade, so do not treat it as a constant.** It was 448
-on `passion-18.4.1`, and the blocks did not disappear — Obsidian blocks went the
-other way over the same span, 1,122 to 1,296. Each release converts more WebForms `.ascx` blocks
-to `.obs` components, which is worth knowing before you go looking for a block under
-`RockWeb/Blocks/` and conclude it was deleted.
+**That block count moves with every Rock upgrade, so do not treat it as a constant.**
+It was 448 on `passion-18.4.1`, and the blocks did not disappear: Obsidian blocks went the other way over the same span, 1,122 to 1,297, counting partials as well.
+Each release converts more WebForms `.ascx` blocks to `.obs` components, which is worth knowing before you go looking for a block under `RockWeb/Blocks/` and conclude it was deleted.
 
 **The same is true of our themes, which is the part that catches people out.** Verified
 2026-08-19: `RockWeb/Themes/` tracks 14 themes on the current trunk and every one is a stock Rock
