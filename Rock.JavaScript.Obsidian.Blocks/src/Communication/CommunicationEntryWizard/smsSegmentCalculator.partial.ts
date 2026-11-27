@@ -304,6 +304,58 @@ function getSmsChunkInfos(chunks: string[], hasAttachment: boolean): SmsSegmentI
 }
 
 /**
+ * Gets the start of the message that goes as SMS, in whole characters. Rock
+ * splits a long message into fixed slices of UTF-16 code units, so a slice can
+ * end between the two halves of a surrogate pair, such as an emoji. The text
+ * keeps both halves of that pair so that it can be listed and removed as one
+ * character.
+ *
+ * @param message The message body.
+ * @param chunks The bodies that Twilio gets.
+ * @param smsChunkCount The number of chunks, from the start, that go as SMS.
+ *
+ * @returns The text of the chunks that go as SMS, without a split surrogate pair.
+ */
+function getSmsText(message: string, chunks: string[], smsChunkCount: number): string {
+    let smsLength = chunks
+        .slice(0, smsChunkCount)
+        .reduce((total, chunk) => total + chunk.length, 0);
+
+    const isPairSplit = smsLength > 0
+        && smsLength < message.length
+        && isHighSurrogate(message.charCodeAt(smsLength - 1))
+        && isLowSurrogate(message.charCodeAt(smsLength));
+
+    if (isPairSplit) {
+        smsLength++;
+    }
+
+    return message.slice(0, smsLength);
+}
+
+/**
+ * Checks if a UTF-16 code unit is the first half of a surrogate pair.
+ *
+ * @param codeUnit The UTF-16 code unit.
+ *
+ * @returns True when the code unit is a high surrogate.
+ */
+function isHighSurrogate(codeUnit: number): boolean {
+    return codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+}
+
+/**
+ * Checks if a UTF-16 code unit is the second half of a surrogate pair.
+ *
+ * @param codeUnit The UTF-16 code unit.
+ *
+ * @returns True when the code unit is a low surrogate.
+ */
+function isLowSurrogate(codeUnit: number): boolean {
+    return codeUnit >= 0xDC00 && codeUnit <= 0xDFFF;
+}
+
+/**
  * Adds up the SMS segments of one recipient for a message.
  *
  * @param message The message body.
@@ -333,7 +385,10 @@ export function getSmsSendEstimate(options: SmsSendEstimateOptions): SmsSendEsti
     const smsSegmentsPerRecipient = smsChunkInfos.reduce((total, info) => total + info.segmentCount, 0);
     const mmsMessagesPerRecipient = options.hasAttachment ? 1 : 0;
 
-    const unicodeCharacters = Array.from(new Set(smsChunkInfos.flatMap(info => info.unicodeCharacters)));
+    // Read the characters from the whole SMS text rather than from each chunk,
+    // because a chunk boundary can split an emoji into two halves that are not
+    // characters on their own and that the removal below would not find.
+    const unicodeCharacters = getUnicodeCharacters(getSmsText(options.message, chunks, smsChunkInfos.length));
 
     let encoding: SmsEncoding | null = null;
     if (smsChunkInfos.length > 0) {
