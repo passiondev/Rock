@@ -235,22 +235,20 @@ function Build-RockObsidian {
 
 function Build-RockBlocks {
     param([string]$Root, [string]$CacheDir, [bool]$NoInstall)
+    $obsDir = Join-Path $Root 'Rock.JavaScript.Obsidian'
     $dir = Join-Path $Root 'Rock.JavaScript.Obsidian.Blocks'
     if (-not $NoInstall) {
+        if (-not (Test-Path -LiteralPath (Join-Path $obsDir 'node_modules'))) {
+            Write-Host '::group::Install Rock.JavaScript.Obsidian Dependencies (shared rollup/terser plugins)'
+            Invoke-NpmCi -WorkingDir $obsDir -CacheDir $CacheDir
+            Write-Host '::endgroup::'
+        }
         Write-Host '::group::Install Rock.JavaScript.Obsidian.Blocks Dependencies'
         Invoke-NpmCi -WorkingDir $dir -CacheDir $CacheDir
         Write-Host '::endgroup::'
     }
 
     Write-Host '::group::Build Rock.JavaScript.Obsidian.Blocks (rollup-mt)'
-    $prevNodePath = $env:NODE_PATH
-    $blocksNodeModules = Join-Path $dir 'node_modules'
-    $env:NODE_PATH = if ([string]::IsNullOrWhiteSpace($prevNodePath)) {
-        $blocksNodeModules
-    }
-    else {
-        "$blocksNodeModules$([System.IO.Path]::PathSeparator)$prevNodePath"
-    }
     Push-Location $dir
     try {
         & node '../Rock.JavaScript.Obsidian/Build/rollup-mt.js' 'rollup.config.cjs'
@@ -261,7 +259,6 @@ function Build-RockBlocks {
     }
     finally {
         Pop-Location
-        $env:NODE_PATH = $prevNodePath
     }
     Write-Host '::endgroup::'
 }
@@ -281,6 +278,8 @@ function Invoke-ObsidianTypecheck {
     }
 
     $buildAlias = $null
+    $backupDir = $null
+    $normalizeScript = $null
     if ($IsLinux) {
         $upperBuild = Join-Path $obsDir 'Build'
         $lowerBuild = Join-Path $obsDir 'build'
@@ -288,6 +287,132 @@ function Invoke-ObsidianTypecheck {
             New-Item -ItemType SymbolicLink -Path $lowerBuild -Target 'Build' -Force | Out-Null
             $buildAlias = $lowerBuild
         }
+
+        # Normalize case-mismatched @Obsidian/* and relative imports on Linux
+        # (case-sensitive ext4) without modifying tracked source permanently.
+        $backupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rock-ts-case-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+        $normalizeScript = Join-Path $backupDir 'fix-case.cjs'
+        @'
+const fs = require('fs');
+const path = require('path');
+
+const mode = process.argv[2];
+const root = process.argv[3];
+const backupDir = process.argv[4];
+const manifestPath = path.join(backupDir, 'manifest.json');
+
+if (mode === 'restore') {
+    if (fs.existsSync(manifestPath)) {
+        const items = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        for (const item of items) {
+            if (fs.existsSync(item.backup)) {
+                fs.copyFileSync(item.backup, item.original);
+            }
+        }
+    }
+    process.exit(0);
+}
+
+const obsFw = path.join(root, 'Rock.JavaScript.Obsidian', 'Framework');
+const dirCache = new Map();
+function listDir(d) {
+    let entries = dirCache.get(d);
+    if (!entries) {
+        try { entries = fs.readdirSync(d); } catch { entries = []; }
+        dirCache.set(d, entries);
+    }
+    return entries;
+}
+
+function resolveExact(baseDir, relPath) {
+    const segs = relPath.split('/').filter(Boolean);
+    let cur = baseDir;
+    const out = [];
+    for (const seg of segs) {
+        if (seg === '.' || seg === '..') {
+            out.push(seg);
+            cur = path.resolve(cur, seg);
+            continue;
+        }
+        const entries = listDir(cur);
+        if (entries.includes(seg)) {
+            out.push(seg);
+            cur = path.join(cur, seg);
+            continue;
+        }
+        const low = seg.toLowerCase();
+        const found = entries.find(e => e.toLowerCase() === low);
+        if (!found) return null;
+        out.push(found);
+        cur = path.join(cur, found);
+    }
+    return out.join('/');
+}
+
+const suffixes = ['', '.ts', '.d.ts', '.obs', '.vue', '.js', '/index.ts', '/index.d.ts'];
+function resolveImportSpec(fileDir, spec) {
+    const isAlias = spec.startsWith('@Obsidian/');
+    const baseDir = isAlias ? obsFw : fileDir;
+    const rawRel = isAlias ? spec.slice('@Obsidian/'.length) : spec;
+    const prefix = isAlias ? '@Obsidian/' : (rawRel.startsWith('./') ? './' : '');
+    const cleanRel = rawRel.startsWith('./') ? rawRel.slice(2) : rawRel;
+
+    for (const suf of suffixes) {
+        const resolved = resolveExact(baseDir, cleanRel + suf);
+        if (!resolved) continue;
+        let finalRel = suf ? resolved.slice(0, resolved.length - suf.length) : resolved;
+        if (!isAlias && !finalRel.startsWith('.')) finalRel = './' + finalRel;
+        const candidate = isAlias ? ('@Obsidian/' + finalRel) : finalRel;
+        return candidate !== spec ? candidate : null;
+    }
+    return null;
+}
+
+function walk(dir, out) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full, out);
+        else if (/\.(ts|obs|vue)$/.test(entry.name)) out.push(full);
+    }
+}
+
+const files = [];
+walk(obsFw, files);
+walk(path.join(root, 'Rock.JavaScript.Obsidian.Blocks', 'src'), files);
+
+const manifest = [];
+const importRe = /(from\s+["']|import\s*\(\s*["'])(@Obsidian\/[^"']+|\.[^"']+)(["'])/g;
+let patchCount = 0;
+
+for (const file of files) {
+    const text = fs.readFileSync(file, 'utf8');
+    const fileDir = path.dirname(file);
+    let changed = false;
+    const updated = text.replace(importRe, (m, pre, spec, post) => {
+        const fixed = resolveImportSpec(fileDir, spec);
+        if (fixed) {
+            changed = true;
+            return pre + fixed + post;
+        }
+        return m;
+    });
+    if (changed) {
+        const backup = path.join(backupDir, `f-${manifest.length}.bak`);
+        fs.copyFileSync(file, backup);
+        fs.writeFileSync(file, updated, 'utf8');
+        manifest.push({ original: file, backup });
+        patchCount++;
+    }
+}
+
+fs.writeFileSync(manifestPath, JSON.stringify(manifest), 'utf8');
+console.log(`Normalized Linux import casing in ${patchCount} Obsidian/Blocks file(s) for typecheck.`);
+'@ | Set-Content -Path $normalizeScript -Encoding utf8
+
+        & node $normalizeScript 'apply' $Root $backupDir
+        if ($LASTEXITCODE -ne 0) { throw "Linux import casing normalization failed ($LASTEXITCODE)" }
     }
 
     try {
@@ -310,6 +435,12 @@ function Invoke-ObsidianTypecheck {
         Write-Host '::endgroup::'
     }
     finally {
+        if ($normalizeScript -and (Test-Path -LiteralPath $normalizeScript)) {
+            try { & node $normalizeScript 'restore' $Root $backupDir } catch { }
+        }
+        if ($backupDir -and (Test-Path -LiteralPath $backupDir)) {
+            Remove-Item -LiteralPath $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
         if ($buildAlias -and [System.IO.Directory]::Exists($buildAlias)) {
             try { [System.IO.Directory]::Delete($buildAlias, $false) } catch { }
         }

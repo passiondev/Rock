@@ -414,7 +414,7 @@ function Invoke-RockDotNetBuildMain {
     $pluginsDir = Join-Path $resolvedRoot (Join-Path 'RockWeb' 'Plugins')
     $movedPlugins = Join-Path $tempRoot 'Plugins'
     $pluginsWereMoved = $false
-    $resxLinks = @()
+    $resxBackups = @()
 
     try {
         $projectCount = New-RockRequiredFilter -RootPath $resolvedRoot -DestinationPath $slnfPath
@@ -490,9 +490,9 @@ function Invoke-RockDotNetBuildMain {
         if (-not (Test-Path -LiteralPath $connDir)) { New-Item -ItemType Directory -Path $connDir -Force | Out-Null }
         New-Item -Path $connConfig -ItemType File -Force | Out-Null
 
-        $resxLinks = @(Repair-LinuxResxCaseLinks -RootPath $resolvedRoot)
-        if ($resxLinks.Count -gt 0) {
-            Write-Host "Created $($resxLinks.Count) Linux case-compatibility symlink(s) for ResXFileRef entries."
+        $resxBackups = @(Repair-LinuxResxCasePaths -RootPath $resolvedRoot -BackupDir (Join-Path $tempRoot 'resx-backups'))
+        if ($resxBackups.Count -gt 0) {
+            Write-Host "Normalized ResXFileRef path casing on Linux for $($resxBackups.Count) .resx file(s) (restored after build)."
         }
 
         Write-Host "::group::dotnet build ($projectCount required projects, $Config, net472)"
@@ -570,8 +570,8 @@ function Invoke-RockDotNetBuildMain {
         Write-Host "Total DLLs in RockWeb/Bin: $dllCount"
     }
     finally {
-        if ($resxLinks -and $resxLinks.Count -gt 0) {
-            Remove-LinuxCaseLinks -Paths $resxLinks
+        if ($resxBackups -and $resxBackups.Count -gt 0) {
+            Restore-LinuxResxFiles -Backups $resxBackups
         }
         if ($pluginsWereMoved -and (Test-Path -LiteralPath $movedPlugins)) {
             Move-Item -LiteralPath $movedPlugins -Destination $pluginsDir
@@ -585,23 +585,76 @@ function Invoke-RockDotNetBuildMain {
     }
 }
 
-function Repair-LinuxResxCaseLinks {
+function Resolve-ExactCaseRelativePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseDir,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $normalized = $RelativePath.Replace('\', '/')
+    $segments = $normalized.Split('/', [System.StringSplitOptions]::RemoveEmptyEntries)
+    $currentDir = $BaseDir
+    $resolvedSegments = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($segment in $segments) {
+        if ($segment -eq '.') {
+            $resolvedSegments.Add('.')
+            continue
+        }
+        if ($segment -eq '..') {
+            $resolvedSegments.Add('..')
+            $parent = Split-Path -Path $currentDir -Parent
+            if (-not [string]::IsNullOrWhiteSpace($parent)) { $currentDir = $parent }
+            continue
+        }
+
+        $exactPath = Join-Path $currentDir $segment
+        if ([System.IO.File]::Exists($exactPath) -or [System.IO.Directory]::Exists($exactPath)) {
+            $resolvedSegments.Add($segment)
+            $currentDir = $exactPath
+            continue
+        }
+
+        $match = $null
+        try {
+            foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($currentDir)) {
+                $leaf = [System.IO.Path]::GetFileName($entry)
+                if ($leaf.Equals($segment, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $match = $leaf
+                    break
+                }
+            }
+        }
+        catch { return $null }
+
+        if ($null -eq $match) { return $null }
+        $resolvedSegments.Add($match)
+        $currentDir = Join-Path $currentDir $match
+    }
+
+    return ($resolvedSegments -join '\')
+}
+
+function Repair-LinuxResxCasePaths {
     <#
     .SYNOPSIS
-        Creates temporary exact-case symlinks on Linux for ResXFileRef entries
-        whose stored path casing differs from the checked-out files on disk.
+        Temporarily rewrites ResXFileRef linked file paths in .resx files on
+        Linux to match exact on-disk casing (avoiding directory symlinks that
+        would trigger NETSDK1022 duplicate Compile items). Originals are saved
+        to BackupDir and restored in finally.
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)][string]$RootPath
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        [Parameter(Mandatory = $true)][string]$BackupDir
     )
 
-    $created = [System.Collections.Generic.List[string]]::new()
+    $backups = [System.Collections.Generic.List[hashtable]]::new()
     if (-not $IsLinux) {
-        return $created.ToArray()
+        return $backups.ToArray()
     }
 
-    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $resxFiles = Get-ChildItem -Path $RootPath -Filter '*.resx' -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
             $_.FullName -notmatch '[\\/](bin|obj|node_modules|\.git)[\\/]' -and
@@ -609,89 +662,55 @@ function Repair-LinuxResxCaseLinks {
         }
 
     foreach ($resx in $resxFiles) {
-        $xmlText = $null
-        try {
-            $xmlText = [System.IO.File]::ReadAllText($resx.FullName)
-        }
-        catch { continue }
-
-        if ($xmlText.IndexOf('ResXFileRef', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        $originalText = $null
+        try { $originalText = [System.IO.File]::ReadAllText($resx.FullName) } catch { continue }
+        if ($originalText.IndexOf('ResXFileRef', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
             continue
         }
 
         [xml]$doc = $null
-        try {
-            $doc = [xml]$xmlText
-        }
-        catch { continue }
+        try { $doc = [xml]$originalText } catch { continue }
 
         $baseDir = $resx.DirectoryName
+        $changed = $false
         foreach ($node in $doc.SelectNodes('//data[contains(@type,"ResXFileRef")]/value')) {
-            $raw = ([string]$node.InnerText).Split(';')[0].Trim().Replace('\', '/')
-            if ([string]::IsNullOrWhiteSpace($raw)) { continue }
-
-            $segments = $raw.Split('/', [System.StringSplitOptions]::RemoveEmptyEntries)
-            $currentDir = $baseDir
-            foreach ($segment in $segments) {
-                if ($segment -eq '.') { continue }
-                if ($segment -eq '..') {
-                    $parent = Split-Path -Path $currentDir -Parent
-                    if (-not [string]::IsNullOrWhiteSpace($parent)) { $currentDir = $parent }
-                    continue
-                }
-
-                $exactPath = Join-Path $currentDir $segment
-                if ([System.IO.File]::Exists($exactPath) -or [System.IO.Directory]::Exists($exactPath)) {
-                    $currentDir = $exactPath
-                    continue
-                }
-
-                $match = $null
-                try {
-                    foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($currentDir)) {
-                        $leaf = [System.IO.Path]::GetFileName($entry)
-                        if ($leaf.Equals($segment, [System.StringComparison]::OrdinalIgnoreCase)) {
-                            $match = $leaf
-                            break
-                        }
-                    }
-                }
-                catch { break }
-
-                if ($null -eq $match) { break }
-
-                if ($seen.Add($exactPath)) {
-                    New-Item -ItemType SymbolicLink -Path $exactPath -Target $match -Force | Out-Null
-                    $created.Add($exactPath)
-                }
-                $currentDir = Join-Path $currentDir $match
+            $fullVal = [string]$node.InnerText
+            $semi = $fullVal.IndexOf(';')
+            if ($semi -le 0) { continue }
+            $rawRel = $fullVal.Substring(0, $semi).Trim()
+            $suffix = $fullVal.Substring($semi)
+            $exactRel = Resolve-ExactCaseRelativePath -BaseDir $baseDir -RelativePath $rawRel
+            if ($null -ne $exactRel -and ($exactRel -cne $rawRel)) {
+                $node.InnerText = "$exactRel$suffix"
+                $changed = $true
             }
+        }
+
+        if ($changed) {
+            if (-not (Test-Path -LiteralPath $BackupDir)) {
+                New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+            }
+            $backupPath = Join-Path $BackupDir ("resx-" + [Guid]::NewGuid().ToString('N') + '.bak')
+            [System.IO.File]::Copy($resx.FullName, $backupPath, $true)
+            $doc.Save($resx.FullName)
+            $backups.Add(@{ Original = $resx.FullName; Backup = $backupPath })
         }
     }
 
-    return $created.ToArray()
+    return $backups.ToArray()
 }
 
-function Remove-LinuxCaseLinks {
+function Restore-LinuxResxFiles {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$Paths = @()
+        [Parameter(Mandatory = $false)][AllowEmptyCollection()][object[]]$Backups = @()
     )
 
-    for ($i = $Paths.Count - 1; $i -ge 0; $i--) {
-        $p = $Paths[$i]
-        if ([string]::IsNullOrWhiteSpace($p)) { continue }
+    foreach ($entry in $Backups) {
+        if ($null -eq $entry) { continue }
         try {
-            if ([System.IO.File]::Exists($p) -or [System.IO.Directory]::Exists($p)) {
-                $attrs = [System.IO.File]::GetAttributes($p)
-                if (($attrs -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                    if ([System.IO.Directory]::Exists($p)) {
-                        [System.IO.Directory]::Delete($p, $false)
-                    }
-                    else {
-                        [System.IO.File]::Delete($p)
-                    }
-                }
+            if ([System.IO.File]::Exists($entry.Backup)) {
+                [System.IO.File]::Copy($entry.Backup, $entry.Original, $true)
             }
         }
         catch { }
