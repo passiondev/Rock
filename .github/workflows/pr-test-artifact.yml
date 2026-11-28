@@ -640,21 +640,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: layer-js-misc-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .
+          path: RockWeb
 
       - name: Download built Obsidian layer
         if: needs.plan.outputs.build_js_obsidian != 'false'
         uses: actions/download-artifact@v4
         with:
           name: layer-js-obsidian-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .
+          path: RockWeb/Obsidian
 
       - name: Download built Obsidian Blocks layer
         if: needs.plan.outputs.build_js_blocks != 'false'
         uses: actions/download-artifact@v4
         with:
           name: layer-js-blocks-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .
+          path: RockWeb/Obsidian/Blocks
 
       - name: Restore untouched compiled layers from GCS base artifact
         if: needs.plan.outputs.reuse_base_object_path != ''
