@@ -89,6 +89,10 @@ Describe 'Remove-DirectoryFast' {
         Set-Content -Path (Join-Path $root 'file.txt') -Value 'hello'
 
         { Remove-DirectoryFast -Path $root -Async } | Should -Not -Throw
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        while ((Test-Path $root) -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+        }
         Test-Path $root | Should -BeFalse
     }
 }
