@@ -145,6 +145,20 @@ jobs:
             Copy-GcsObjectToFile -ObjectName "pr-environments/bootstrap/latest/`$script" -DestinationPath "C:\RockDeploy\`$script"
           }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\RockDeploy\Install-PrEnvironmentCommandQueueTask.ps1 -BucketName '$bucketName' -DeployRoot 'C:\RockDeploy'
+          # Best-effort 7-Zip install so Expand-ArtifactArchive extracts 5,169-file
+          # RockWeb zips in ~4s instead of ~19s via .NET ZipFile.
+          if (!(Test-Path 'C:\Program Files\7-Zip\7z.exe')) {
+            try {
+              [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+              `$sevenZipMsi = Join-Path `$env:TEMP '7z2409-x64.msi'
+              Invoke-WebRequest -UseBasicParsing -Uri 'https://www.7-zip.org/a/7z2409-x64.msi' -OutFile `$sevenZipMsi
+              Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', `$sevenZipMsi, '/qn', '/norestart') -Wait | Out-Null
+              Remove-Item -LiteralPath `$sevenZipMsi -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+              Write-Host "Optional 7-Zip install skipped (`$(`$_.Exception.Message))."
+            }
+          }
           # Deliberately NOT running the agent inline here. The line above installs a
           # task that fires every minute, so a pending command is picked up within 60
           # seconds anyway -- and running it here as well is the one thing that makes

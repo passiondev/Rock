@@ -108,6 +108,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref || github.sha }}
           fetch-depth: 1
+          sparse-checkout: |
+            .github/scripts
+            Directory.Build.props
+            Rock.Version/AssemblySharedInfo.cs
+          sparse-checkout-cone-mode: false
 
       - name: Resolve SHA
         id: resolve

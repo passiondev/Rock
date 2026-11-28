@@ -82,6 +82,15 @@ Describe 'Remove-DirectoryFast' {
 
         { Remove-DirectoryFast -Path $missing } | Should -Not -Throw
     }
+
+    It 'deletes cleanly when -Async is passed' {
+        $root = Join-Path $TestDrive ('rmasync-' + [guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Set-Content -Path (Join-Path $root 'file.txt') -Value 'hello'
+
+        { Remove-DirectoryFast -Path $root -Async } | Should -Not -Throw
+        Test-Path $root | Should -BeFalse
+    }
 }
 
 Describe 'Add-DeployDefenderExclusions' {
@@ -107,12 +116,12 @@ Describe 'CD performance guardrails' {
         }
     }
 
-    It 'passes /MT:16 on every robocopy call in both deploy scripts' {
+    It 'passes /MT on every robocopy call in both deploy scripts' {
         foreach ($path in @($script:RockDeployScript, $script:PrDeployScript)) {
             $lines = (Get-Content -Path $path) | Where-Object { $_.TrimStart().StartsWith('& robocopy') }
             @($lines).Count | Should -BeGreaterThan 0
             foreach ($line in $lines) {
-                $line | Should -Match '/MT:16'
+                $line | Should -Match '/MT:(16|32)'
             }
         }
     }

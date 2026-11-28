@@ -1458,7 +1458,7 @@ class StepReporterAdoptionTests(unittest.TestCase):
             "test asserts these two calls keep /NJS off, so the summary they emit "
             "is the thing an operator reads to see whether the copy moved anything"
         ),
-        "& robocopy $sourcePath $destinationPath /E /XC /XN /XO /MT:16 /NFL /NDL /NJH /NJS /NP | Write-Host": (
+        "& robocopy $sourcePath $destinationPath /E /XC /XN /XO /MT:32 /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Write-Host": (
             "the base-site overlay in Sync-SharedSiteAssets, redirected for the "
             "same reason. It runs inside Invoke-DedicatedSiteReplace, and the "
             "blank lines its quiet switches still leave turned that function's "

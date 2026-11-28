@@ -114,6 +114,11 @@ jobs:
         with:
           ref: ${{ inputs.head_sha || github.sha }}
           fetch-depth: 1
+          sparse-checkout: |
+            .github/actions
+            .github/scripts
+            Rock.Frontend.Styles/src/themes
+          sparse-checkout-cone-mode: false
 
       - name: Open a Google Cloud session
         uses: ./.github/actions/gcp-session
@@ -244,15 +249,28 @@ jobs:
             .github/scripts
           sparse-checkout-cone-mode: false
 
+      - name: Cache built .NET RockWeb Bin outputs
+        id: dotnet-out
+        uses: actions/cache@v4
+        with:
+          path: |
+            RockWeb/Bin
+            RockWeb/path/app.ConnectionStrings.config
+            dotnet-meta.txt
+          key: dotnet-bin-v1-${{ runner.os }}-${{ hashFiles('Rock.sln', 'Directory.Build.props', 'NuGet.Config', 'RockWeb/packages.config', 'RockWeb/Bin/*.dll.refresh', 'DotLiquid/**', 'Rock/**', 'Rock.AI.*/**', 'Rock.Blocks/**', 'Rock.Checkr/**', 'Rock.Common/**', 'Rock.Common.Web/**', 'Rock.DownhillCss/**', 'Rock.Enums/**', 'Rock.Lava/**', 'Rock.Lava.Fluid/**', 'Rock.Lava.Shared/**', 'Rock.Mailgun/**', 'Rock.Migrations/**', 'Rock.NCOA/**', 'Rock.NMI/**', 'Rock.Oidc/**', 'Rock.PayFlowPro/**', 'Rock.Rest/**', 'Rock.Security.Authentication.Auth0/**', 'Rock.SendGrid/**', 'Rock.Slingshot/**', 'Rock.Slingshot.Model/**', 'Rock.StatementGenerator/**', 'Rock.Update/**', 'Rock.Version/**', 'Rock.ViewModels/**', 'Rock.WebStartup/**', '!**/bin/**', '!**/obj/**') }}
+
       - name: Setup .NET SDK
+        if: steps.dotnet-out.outputs.cache-hit != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "9.0.x"
 
       - name: Build Rock Projects (net472)
+        if: steps.dotnet-out.outputs.cache-hit != 'true'
         run: ./.artifact-scripts/.github/scripts/Invoke-RockDotNetBuild.ps1
 
       - name: Record refresh counts
+        if: steps.dotnet-out.outputs.cache-hit != 'true'
         run: |
           @("RESOLVED_REFRESH_COUNT=$env:RESOLVED_REFRESH_COUNT", "UNRESOLVED_REFRESH_COUNT=$env:UNRESOLVED_REFRESH_COUNT") |
             Set-Content dotnet-meta.txt

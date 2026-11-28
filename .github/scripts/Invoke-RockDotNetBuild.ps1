@@ -498,6 +498,10 @@ function Invoke-RockDotNetBuildMain {
         Write-Host "::group::dotnet build ($projectCount required projects, $Config, net472)"
         & dotnet build $slnfPath --no-restore -c $Config `
             '-p:TargetFrameworks=net472' `
+            '-p:RunAnalyzers=false' `
+            '-p:RunAnalyzersDuringBuild=false' `
+            '-p:EnforceCodeStyleInBuild=false' `
+            '-p:ProduceReferenceAssembly=true' `
             "-p:CustomBeforeMicrosoftCommonProps=$beforeProps" `
             "-p:CustomAfterMicrosoftCommonTargets=$afterTargets" `
             '-v:minimal'

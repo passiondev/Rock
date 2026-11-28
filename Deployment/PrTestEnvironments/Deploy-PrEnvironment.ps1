@@ -213,7 +213,7 @@ function Sync-SharedSiteAssets {
         # UI rather than in git. Those are exactly the files absent from the
         # artifact, so "copy only what is missing" is the correct rule -- the
         # branch stays authoritative for everything it actually ships.
-        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /MT:16 /NFL /NDL /NJH /NJS /NP
+        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /MT:32 /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for shared asset directory $directory with exit code $exitCode."
@@ -278,9 +278,22 @@ function Expand-ArtifactArchive {
     $resolvedSource = (Resolve-Path -LiteralPath $Path).Path
     $resolvedDestination = (Resolve-Path -LiteralPath $DestinationPath).Path
 
-    $sevenZip = Get-Command -Name '7z.exe', '7z' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $sevenZip) {
-        & $sevenZip.Source x $resolvedSource "-o$resolvedDestination" -y -bd -bso0 | Out-Null
+    $sevenZipExe = $null
+    $sevenZipCmd = Get-Command -Name '7z.exe', '7z' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $sevenZipCmd) {
+        $sevenZipExe = $sevenZipCmd.Source
+    }
+    elseif ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        foreach ($candidate in @('C:\Program Files\7-Zip\7z.exe', 'C:\Program Files (x86)\7-Zip\7z.exe')) {
+            if (Test-Path -LiteralPath $candidate) {
+                $sevenZipExe = $candidate
+                break
+            }
+        }
+    }
+
+    if (![string]::IsNullOrWhiteSpace($sevenZipExe)) {
+        & $sevenZipExe x $resolvedSource "-o$resolvedDestination" -y -bd -bso0 | Out-Null
         if ($LASTEXITCODE -eq 0) {
             return
         }
@@ -302,7 +315,8 @@ function Expand-ArtifactArchive {
 
 function Remove-DirectoryFast {
     param(
-        [Parameter(Mandatory = $true)][string]$Path
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $false)][switch]$Async
     )
 
     if (!(Test-Path -LiteralPath $Path)) {
@@ -310,6 +324,14 @@ function Remove-DirectoryFast {
     }
 
     if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        if ($Async) {
+            try {
+                Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', "rmdir /s /q `"$Path`"") -WindowStyle Hidden | Out-Null
+                return
+            }
+            catch { }
+        }
+
         & cmd.exe /c "rmdir /s /q `"$Path`"" 2>$null | Out-Null
         if (!(Test-Path -LiteralPath $Path)) {
             return
@@ -499,7 +521,7 @@ try {
     }
     Move-Item -Path $ExtractPath -Destination $SitePath
     if (![string]::IsNullOrWhiteSpace($previousSitePath)) {
-        Remove-DirectoryFast -Path $previousSitePath
+        Remove-DirectoryFast -Path $previousSitePath -Async
     }
     $sharedAssetSource = Get-SharedAssetSourcePath -ExplicitPath $SharedAssetSourcePath
     Sync-SharedSiteAssets -SourceRoot $sharedAssetSource -DestinationRoot $SitePath -DirectoryList $SharedAssetDirectories
