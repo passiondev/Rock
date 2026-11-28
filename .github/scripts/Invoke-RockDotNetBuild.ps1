@@ -414,6 +414,7 @@ function Invoke-RockDotNetBuildMain {
     $pluginsDir = Join-Path $resolvedRoot (Join-Path 'RockWeb' 'Plugins')
     $movedPlugins = Join-Path $tempRoot 'Plugins'
     $pluginsWereMoved = $false
+    $resxLinks = @()
 
     try {
         $projectCount = New-RockRequiredFilter -RootPath $resolvedRoot -DestinationPath $slnfPath
@@ -488,6 +489,11 @@ function Invoke-RockDotNetBuildMain {
         $connDir = Split-Path -Path $connConfig -Parent
         if (-not (Test-Path -LiteralPath $connDir)) { New-Item -ItemType Directory -Path $connDir -Force | Out-Null }
         New-Item -Path $connConfig -ItemType File -Force | Out-Null
+
+        $resxLinks = @(Repair-LinuxResxCaseLinks -RootPath $resolvedRoot)
+        if ($resxLinks.Count -gt 0) {
+            Write-Host "Created $($resxLinks.Count) Linux case-compatibility symlink(s) for ResXFileRef entries."
+        }
 
         Write-Host "::group::dotnet build ($projectCount required projects, $Config, net472)"
         & dotnet build $slnfPath --no-restore -c $Config `
@@ -564,6 +570,9 @@ function Invoke-RockDotNetBuildMain {
         Write-Host "Total DLLs in RockWeb/Bin: $dllCount"
     }
     finally {
+        if ($resxLinks -and $resxLinks.Count -gt 0) {
+            Remove-LinuxCaseLinks -Paths $resxLinks
+        }
         if ($pluginsWereMoved -and (Test-Path -LiteralPath $movedPlugins)) {
             Move-Item -LiteralPath $movedPlugins -Destination $pluginsDir
         }
@@ -573,6 +582,119 @@ function Invoke-RockDotNetBuildMain {
         if (Test-Path -LiteralPath $tempRoot) {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+function Repair-LinuxResxCaseLinks {
+    <#
+    .SYNOPSIS
+        Creates temporary exact-case symlinks on Linux for ResXFileRef entries
+        whose stored path casing differs from the checked-out files on disk.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath
+    )
+
+    $created = [System.Collections.Generic.List[string]]::new()
+    if (-not $IsLinux) {
+        return $created.ToArray()
+    }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $resxFiles = Get-ChildItem -Path $RootPath -Filter '*.resx' -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notmatch '[\\/](bin|obj|node_modules|\.git)[\\/]' -and
+            $_.FullName -notmatch '[\\/][^\\/]*Tests[^\\/]*[\\/]'
+        }
+
+    foreach ($resx in $resxFiles) {
+        $xmlText = $null
+        try {
+            $xmlText = [System.IO.File]::ReadAllText($resx.FullName)
+        }
+        catch { continue }
+
+        if ($xmlText.IndexOf('ResXFileRef', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            continue
+        }
+
+        [xml]$doc = $null
+        try {
+            $doc = [xml]$xmlText
+        }
+        catch { continue }
+
+        $baseDir = $resx.DirectoryName
+        foreach ($node in $doc.SelectNodes('//data[contains(@type,"ResXFileRef")]/value')) {
+            $raw = ([string]$node.InnerText).Split(';')[0].Trim().Replace('\', '/')
+            if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+
+            $segments = $raw.Split('/', [System.StringSplitOptions]::RemoveEmptyEntries)
+            $currentDir = $baseDir
+            foreach ($segment in $segments) {
+                if ($segment -eq '.') { continue }
+                if ($segment -eq '..') {
+                    $parent = Split-Path -Path $currentDir -Parent
+                    if (-not [string]::IsNullOrWhiteSpace($parent)) { $currentDir = $parent }
+                    continue
+                }
+
+                $exactPath = Join-Path $currentDir $segment
+                if ([System.IO.File]::Exists($exactPath) -or [System.IO.Directory]::Exists($exactPath)) {
+                    $currentDir = $exactPath
+                    continue
+                }
+
+                $match = $null
+                try {
+                    foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($currentDir)) {
+                        $leaf = [System.IO.Path]::GetFileName($entry)
+                        if ($leaf.Equals($segment, [System.StringComparison]::OrdinalIgnoreCase)) {
+                            $match = $leaf
+                            break
+                        }
+                    }
+                }
+                catch { break }
+
+                if ($null -eq $match) { break }
+
+                if ($seen.Add($exactPath)) {
+                    New-Item -ItemType SymbolicLink -Path $exactPath -Target $match -Force | Out-Null
+                    $created.Add($exactPath)
+                }
+                $currentDir = Join-Path $currentDir $match
+            }
+        }
+    }
+
+    return $created.ToArray()
+}
+
+function Remove-LinuxCaseLinks {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)][AllowEmptyCollection()][string[]]$Paths = @()
+    )
+
+    for ($i = $Paths.Count - 1; $i -ge 0; $i--) {
+        $p = $Paths[$i]
+        if ([string]::IsNullOrWhiteSpace($p)) { continue }
+        try {
+            if ([System.IO.File]::Exists($p) -or [System.IO.Directory]::Exists($p)) {
+                $attrs = [System.IO.File]::GetAttributes($p)
+                if (($attrs -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    if ([System.IO.Directory]::Exists($p)) {
+                        [System.IO.Directory]::Delete($p, $false)
+                    }
+                    else {
+                        [System.IO.File]::Delete($p)
+                    }
+                }
+            }
+        }
+        catch { }
     }
 }
 

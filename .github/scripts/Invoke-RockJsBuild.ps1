@@ -180,12 +180,27 @@ function Build-RockStyles {
         Write-Host '::endgroup::'
     }
     Write-Host '::group::Build Rock.Frontend.Styles'
+    $stylesAlias = $null
+    if ($IsLinux) {
+        $srcDir = Join-Path $dir 'src'
+        $lowerStyles = Join-Path $srcDir 'styles'
+        $upperStyles = Join-Path $srcDir 'Styles'
+        if ((Test-Path -LiteralPath $lowerStyles) -and -not (Test-Path -LiteralPath $upperStyles)) {
+            New-Item -ItemType SymbolicLink -Path $upperStyles -Target 'styles' -Force | Out-Null
+            $stylesAlias = $upperStyles
+        }
+    }
     Push-Location $dir
     try {
         & npm run build
         if ($LASTEXITCODE -ne 0) { throw "Rock.Frontend.Styles build failed ($LASTEXITCODE)" }
     }
-    finally { Pop-Location }
+    finally {
+        Pop-Location
+        if ($stylesAlias -and [System.IO.Directory]::Exists($stylesAlias)) {
+            try { [System.IO.Directory]::Delete($stylesAlias, $false) } catch { }
+        }
+    }
     Write-Host '::endgroup::'
 }
 
@@ -228,6 +243,14 @@ function Build-RockBlocks {
     }
 
     Write-Host '::group::Build Rock.JavaScript.Obsidian.Blocks (rollup-mt)'
+    $prevNodePath = $env:NODE_PATH
+    $blocksNodeModules = Join-Path $dir 'node_modules'
+    $env:NODE_PATH = if ([string]::IsNullOrWhiteSpace($prevNodePath)) {
+        $blocksNodeModules
+    }
+    else {
+        "$blocksNodeModules$([System.IO.Path]::PathSeparator)$prevNodePath"
+    }
     Push-Location $dir
     try {
         & node '../Rock.JavaScript.Obsidian/Build/rollup-mt.js' 'rollup.config.cjs'
@@ -236,7 +259,10 @@ function Build-RockBlocks {
         if (-not (Test-Path -LiteralPath $distDir)) { New-Item -ItemType Directory -Path $distDir -Force | Out-Null }
         Set-Content -Path (Join-Path $distDir '.buildstamp') -Value '' -Encoding utf8
     }
-    finally { Pop-Location }
+    finally {
+        Pop-Location
+        $env:NODE_PATH = $prevNodePath
+    }
     Write-Host '::endgroup::'
 }
 
@@ -254,23 +280,40 @@ function Invoke-ObsidianTypecheck {
         Write-Host '::endgroup::'
     }
 
-    Write-Host "::group::Typecheck Rock.JavaScript.Obsidian (MaxConcurrency=$effective)"
-    Push-Location $obsDir
-    try {
-        & node -e "const os = require('os'); os.cpus = () => Array($fakeCpuCount).fill({}); require('./Build/build-types.js');"
-        if ($LASTEXITCODE -ne 0) { throw "Obsidian build:types failed ($LASTEXITCODE)" }
+    $buildAlias = $null
+    if ($IsLinux) {
+        $upperBuild = Join-Path $obsDir 'Build'
+        $lowerBuild = Join-Path $obsDir 'build'
+        if ((Test-Path -LiteralPath $upperBuild) -and -not (Test-Path -LiteralPath $lowerBuild)) {
+            New-Item -ItemType SymbolicLink -Path $lowerBuild -Target 'Build' -Force | Out-Null
+            $buildAlias = $lowerBuild
+        }
     }
-    finally { Pop-Location }
-    Write-Host '::endgroup::'
 
-    Write-Host "::group::Typecheck Rock.JavaScript.Obsidian.Blocks (MaxConcurrency=$effective)"
-    Push-Location $blkDir
     try {
-        & node -e "const os = require('os'); os.cpus = () => Array($fakeCpuCount).fill({}); require('./build/build-types.js');"
-        if ($LASTEXITCODE -ne 0) { throw "Obsidian.Blocks build:types failed ($LASTEXITCODE)" }
+        Write-Host "::group::Typecheck Rock.JavaScript.Obsidian (MaxConcurrency=$effective)"
+        Push-Location $obsDir
+        try {
+            & node -e "const os = require('os'); os.cpus = () => Array($fakeCpuCount).fill({}); require('./Build/build-types.js');"
+            if ($LASTEXITCODE -ne 0) { throw "Obsidian build:types failed ($LASTEXITCODE)" }
+        }
+        finally { Pop-Location }
+        Write-Host '::endgroup::'
+
+        Write-Host "::group::Typecheck Rock.JavaScript.Obsidian.Blocks (MaxConcurrency=$effective)"
+        Push-Location $blkDir
+        try {
+            & node -e "const os = require('os'); os.cpus = () => Array($fakeCpuCount).fill({}); require('./build/build-types.js');"
+            if ($LASTEXITCODE -ne 0) { throw "Obsidian.Blocks build:types failed ($LASTEXITCODE)" }
+        }
+        finally { Pop-Location }
+        Write-Host '::endgroup::'
     }
-    finally { Pop-Location }
-    Write-Host '::endgroup::'
+    finally {
+        if ($buildAlias -and [System.IO.Directory]::Exists($buildAlias)) {
+            try { [System.IO.Directory]::Delete($buildAlias, $false) } catch { }
+        }
+    }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
