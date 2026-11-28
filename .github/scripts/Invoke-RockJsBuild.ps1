@@ -351,16 +351,19 @@ function resolveExact(baseDir, relPath) {
 }
 
 const suffixes = ['', '.ts', '.d.ts', '.obs', '.vue', '.js', '/index.ts', '/index.d.ts'];
+function isExistingFile(p) {
+    try { return fs.statSync(p).isFile(); } catch { return false; }
+}
 function resolveImportSpec(fileDir, spec) {
     const isAlias = spec.startsWith('@Obsidian/');
     const baseDir = isAlias ? obsFw : fileDir;
     const rawRel = isAlias ? spec.slice('@Obsidian/'.length) : spec;
-    const prefix = isAlias ? '@Obsidian/' : (rawRel.startsWith('./') ? './' : '');
     const cleanRel = rawRel.startsWith('./') ? rawRel.slice(2) : rawRel;
 
     for (const suf of suffixes) {
         const resolved = resolveExact(baseDir, cleanRel + suf);
         if (!resolved) continue;
+        if (!isExistingFile(path.join(baseDir, resolved))) continue;
         let finalRel = suf ? resolved.slice(0, resolved.length - suf.length) : resolved;
         if (!isAlias && !finalRel.startsWith('.')) finalRel = './' + finalRel;
         const candidate = isAlias ? ('@Obsidian/' + finalRel) : finalRel;
