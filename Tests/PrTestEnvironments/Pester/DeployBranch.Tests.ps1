@@ -66,7 +66,7 @@ BeforeAll {
     # has stopped calling fails here rather than going on passing.
     . (Import-ScriptFunction -Path $script:DeployScript -Name `
             'Invoke-DedicatedSiteReplace', 'Get-InPlaceOverlayPlan', 'Invoke-InPlaceOverlay', `
-            'Write-InPlaceOverlayPlan', 'Ensure-Directory', 'ConvertTo-NativePath', `
+            'Write-InPlaceOverlayPlan', 'Ensure-Directory', 'Remove-DirectoryFast', 'ConvertTo-NativePath', `
             'Get-ServerOwnedWebConfigSettings' `
         -Supplied `
             'Write-DeployStep', 'Resolve-SharedAssetSource', 'Sync-SharedSiteAssets', `

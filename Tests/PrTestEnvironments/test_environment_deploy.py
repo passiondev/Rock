@@ -1444,7 +1444,7 @@ class StepReporterAdoptionTests(unittest.TestCase):
             "a blank spacer above the dry-run plan; a timestamped empty line is "
             "noise in the timeline and reads as a message that lost its text"
         ),
-        "& robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NP | Write-Host": (
+        "& robocopy $SitePath $backupPath /E @backupExclusions /MT:16 /R:2 /W:2 /NFL /NDL /NP | Write-Host": (
             "robocopy's job summary, redirected rather than reported. These two "
             "calls sit inside Invoke-InPlaceOverlay, whose success stream is now "
             "its return value; left alone, robocopy's header and byte counts would "
@@ -1453,12 +1453,12 @@ class StepReporterAdoptionTests(unittest.TestCase):
             "log -- and Write-DeployStep cannot take its place, because it stamps "
             "each line and would stamp forty of them"
         ),
-        "& robocopy $ExtractPath $SitePath /E @copyExclusions /R:3 /W:5 /NFL /NDL /NP | Write-Host": (
+        "& robocopy $ExtractPath $SitePath /E @copyExclusions /MT:16 /R:3 /W:5 /NFL /NDL /NP | Write-Host": (
             "the deploy copy's job summary, for the reason above. The neighbouring "
             "test asserts these two calls keep /NJS off, so the summary they emit "
             "is the thing an operator reads to see whether the copy moved anything"
         ),
-        "& robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP | Write-Host": (
+        "& robocopy $sourcePath $destinationPath /E /XC /XN /XO /MT:16 /NFL /NDL /NJH /NJS /NP | Write-Host": (
             "the base-site overlay in Sync-SharedSiteAssets, redirected for the "
             "same reason. It runs inside Invoke-DedicatedSiteReplace, and the "
             "blank lines its quiet switches still leave turned that function's "
@@ -1467,7 +1467,7 @@ class StepReporterAdoptionTests(unittest.TestCase):
             "still reach the log this way; the file counts either side of it go "
             "through Write-DeployStep"
         ),
-        "& robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP | Write-Host": (
+        "& robocopy $copyFrom $copyTo @arguments /MT:16 /NFL /NDL /NJH /NJS /NP | Write-Host": (
             "the server-owned restore in Sync-ServerOwnedAssets, which is called "
             "from the same function for the same reason; its byte counts go "
             "through Write-DeployStep"

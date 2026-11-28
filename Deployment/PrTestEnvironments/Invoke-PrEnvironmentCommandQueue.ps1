@@ -24,6 +24,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 # -cnotmatch, not -notmatch: PowerShell matches case-insensitively by default, so
 # this accepted 'Commands' and then polled a prefix GCS considers a different
@@ -1727,6 +1728,8 @@ function Invoke-CommandQueuePass {
 # CommandQueuePass Pester suite run this same function against a bucket held in
 # memory.
 $transport = New-GcsQueueTransport
+$allowedCommands = Get-QueueAllowedCommands -QueueName $QueueName
+$pollStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 Invoke-CommandQueuePass -Transport $transport `
     -Runner ${function:Invoke-CommandJob} `
@@ -1737,4 +1740,25 @@ Invoke-CommandQueuePass -Transport $transport `
     -ProcessingPrefix $ProcessingPrefix `
     -ResultsPrefix $ResultsPrefix `
     -LogsPrefix $LogsPrefix `
-    -AllowedCommands (Get-QueueAllowedCommands -QueueName $QueueName)
+    -AllowedCommands $allowedCommands
+
+# Sub-minute polling within the 60-second scheduled task window cuts average
+# queue pickup latency from ~30s to ~2.5s while exiting cleanly before the next
+# tick. Each command still gets a fresh script sync via Invoke-CommandQueuePass.
+while ($pollStopwatch.Elapsed.TotalSeconds -lt 50) {
+    Start-Sleep -Seconds 5
+    $pending = @(& $transport.List -Prefix $PendingPrefix | Where-Object { $_ -like '*.json' })
+    if ($pending.Count -gt 0) {
+        Invoke-CommandQueuePass -Transport $transport `
+            -Runner ${function:Invoke-CommandJob} `
+            -RefreshScripts ${function:Sync-DeploymentScripts} `
+            -DeployRoot $DeployRoot `
+            -BootstrapPrefix $BootstrapPrefix `
+            -PendingPrefix $PendingPrefix `
+            -ProcessingPrefix $ProcessingPrefix `
+            -ResultsPrefix $ResultsPrefix `
+            -LogsPrefix $LogsPrefix `
+            -AllowedCommands $allowedCommands
+        break
+    }
+}

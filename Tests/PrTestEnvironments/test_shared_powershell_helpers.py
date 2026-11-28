@@ -70,6 +70,18 @@ SHARED_HELPERS = {
         f"{DEPLOYMENT}/Invoke-SandboxRefreshWithPrEnvironments.ps1",
         f"{DEPLOYMENT}/Set-PrEnvironmentRuntimeConfiguration.ps1",
     ],
+    "Expand-ArtifactArchive": [
+        f"{DEPLOYMENT}/Deploy-PrEnvironment.ps1",
+        f"{DEPLOYMENT}/Deploy-RockEnvironment.ps1",
+    ],
+    "Remove-DirectoryFast": [
+        f"{DEPLOYMENT}/Deploy-PrEnvironment.ps1",
+        f"{DEPLOYMENT}/Deploy-RockEnvironment.ps1",
+    ],
+    "Add-DeployDefenderExclusions": [
+        f"{DEPLOYMENT}/Deploy-PrEnvironment.ps1",
+        f"{DEPLOYMENT}/Deploy-RockEnvironment.ps1",
+    ],
     # The two halves of what "redacted" means, one on each side of the queue.
     # These are the reason HELPER_ROOTS has a second entry.
     "Get-SecretFieldNamePattern": [

@@ -178,6 +178,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 # When this run started, captured before anything else so every step below can be
 # placed against it. Script scope rather than a parameter: a deploy has exactly one
@@ -601,6 +602,82 @@ function Get-GcsAccessToken {
     return $tokenResponse.access_token
 }
 
+function Expand-ArtifactArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    if (!(Test-Path -LiteralPath $DestinationPath)) {
+        New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+    }
+
+    $resolvedSource = (Resolve-Path -LiteralPath $Path).Path
+    $resolvedDestination = (Resolve-Path -LiteralPath $DestinationPath).Path
+
+    $sevenZip = Get-Command -Name '7z.exe', '7z' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $sevenZip) {
+        & $sevenZip.Source x $resolvedSource "-o$resolvedDestination" -y -bd -bso0 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($resolvedSource, $resolvedDestination)
+        return
+    }
+    catch {
+        if ($_.Exception -is [System.IO.IOException]) {
+            throw
+        }
+    }
+
+    Expand-Archive -Path $resolvedSource -DestinationPath $resolvedDestination -Force
+}
+
+function Remove-DirectoryFast {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if (!(Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        & cmd.exe /c "rmdir /s /q `"$Path`"" 2>$null | Out-Null
+        if (!(Test-Path -LiteralPath $Path)) {
+            return
+        }
+    }
+
+    Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
+function Add-DeployDefenderExclusions {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Paths
+    )
+
+    if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
+        return
+    }
+
+    if (!(Get-Command -Name 'Add-MpPreference' -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    foreach ($path in $Paths) {
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        try {
+            Add-MpPreference -ExclusionPath $path -ErrorAction SilentlyContinue
+        }
+        catch { }
+    }
+}
+
 function Copy-GcsObjectToFile {
     param(
         [Parameter(Mandatory = $true)][string]$GcsUri,
@@ -613,9 +690,43 @@ function Copy-GcsObjectToFile {
 
     $bucket = $Matches[1]
     $encodedObjectName = [System.Uri]::EscapeDataString($Matches[2])
-    $headers = @{ Authorization = "Bearer $(Get-GcsAccessToken)" }
     $uri = "https://storage.googleapis.com/storage/v1/b/$bucket/o/$encodedObjectName`?alt=media"
-    Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri -OutFile $DestinationPath
+    $token = Get-GcsAccessToken
+
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+    $fullDestination = if ([System.IO.Path]::IsPathRooted($DestinationPath)) {
+        $DestinationPath
+    }
+    else {
+        Join-Path (Get-Location).Path $DestinationPath
+    }
+
+    $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($uri)
+    $request.Method = 'GET'
+    $request.Headers.Add('Authorization', "Bearer $token")
+    $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+    $request.Timeout = 600000
+    $request.ReadWriteTimeout = 300000
+
+    $response = $request.GetResponse()
+    try {
+        $responseStream = $response.GetResponseStream()
+        $fileStream = [System.IO.File]::Create($fullDestination)
+        try {
+            $buffer = New-Object byte[] 1048576
+            while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $fileStream.Write($buffer, 0, $bytesRead)
+            }
+        }
+        finally {
+            $fileStream.Dispose()
+            $responseStream.Dispose()
+        }
+    }
+    finally {
+        $response.Dispose()
+    }
 }
 
 function Write-GcsObjectFromFile {
@@ -1250,7 +1361,9 @@ function Sync-SharedSiteAssets {
         # log and "did the base site actually have anything to give us" cannot be
         # answered after the fact. It is the only read-back this deploy has: the
         # VM has no reachable sshd, and nothing else reports on the box's state.
-        $filesBefore = @(Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue).Count
+        $filesBefore = if (Test-Path -LiteralPath $destinationPath) {
+            try { ([System.IO.Directory]::GetFiles($destinationPath, '*', [System.IO.SearchOption]::AllDirectories)).Length } catch { 0 }
+        } else { 0 }
 
         # /XC /XN /XO means "only files that do not exist at the destination", so
         # the branch stays authoritative for everything it actually ships. See the
@@ -1264,13 +1377,15 @@ function Sync-SharedSiteAssets {
         # Set-StrictMode the rollback line's $deployed.BackupPath then throws on a
         # site that deployed and passed its health check. That is how staging's
         # first run of the function failed, 2026-10-20.
-        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP | Write-Host
+        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /MT:16 /NFL /NDL /NJH /NJS /NP | Write-Host
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for shared asset directory $directory with exit code $exitCode."
         }
 
-        $filesAfter = @(Get-ChildItem -Path $destinationPath -Recurse -File -ErrorAction SilentlyContinue).Count
+        $filesAfter = if (Test-Path -LiteralPath $destinationPath) {
+            try { ([System.IO.Directory]::GetFiles($destinationPath, '*', [System.IO.SearchOption]::AllDirectories)).Length } catch { 0 }
+        } else { 0 }
         Write-DeployStep "Overlay $directory backfilled $($filesAfter - $filesBefore) file(s) from the base site ($filesBefore -> $filesAfter)."
     }
 }
@@ -1485,7 +1600,7 @@ function Sync-ServerOwnedAssets {
         [string[]]$arguments = @($copyFilter) + @($recurse)
         # To the console, for the reason given at the robocopy call in
         # Sync-SharedSiteAssets: this runs inside Invoke-DedicatedSiteReplace too.
-        & robocopy $copyFrom $copyTo @arguments /NFL /NDL /NJH /NJS /NP | Write-Host
+        & robocopy $copyFrom $copyTo @arguments /MT:16 /NFL /NDL /NJH /NJS /NP | Write-Host
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for server-owned path $relativePath with exit code $exitCode."
@@ -2397,8 +2512,15 @@ function Invoke-DedicatedSiteReplace {
         }
     }
 
-    if (Test-Path $SitePath) { Remove-Item $SitePath -Recurse -Force }
+    $previousSitePath = ''
+    if (Test-Path -LiteralPath $SitePath) {
+        $previousSitePath = "$SitePath.removing-$([guid]::NewGuid().ToString('n').Substring(0, 8))"
+        Move-Item -Path $SitePath -Destination $previousSitePath
+    }
     Move-Item -Path $ExtractPath -Destination $SitePath
+    if (![string]::IsNullOrWhiteSpace($previousSitePath)) {
+        Remove-DirectoryFast -Path $previousSitePath
+    }
 
     # Move-Item within a volume is a rename, so the tree keeps the ACLs it
     # inherited at $ExtractPath and never picks up inheritance from the site
@@ -2803,7 +2925,7 @@ function Invoke-InPlaceOverlay {
     # files skipped, retries -- would otherwise be handed back as if it were the
     # record. Write-Host is where every other line of this deploy already goes,
     # so the summary still reaches the log the operator reads.
-    & robocopy $SitePath $backupPath /E @backupExclusions /R:2 /W:2 /NFL /NDL /NP | Write-Host
+    & robocopy $SitePath $backupPath /E @backupExclusions /MT:16 /R:2 /W:2 /NFL /NDL /NP | Write-Host
     $backupExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
     if ($backupExit -gt 7) {
         throw "Backup failed with robocopy exit code $backupExit; refusing to deploy."
@@ -2818,7 +2940,7 @@ function Invoke-InPlaceOverlay {
     Write-DeployStep "Keeping this site's own copies of $($themeOverrides.Count) theme override file(s): $($themeOverrides -join ', ')."
 
     Write-DeployStep "Copying the artifact over $SitePath."
-    & robocopy $ExtractPath $SitePath /E @copyExclusions /R:3 /W:5 /NFL /NDL /NP | Write-Host
+    & robocopy $ExtractPath $SitePath /E @copyExclusions /MT:16 /R:3 /W:5 /NFL /NDL /NP | Write-Host
     $copyExit = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
     if ($copyExit -gt 7) {
         throw "Deploy copy failed with robocopy exit code $copyExit. The previous site files are backed up at $backupPath."
@@ -3058,6 +3180,8 @@ try {
         return
     }
 
+    Add-DeployDefenderExclusions -Paths @($EnvironmentRoot, $BackupRoot, $SitePath)
+
     if (Test-Path $ArtifactPath) { Remove-Item $ArtifactPath -Force }
     Write-DeployStep "Downloading the artifact from $ArtifactGcsPath."
     Copy-GcsObjectToFile -GcsUri $ArtifactGcsPath -DestinationPath $ArtifactPath
@@ -3069,9 +3193,9 @@ try {
     Write-DeployStep "Artifact downloaded ($artifactMegabytes MB)."
     Assert-ArtifactHash -Path $ArtifactPath -ExpectedSha256 $ArtifactSha256
 
-    if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force }
+    Remove-DirectoryFast -Path $ExtractPath
     Ensure-Directory -Path $ExtractPath
-    Expand-Archive -Path $ArtifactPath -DestinationPath $ExtractPath -Force
+    Expand-ArtifactArchive -Path $ArtifactPath -DestinationPath $ExtractPath
     Remove-PluginBuildArtifacts -Path $ExtractPath
     Write-DeployStep "Artifact extracted to $ExtractPath."
 

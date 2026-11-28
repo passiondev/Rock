@@ -90,9 +90,9 @@ name: Rock Environment Deploy Command
         default: ''
         type: string
       poll_attempts:
-        description: Result poll attempts, 15 seconds apart.
+        description: Result poll attempts, 5 seconds apart.
         required: false
-        default: 140
+        default: 420
         type: number
 
 defaults:
@@ -243,6 +243,7 @@ jobs:
           secret-value: ${{ env.CONNECTION_STRING }}
           label: Deploy of ${{ env.ENVIRONMENT_NAME }}
           attempts: ${{ inputs.poll_attempts }}
+          interval-seconds: '5'
 
       # The failure summary is the action's, because that is what had drifted across
       # the six copies. This is the success half, which is this caller's alone: no

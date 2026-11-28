@@ -10,6 +10,9 @@ import pipeline_harness as harness
 REPO_ROOT = harness.REPO_ROOT
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "pr-test-artifact.yml"
 HAND_DEPLOY_PATH = REPO_ROOT / ".github" / "workflows" / "ptp-14803-build-artifact.yml"
+DOTNET_BUILD_SCRIPT = REPO_ROOT / ".github" / "scripts" / "Invoke-RockDotNetBuild.ps1"
+JS_BUILD_SCRIPT = REPO_ROOT / ".github" / "scripts" / "Invoke-RockJsBuild.ps1"
+VERIFY_SCRIPT = REPO_ROOT / ".github" / "scripts" / "Test-RockWebArtifact.ps1"
 BOOTSTRAP_ISSUE_PATH = REPO_ROOT / "Documentation" / "Discussion Docs" / "PR-Test-Environments-Issues" / "01-bootstrap-server-prerequisites.md"
 ROCK_CORE_LESS = REPO_ROOT / "RockWeb" / "Styles" / "_rock-core.less"
 
@@ -55,18 +58,21 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         for secret_name in forbidden_secret_names:
             self.assertNotIn(secret_name, workflow_text)
 
-    def test_msbuild_is_resolved_via_vswhere_not_a_pinned_version_folder(self):
-        """The runner image moved Visual Studio from .../2022/... to .../18/...,
-        which broke every PR build until vswhere replaced the hardcoded path.
-        Only vswhere.exe has a stable location, so pinning any version folder is
-        a latent outage."""
+    def test_dotnet_build_uses_cross_platform_sdk_without_pinned_vs_paths(self):
+        """The .NET build runs via .NET 9 SDK + Microsoft.NETFramework.ReferenceAssemblies.net472
+        on ubuntu-latest (and locally on macOS/Linux) with no pinned Visual Studio paths."""
         workflow_text = WORKFLOW_PATH.read_text()
+        workflow = yaml.safe_load(workflow_text)
 
-        self.assertIn("vswhere.exe", workflow_text)
-        self.assertIn("MSBUILD_PATH", workflow_text)
-        self.assertRegex(workflow_text, r"-find\s+MSBuild\\\*\*\\Bin\\MSBuild\.exe")
+        self.assertEqual("ubuntu-latest", workflow["jobs"]["dotnet"]["runs-on"])
+        build_step = harness.step(workflow, "Build Rock Projects (net472)", job="dotnet")
+        self.assertIn("Invoke-RockDotNetBuild.ps1", build_step["run"])
 
-        pinned_paths = re.findall(r"Microsoft Visual Studio\\\\?[0-9]{2,4}\\\\?", workflow_text)
+        script_text = DOTNET_BUILD_SCRIPT.read_text()
+        self.assertIn("Microsoft.NETFramework.ReferenceAssemblies.net472", script_text)
+        self.assertIn("TargetFrameworks=net472", script_text)
+
+        pinned_paths = re.findall(r"Microsoft Visual Studio\\\\?[0-9]{2,4}\\\\?", workflow_text + script_text)
         self.assertEqual(
             pinned_paths,
             [],
@@ -78,31 +84,34 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         `exit $LASTEXITCODE` guards, and a trailing `exit 0` forced the step
         green, so a failed compile still packaged and deployed an artifact."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        build_step = harness.step(workflow, "Build Rock Projects (Dependency Order)", job="package")
+        build_step = harness.step(workflow, "Build Rock Projects (net472)", job="dotnet")
 
         self.assertNotEqual(build_step.get("continue-on-error"), True)
         self.assertNotRegex(build_step["run"], r"(?m)^\s*exit 0\s*$")
-        self.assertIn("::error::", build_step["run"])
+
+        script_text = DOTNET_BUILD_SCRIPT.read_text()
+        self.assertNotRegex(script_text, r"(?m)^\s*exit 0\s*$")
+        self.assertIn("::error::", script_text)
 
     def test_obsidian_block_javascript_is_built_and_verified(self):
         """The compiled .obs.js files are not committed to the repo, so without
         an explicit Rock.JavaScript.Obsidian.Blocks build the artifact ships a
         site whose every Obsidian block renders blank."""
-        workflow_text = WORKFLOW_PATH.read_text()
-        workflow = yaml.safe_load(workflow_text)
-        step_names = [s.get("name") for s in workflow["jobs"]["package"]["steps"]]
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+        blocks_step = harness.step(workflow, "Build Rock.JavaScript.Obsidian.Blocks", job="js-blocks")
+        self.assertIn("Invoke-RockJsBuild.ps1", blocks_step["run"])
+        self.assertIn("-Package blocks", blocks_step["run"])
 
-        self.assertIn("Build Rock.JavaScript.Obsidian.Blocks", step_names)
-        self.assertIn("Install Rock.JavaScript.Obsidian.Blocks Dependencies", step_names)
+        obsidian_step = harness.step(workflow, "Build Rock.JavaScript.Obsidian", job="js-obsidian")
+        self.assertIn("Invoke-RockJsBuild.ps1", obsidian_step["run"])
+        self.assertIn("-Package obsidian", obsidian_step["run"])
 
-        # The framework bundle must be built before the blocks that import it.
-        self.assertLess(
-            step_names.index("Build Rock.JavaScript.Obsidian"),
-            step_names.index("Build Rock.JavaScript.Obsidian.Blocks"),
-        )
+        typecheck_step = harness.step(workflow, "Run Obsidian & Blocks TypeScript typecheck", job="js-typecheck")
+        self.assertIn("-Package typecheck", typecheck_step["run"])
 
         verify_step = harness.step(workflow, "Verify Build Artifacts", job="package")
-        self.assertIn("*.obs.js", verify_step["run"])
+        self.assertIn("Test-RockWebArtifact.ps1", verify_step["run"])
+        self.assertIn("*.obs.js", VERIFY_SCRIPT.read_text())
 
     def test_verification_gates_on_every_assembly_the_site_serves(self):
         """Gating on Rock.dll alone let artifacts through that were missing the
@@ -110,7 +119,9 @@ class PrArtifactWorkflowTests(unittest.TestCase):
         site that boots and then fails on the first page load."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
         verify_step = harness.step(workflow, "Verify Build Artifacts", job="package")
+        self.assertIn("Test-RockWebArtifact.ps1", verify_step["run"])
 
+        verify_text = VERIFY_SCRIPT.read_text()
         for assembly in [
             "Rock.dll",
             "Rock.Blocks.dll",
@@ -119,7 +130,7 @@ class PrArtifactWorkflowTests(unittest.TestCase):
             "Rock.WebStartup.dll",
             "Rock.ViewModels.dll",
         ]:
-            self.assertIn(assembly, verify_step["run"])
+            self.assertIn(assembly, verify_text)
 
 
 ROCKWEB_BIN = REPO_ROOT / "RockWeb" / "Bin"
@@ -153,15 +164,18 @@ class RefreshPointerResolutionTests(unittest.TestCase):
 
     def test_website_packages_config_is_restored_into_the_folder_pointers_name(self):
         """Rock's .csproj projects use PackageReference, so their packages land in
-        the global ~/.nuget cache, not in a solution packages\\ folder. A Web Site
-        project has no .csproj for `nuget restore <solution>` to walk, so without
-        an explicit packages.config restore the folder every pointer names is
-        never created and all of them fail to resolve."""
+        the global ~/.nuget cache. RockWeb/packages.config is restored via a
+        synthetic PackageReference project into that same global cache so
+        Resolve-RefreshAssemblies can resolve every *.dll.refresh pointer
+        cross-platform without nuget.exe."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        restore_step = harness.step(workflow, "NuGet Restore", job="package")
+        build_step = harness.step(workflow, "Build Rock Projects (net472)", job="dotnet")
+        self.assertIn("Invoke-RockDotNetBuild.ps1", build_step["run"])
 
-        self.assertIn("RockWeb\\packages.config", restore_step["run"])
-        self.assertIn("-PackagesDirectory packages", restore_step["run"])
+        script_text = DOTNET_BUILD_SCRIPT.read_text()
+        self.assertIn("packages.config", script_text)
+        self.assertIn("New-RockWebPackagesProject", script_text)
+        self.assertIn("Resolve-RefreshAssemblies", script_text)
 
     # Empty on Rock 19. On 18.4 this held two pointers: packages.config pinned
     # OpenXMLSDK-MOT at "2.6.0" while the pointers were written against "2.6.0.0",
@@ -265,96 +279,69 @@ class RefreshPointerResolutionTests(unittest.TestCase):
         the custom error page cannot render either, which hides the cause."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
         verify_step = harness.step(workflow, "Verify Build Artifacts", job="package")
+        self.assertIn("Test-RockWebArtifact.ps1", verify_step["run"])
 
-        self.assertIn("Google.Protobuf.dll", verify_step["run"])
+        self.assertIn("Google.Protobuf.dll", VERIFY_SCRIPT.read_text())
         self.assertIn("Google.Protobuf", ROCKWEB_PACKAGES_CONFIG.read_text())
 
     def test_the_styles_build_runs_and_its_output_is_gated(self):
-        """The 19.3.4 cutover moved RockWeb/Styles/styles-v2 from committed to
-        generated: 178 tracked files on 18.4.1, one on 19.3.4, where its .gitignore
-        is `*` and Rock.Frontend.Styles produces the directory instead. No workflow
-        referenced that project, so the artifact shipped without
-        styles-v2/icons/tabler-icon.css.
-
-        _rock-core.less imports that file, so dotless failed the entire theme
-        compile at Application_Start and IIS went on serving the previous theme.css
-        -- with a 200, which is why no health check saw it. Staging came up with a
-        styled login page and everything behind it unstyled, against a database
-        whose IconCssClass values the icon migration had already rewritten to Tabler.
-
-        Two halves, and both are needed. Building without gating the output is how
-        this stays broken quietly: `npm run build` can exit 0 and emit nothing.
-        """
+        """Rock.Frontend.Styles compiles styles-v2/icons/tabler-icon.css and core.css
+        on 19.x while staying guarded on package-lock.json for 18.4.1 compatibility."""
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["package"]["steps"]
+        steps = workflow["jobs"]["js-misc"]["steps"]
 
-        build_steps = [s for s in steps if "Rock.Frontend.Styles" in (s.get("name") or "")]
-        self.assertTrue(
-            build_steps,
-            "nothing builds Rock.Frontend.Styles, so a 19.x artifact ships without styles-v2",
-        )
-        for step in build_steps:
-            # Guarded on the lockfile because the project does not exist on the
-            # 18.4.1 line, which this workflow still builds for the pr-* fleet.
+        styles_cache = [s for s in steps if "Rock.Frontend.Styles" in (s.get("name") or "") and s.get("uses", "").startswith("actions/cache@")]
+        self.assertTrue(styles_cache, "js-misc should cache Rock.Frontend.Styles build outputs")
+        for step in styles_cache:
             self.assertIn("Rock.Frontend.Styles/package-lock.json", step.get("if", ""))
 
-        run = harness.step(workflow, "Verify Build Artifacts", job="package")["run"]
+        js_script = JS_BUILD_SCRIPT.read_text()
+        self.assertIn("Rock.Frontend.Styles", js_script)
+        self.assertIn("package-lock.json", js_script)
+
+        verify_step = harness.step(workflow, "Verify Build Artifacts", job="package")
+        self.assertIn("Test-RockWebArtifact.ps1", verify_step["run"])
+        run = VERIFY_SCRIPT.read_text()
         self.assertIn("tabler-icon.css", run)
         self.assertIn("styles-v2", run)
 
-        # Anchor on the code rather than the first mention of the filename: the step
-        # explains itself in a comment above the check, and matching that prose would
-        # make this assertion pass on documentation alone.
         check = re.search(
-            r"if \(!\(Test-Path \$tablerIcons\)\) \{(.*?)\}", run, re.S
+            r"if \(-not \(Test-Path -LiteralPath \$tablerIcons\)\) \{(.*?)\}", run, re.S
         )
         self.assertIsNotNone(
-            check, "no Test-Path check on the tabler-icon.css path in the artifact gate"
+            check, "no Test-Path check on the tabler-icon.css path in Test-RockWebArtifact.ps1"
         )
         self.assertIn(
-            "$failures +=", check.group(1),
-            "the missing stylesheet has to fail the build, not warn -- a warning is "
-            "indistinguishable from the silent failure this replaced",
+            "$failures.Add(", check.group(1),
+            "the missing stylesheet has to fail the build, not warn",
         )
 
     def test_the_stylesheet_the_gate_names_is_the_one_less_actually_imports(self):
         """The gate is only worth anything while it names the file _rock-core.less
         imports. If a Rock upgrade renames or moves that import, the gate would keep
         passing on a file nothing reads."""
-        verify_step = harness.step(
-            yaml.safe_load(WORKFLOW_PATH.read_text()), "Verify Build Artifacts", job="package"
-        )
+        verify_text = VERIFY_SCRIPT.read_text()
         imports = re.findall(
             r'@import[^;]*"([^"]*styles-v2[^"]*)"', ROCK_CORE_LESS.read_text()
         )
         self.assertTrue(imports, "_rock-core.less no longer imports anything from styles-v2")
         for imported in imports:
             self.assertIn(
-                imported.rsplit("/", 1)[-1], verify_step["run"],
-                f"_rock-core.less imports {imported} but the artifact gate does not check for it",
+                imported.rsplit("/", 1)[-1], verify_text,
+                f"_rock-core.less imports {imported} but Test-RockWebArtifact.ps1 does not check for it",
             )
 
 
 class StylesGateCompletenessTests(unittest.TestCase):
     """The gate has to tell a complete build from an empty one, on two branch lines
-    whose styles-v2 folders look nothing alike.
-
-    On 18.4.1 that folder is 178 committed SCSS sources. On 19.x it is 7 build
-    outputs, because the 189 partials compile into core.css and emit nothing
-    themselves. The first version of this gate required 10 files, which is a fine
-    number for the committed layout and blocked every staging deploy against the
-    generated one on 2026-08-19 -- on a build that was complete and correct.
-    """
+    whose styles-v2 folders look nothing alike."""
 
     STYLES_V2_SOURCE = REPO_ROOT / "Rock.Frontend.Styles" / "src" / "styles" / "styles-v2"
 
     def _verify_run(self):
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        return harness.step(workflow, "Verify Build Artifacts", job="package")["run"]
+        return VERIFY_SCRIPT.read_text()
 
     def test_the_gate_does_not_treat_a_file_count_as_completeness(self):
-        """The specific regression. A count is a property of the layout, not of the
-        build, and the two lines disagree about the layout by a factor of 25."""
         run = self._verify_run()
 
         counting_failures = re.findall(
@@ -362,15 +349,11 @@ class StylesGateCompletenessTests(unittest.TestCase):
         )
         for body in counting_failures:
             self.assertNotIn(
-                "$failures +=", body,
-                "the gate fails the build on a styles-v2 file count again -- 178 on "
-                "18.4.1 versus 7 on 19.x means no threshold can be right for both",
+                "$failures.Add(", body,
+                "the gate fails the build on a styles-v2 file count again",
             )
 
     def test_the_gate_measures_the_stylesheet_that_carries_the_partials(self):
-        """core.css is where all 189 partials land, so its size is the one signal
-        that separates a real compile from a stub, and it means the same thing on
-        both lines."""
         run = self._verify_run()
 
         self.assertIn("core.css", run)
@@ -381,29 +364,22 @@ class StylesGateCompletenessTests(unittest.TestCase):
         )
 
     def test_every_stylesheet_the_gate_names_is_also_size_checked(self):
-        """Test-Path is satisfied by a zero-byte file, and an empty stylesheet
-        compiles perfectly well -- it just renders nothing. Presence alone was how
-        the original silent failure got through."""
         run = self._verify_run()
 
         for stylesheet in ("tabler-icon.css", "core.css"):
             with self.subTest(stylesheet=stylesheet):
-                # Scoped to the block that owns this stylesheet, not the whole step.
-                # One size check anywhere in the script would otherwise satisfy the
-                # assertion for a file nothing measures -- the same shape of mistake
-                # as the count it replaced.
                 binding = re.search(
-                    r"^\s*(\$\w+)\s*=\s*\"[^\"]*" + re.escape(stylesheet) + r"\"",
+                    r"^\s*(\$\w+)\s*=\s*Join-Path[^\n]*" + re.escape(stylesheet),
                     run,
                     re.M,
                 )
                 self.assertIsNotNone(
-                    binding, f"{stylesheet} is not bound to a variable the gate checks"
+                    binding, f"{stylesheet} is not bound to a variable Test-RockWebArtifact.ps1 checks"
                 )
 
                 variable = re.escape(binding.group(1))
                 block = run[binding.end():]
-                next_binding = re.search(r"^\s*\$\w+\s*=\s*\"RockWeb", block, re.M)
+                next_binding = re.search(r"^\s*\$\w+\s*=\s*Join-Path", block, re.M)
                 if next_binding:
                     block = block[:next_binding.start()]
 
@@ -505,75 +481,43 @@ class HandDeployBuildStaysCredentialFreeTests(harness.HarnessAssertions, unittes
             )
 
     def test_the_two_builds_do_not_cache_different_trees_under_one_key(self):
-        """They cache different node_modules sets, so they must not share a key.
-
-        actions/cache restores the archive a key names, not the paths the current
-        run asks for, and a hit skips the post-job save. Both workflows spelled
-        `js-<os>-<lockhash>` over different path lists, so a dispatch of this build
-        saved a two-tree archive that the next artifact build then restored as two
-        of its five -- and did not write back, because it had hit. Nothing built
-        wrong: the installs are unconditional. The artifact build just reinstalled
-        three trees from scratch on every run for as long as that hash held.
-
-        Divergence in the paths is correct here -- this build compiles two of the
-        five. It is the shared key over those different paths that is the fault."""
-        cache = "Cache JavaScript Dependencies"
-        mine = harness.step(self.workflow(), cache, job="build")["with"]
-        theirs = harness.step(harness.workflow(WORKFLOW_PATH.name), cache, job="package")["with"]
-
-        self.assertNotEqual(
-            sorted(mine["path"].split()),
-            sorted(theirs["path"].split()),
-            "the two builds now cache the same trees, which would make this test "
-            "the wrong guard -- they should share a key at that point, not differ",
-        )
-        self.assertNotEqual(
-            mine["key"],
-            theirs["key"],
-            "both builds cache different node_modules sets under one key, so "
-            "whichever runs first decides what the other restores",
-        )
-
-        # The fallback matters as much as the key: `restore-keys` is a prefix
-        # match, so a distinct key with the other's prefix beneath it lands back
-        # in the same archive.
-        for fallback in mine.get("restore-keys", "").split():
-            self.assertFalse(
-                theirs["key"].startswith(fallback),
-                f"restore-key {fallback!r} falls back onto the artifact build's cache",
-            )
-        for fallback in theirs.get("restore-keys", "").split():
-            self.assertFalse(
-                mine["key"].startswith(fallback),
-                f"the artifact build falls back onto this build's smaller cache via {fallback!r}",
-            )
-
-    def test_the_steps_it_shares_with_the_artifact_build_are_byte_identical(self):
-        """The nine that do match should keep matching. Left inline in both files
-        rather than extracted, for the reason in the class docstring -- so this is
-        what holds them together."""
-
-        mine = self.workflow()["jobs"]["build"]["steps"]
-        theirs = harness.workflow(WORKFLOW_PATH.name)["jobs"]["package"]["steps"]
-
-        def by_title(steps):
-            return {s.get("name") or s.get("uses"): s for s in steps}
-
-        mine_by_title, theirs_by_title = by_title(mine), by_title(theirs)
-        shared = [
-            (title, step)
-            for title, step in mine_by_title.items()
-            if title in theirs_by_title
-            and json.dumps(step, sort_keys=True) == json.dumps(theirs_by_title[title], sort_keys=True)
+        """ptp-14803-build-artifact.yml caches node_modules under `js-<os>-...`, while
+        pr-test-artifact.yml caches npm downloads (`npmcache-*`) and per-package build
+        outputs (`jsout-*`) across parallel Ubuntu jobs. None of the keys or fallback
+        prefixes may collide."""
+        mine = harness.step(self.workflow(), "Cache JavaScript Dependencies", job="build")["with"]
+        artifact_wf = harness.workflow(WORKFLOW_PATH.name)
+        theirs_caches = [
+            step["with"]
+            for job in artifact_wf["jobs"].values()
+            for step in (job.get("steps") or [])
+            if (step.get("uses") or "").startswith("actions/cache@")
         ]
+        self.assertTrue(theirs_caches, "pr-test-artifact.yml declares no actions/cache steps")
 
-        self.assertGreaterEqual(
-            len(shared),
-            9,
-            "the two builds used to share nine byte-identical steps and now share "
-            f"{len(shared)}. If a step diverged on purpose, say so; if it diverged by "
-            "accident, the two builds no longer set up the same way.",
-        )
+        for theirs in theirs_caches:
+            self.assertNotEqual(mine["key"], theirs["key"])
+            for fallback in mine.get("restore-keys", "").split():
+                self.assertFalse(
+                    theirs["key"].startswith(fallback),
+                    f"restore-key {fallback!r} collides with artifact cache key {theirs['key']!r}",
+                )
+            for fallback in theirs.get("restore-keys", "").split():
+                self.assertFalse(
+                    mine["key"].startswith(fallback),
+                    f"artifact restore-key {fallback!r} collides with hand-deploy cache key {mine['key']!r}",
+                )
+
+    def test_the_artifact_workflow_uses_all_ubuntu_parallel_jobs(self):
+        """pr-test-artifact.yml intentionally diverged from ptp-14803-build-artifact.yml's
+        single Windows job to run parallel Ubuntu jobs (.NET 9 SDK + sharded JS)."""
+        artifact_wf = harness.workflow(WORKFLOW_PATH.name)
+        for job_name, job in artifact_wf["jobs"].items():
+            self.assertEqual(
+                "ubuntu-latest",
+                job.get("runs-on"),
+                f"pr-test-artifact.yml job {job_name!r} should run on ubuntu-latest",
+            )
 
 
 if __name__ == "__main__":

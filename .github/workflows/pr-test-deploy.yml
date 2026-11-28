@@ -322,7 +322,8 @@ jobs:
           secret-field: sandboxConnectionString
           secret-value: ${{ env.SANDBOX_CONNECTION_STRING }}
           label: Deploy of PR #${{ env.PR_NUMBER }}
-          attempts: '120'
+          attempts: '360'
+          interval-seconds: '5'
 
       # Until now nothing asked whether a pr-* site was reachable from outside the VM.
       # The VM's own loopback probe cannot answer that, so a site could be reported
