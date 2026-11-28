@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     How a changed path relates to a RockWeb artifact: shared by the two scripts that
-    decide on and carry out a build-free repackage.
+    decide on and carry out a build-free repackage or partial-layer build.
 
 .DESCRIPTION
     Get-ArtifactPlan.ps1 judges candidate base artifacts with this and
@@ -77,7 +77,8 @@ function Get-ArtifactChangeClass {
 
         .DESCRIPTION
         Returns one object per change: Status (A, M, D...), Path, Class (build, patch
-        or ignore) and IsServerOwned. RuleSet is artifact-paths.json, parsed.
+        or ignore), Layer (dotnet, js-obsidian, js-blocks, js-misc, all, or '')
+        and IsServerOwned. RuleSet is artifact-paths.json, parsed.
     #>
     [CmdletBinding()]
     param(
@@ -87,8 +88,11 @@ function Get-ArtifactChangeClass {
     )
 
     $classRules = @($RuleSet.rules | ForEach-Object {
+        $layerProp = $_.PSObject.Properties['layer']
+        $ruleLayer = if ($null -ne $layerProp -and $layerProp.Value) { [string]$layerProp.Value } elseif ($_.class -eq 'build') { 'all' } else { '' }
         [pscustomobject]@{
             Class = $_.class
+            Layer = $ruleLayer
             Regex = ConvertTo-PathPatternRegex -Pattern $_.pattern -GeneratedThemeName $GeneratedThemeName
         }
     })
@@ -98,9 +102,11 @@ function Get-ArtifactChangeClass {
         $status, $path = $line -split "`t", 2
 
         $class = 'build'
+        $layer = 'all'
         foreach ($classRule in $classRules) {
             if ($classRule.Regex.IsMatch($path)) {
                 $class = $classRule.Class
+                $layer = $classRule.Layer
                 break
             }
         }
@@ -117,6 +123,7 @@ function Get-ArtifactChangeClass {
             Status = $status
             Path = $path
             Class = $class
+            Layer = $layer
             IsServerOwned = $isServerOwned
         }
     }

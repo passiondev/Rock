@@ -58,7 +58,16 @@ class ThePlanDecidesWhichJobPackagesTests(harness.HarnessAssertions, unittest.Te
         this whole workflow to succeed, not only the job that packaged."""
         package = self.jobs["package"]
         self.assertIn("plan", self._needs(package))
-        self.assertEqual("!cancelled() && needs.plan.outputs.mode != 'repackage'", self._condition(package))
+        self.assertEqual(
+            "!cancelled() && needs.plan.outputs.mode != 'repackage' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')",
+            self._condition(package),
+        )
+        for shard in ("dotnet", "js-misc", "js-obsidian", "js-blocks", "js-typecheck"):
+            self.assertIn("plan", self._needs(self.jobs[shard]))
+            self.assertTrue(
+                self._condition(self.jobs[shard]).startswith("!cancelled() && needs.plan.outputs.mode != 'repackage'"),
+                f"{shard} job must run whenever plan fails or says build",
+            )
         self.assertIs(True, self.jobs["plan"].get("continue-on-error"))
 
     def test_a_target_that_cannot_name_its_upload_destination_builds(self):

@@ -66,6 +66,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 Import-Module WebAdministration
 
@@ -212,7 +213,7 @@ function Sync-SharedSiteAssets {
         # UI rather than in git. Those are exactly the files absent from the
         # artifact, so "copy only what is missing" is the correct rule -- the
         # branch stays authoritative for everything it actually ships.
-        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP
+        & robocopy $sourcePath $destinationPath /E /XC /XN /XO /MT:32 /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
         $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
         if ($exitCode -gt 7) {
             throw "robocopy failed for shared asset directory $directory with exit code $exitCode."
@@ -264,6 +265,126 @@ function Get-GcsAccessToken {
     return $tokenResponse.access_token
 }
 
+function Expand-ArtifactArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    if (!(Test-Path -LiteralPath $DestinationPath)) {
+        New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+    }
+
+    $resolvedSource = (Resolve-Path -LiteralPath $Path).Path
+    $resolvedDestination = (Resolve-Path -LiteralPath $DestinationPath).Path
+
+    $sevenZipExe = $null
+    $sevenZipCmd = Get-Command -Name '7z.exe', '7z' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $sevenZipCmd) {
+        $sevenZipExe = $sevenZipCmd.Source
+    }
+    elseif ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        foreach ($candidate in @('C:\Program Files\7-Zip\7z.exe', 'C:\Program Files (x86)\7-Zip\7z.exe')) {
+            if (Test-Path -LiteralPath $candidate) {
+                $sevenZipExe = $candidate
+                break
+            }
+        }
+    }
+
+    if (![string]::IsNullOrWhiteSpace($sevenZipExe)) {
+        & $sevenZipExe x $resolvedSource "-o$resolvedDestination" -y -bd -bso0 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($resolvedSource, $resolvedDestination)
+        return
+    }
+    catch {
+        if ($_.Exception -is [System.IO.IOException]) {
+            throw
+        }
+    }
+
+    Expand-Archive -Path $resolvedSource -DestinationPath $resolvedDestination -Force
+}
+
+function Remove-DirectoryFast {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $false)][switch]$Async
+    )
+
+    if (!(Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+        if ($Async) {
+            try {
+                Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', "rmdir /s /q `"$Path`"") -WindowStyle Hidden | Out-Null
+                return
+            }
+            catch { }
+        }
+
+        & cmd.exe /c "rmdir /s /q `"$Path`"" 2>$null | Out-Null
+        if (!(Test-Path -LiteralPath $Path)) {
+            return
+        }
+    }
+
+    Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
+function Move-DirectoryWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [Parameter(Mandatory = $false)][int]$MaxAttempts = 15,
+        [Parameter(Mandatory = $false)][int]$DelaySeconds = 1
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -ErrorAction Stop
+            return
+        }
+        catch {
+            if ($attempt -ge $MaxAttempts) {
+                throw
+            }
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+}
+
+function Add-DeployDefenderExclusions {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Paths
+    )
+
+    if ([System.IO.Path]::DirectorySeparatorChar -ne '\') {
+        return
+    }
+
+    if (!(Get-Command -Name 'Add-MpPreference' -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    foreach ($path in $Paths) {
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        try {
+            Add-MpPreference -ExclusionPath $path -ErrorAction SilentlyContinue
+        }
+        catch { }
+    }
+}
+
 function Copy-GcsObjectToFile {
     param(
         [Parameter(Mandatory = $true)][string]$GcsUri,
@@ -278,9 +399,42 @@ function Copy-GcsObjectToFile {
     $objectName = $Matches[2]
     $encodedObjectName = [System.Uri]::EscapeDataString($objectName)
     $token = Get-GcsAccessToken
-    $headers = @{ Authorization = "Bearer $token" }
     $uri = "https://storage.googleapis.com/storage/v1/b/$bucket/o/$encodedObjectName`?alt=media"
-    Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $uri -OutFile $DestinationPath
+
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+    $fullDestination = if ([System.IO.Path]::IsPathRooted($DestinationPath)) {
+        $DestinationPath
+    }
+    else {
+        Join-Path (Get-Location).Path $DestinationPath
+    }
+
+    $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($uri)
+    $request.Method = 'GET'
+    $request.Headers.Add('Authorization', "Bearer $token")
+    $request.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+    $request.Timeout = 600000
+    $request.ReadWriteTimeout = 300000
+
+    $response = $request.GetResponse()
+    try {
+        $responseStream = $response.GetResponseStream()
+        $fileStream = [System.IO.File]::Create($fullDestination)
+        try {
+            $buffer = New-Object byte[] 1048576
+            while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $fileStream.Write($buffer, 0, $bytesRead)
+            }
+        }
+        finally {
+            $fileStream.Dispose()
+            $responseStream.Dispose()
+        }
+    }
+    finally {
+        $response.Dispose()
+    }
 }
 
 # The only writer of prNumber anywhere, and so the only thing that makes a
@@ -366,10 +520,9 @@ try {
 
     Ensure-Directory -Path $EnvironmentRoot
     Ensure-Directory -Path $EnvironmentPath
+    Add-DeployDefenderExclusions -Paths @($EnvironmentRoot, $SitePath)
 
     Write-Host "Deploying $SiteName from $ArtifactGcsPath to $SitePath"
-
-    Stop-PrEnvironmentAppPool -Name $AppPoolName
 
     if (Test-Path $ArtifactPath) {
         Remove-Item $ArtifactPath -Force
@@ -377,16 +530,21 @@ try {
 
     Copy-GcsObjectToFile -GcsUri $ArtifactGcsPath -DestinationPath $ArtifactPath
 
-    if (Test-Path $ExtractPath) {
-        Remove-Item $ExtractPath -Recurse -Force
-    }
+    Remove-DirectoryFast -Path $ExtractPath
     Ensure-Directory -Path $ExtractPath
-    Expand-Archive -Path $ArtifactPath -DestinationPath $ExtractPath -Force
+    Expand-ArtifactArchive -Path $ArtifactPath -DestinationPath $ExtractPath
 
-    if (Test-Path $SitePath) {
-        Remove-Item $SitePath -Recurse -Force
+    Stop-PrEnvironmentAppPool -Name $AppPoolName
+
+    $previousSitePath = ''
+    if (Test-Path -LiteralPath $SitePath) {
+        $previousSitePath = "$SitePath.removing-$([guid]::NewGuid().ToString('n').Substring(0, 8))"
+        Move-DirectoryWithRetry -SourcePath $SitePath -DestinationPath $previousSitePath
     }
-    Move-Item -Path $ExtractPath -Destination $SitePath
+    Move-DirectoryWithRetry -SourcePath $ExtractPath -DestinationPath $SitePath
+    if (![string]::IsNullOrWhiteSpace($previousSitePath)) {
+        Remove-DirectoryFast -Path $previousSitePath -Async
+    }
     $sharedAssetSource = Get-SharedAssetSourcePath -ExplicitPath $SharedAssetSourcePath
     Sync-SharedSiteAssets -SourceRoot $sharedAssetSource -DestinationRoot $SitePath -DirectoryList $SharedAssetDirectories
 

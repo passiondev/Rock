@@ -167,8 +167,9 @@ class ScriptsLiveInScriptFilesTests(harness.HarnessAssertions, unittest.TestCase
     # which is the thing this file exists to stop. Extracting the deploy script
     # drift comparison into .github/actions/report-script-drift took the first one;
     # moving the package job's zip-and-record step into New-PackagedArtifact.ps1
-    # took the second.
-    WORKFLOW_BACKLOG = 25
+    # took the second; extracting pr-test-artifact.yml's .NET, JS, and verification
+    # scripts into .github/scripts/ lowered the backlog by five more.
+    WORKFLOW_BACKLOG = 20
 
     def _inline_blocks(self, paths):
         """(file, step name, executable line count) for every `run:` block."""

@@ -66,6 +66,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 function New-PatchedArtifactArchive {
     <#
@@ -137,7 +138,7 @@ function New-PatchedArtifactArchive {
                 continue
             }
 
-            $copy = $output.CreateEntry($entry.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
+            $copy = $output.CreateEntry($entry.FullName, [System.IO.Compression.CompressionLevel]::Fastest)
             $copy.LastWriteTime = $entry.LastWriteTime
             $copy.ExternalAttributes = $entry.ExternalAttributes
             $reader = $entry.Open()
@@ -155,7 +156,7 @@ function New-PatchedArtifactArchive {
         foreach ($item in @($patch | Where-Object { $_.Status -ne 'D' })) {
             $source = Join-Path $SourceRoot $item.Path
             $name = $item.Path.Substring('RockWeb/'.Length).Replace('/', $separator)
-            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($output, $source, $name, [System.IO.Compression.CompressionLevel]::Optimal)
+            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($output, $source, $name, [System.IO.Compression.CompressionLevel]::Fastest)
         }
     }
     finally {

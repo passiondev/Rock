@@ -196,7 +196,7 @@ Describe 'Assert-ArtifactHash' {
         $text = Get-Content -Raw -Path $script:DeployScript
         $download = $text.IndexOf('Copy-GcsObjectToFile -GcsUri $ArtifactGcsPath')
         $check = $text.IndexOf('Assert-ArtifactHash -Path $ArtifactPath')
-        $unpack = $text.IndexOf('Expand-Archive -Path $ArtifactPath')
+        $unpack = $text.IndexOf('Expand-ArtifactArchive -Path $ArtifactPath')
 
         $download | Should -BeGreaterThan -1
         $check | Should -BeGreaterThan $download

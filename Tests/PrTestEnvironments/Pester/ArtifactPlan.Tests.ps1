@@ -401,12 +401,21 @@ Describe 'Invoke-ArtifactPlan' {
         # (ArtifactRecord.Tests.ps1); that is a first build, not a failure.
         $result = Invoke-Plan -Store (New-ListingStore -Artifact @())
 
-        # The three outputs the repackage and package jobs branch on, in the
-        # order Write-ArtifactPlan writes them.
-        @($result.Plan.Keys) | Should -Be @('mode', 'base_sha', 'base_object_path')
+        # The outputs the repackage, build shards, and package jobs branch on, in
+        # the order Write-ArtifactPlan writes them.
+        @($result.Plan.Keys) | Should -Be @(
+            'mode', 'base_sha', 'base_object_path',
+            'build_dotnet', 'build_js_obsidian', 'build_js_blocks', 'build_js_misc',
+            'reuse_base_object_path'
+        )
         $result.Plan.mode | Should -Be 'build'
         $result.Plan.base_sha | Should -Be ''
         $result.Plan.base_object_path | Should -Be ''
+        $result.Plan.build_dotnet | Should -Be 'true'
+        $result.Plan.build_js_obsidian | Should -Be 'true'
+        $result.Plan.build_js_blocks | Should -Be 'true'
+        $result.Plan.build_js_misc | Should -Be 'true'
+        $result.Plan.reuse_base_object_path | Should -Be ''
         $result.Summary | Should -Be @(
             '### Artifact plan'
             ''
@@ -487,12 +496,47 @@ Describe 'Invoke-ArtifactPlan' {
             }
 
             $result.Plan.mode | Should -Be 'build'
+            $result.Plan.build_dotnet | Should -Be 'true'
+            $result.Plan.build_js_obsidian | Should -Be 'false'
+            $result.Plan.build_js_blocks | Should -Be 'false'
+            $result.Plan.build_js_misc | Should -Be 'false'
+            $result.Plan.reuse_base_object_path | Should -Be 'pr-environments/staging/1111111111111111111111111111111111111111/RockWeb-staging-1111111.zip'
             $result.Summary | Should -Be @(
                 '### Artifact plan'
                 ''
                 '- Passed over `pr-environments/staging/1111111111111111111111111111111111111111/RockWeb-staging-1111111.zip`: 1 path(s) need a build: Rock/Model/Core/Person/Person.cs'
-                'Building: none of 1 candidate artifact(s) differs from 9999999999999999999999999999999999999999 in files alone.'
+                'Partial build: rebuilding [dotnet]; reusing [js-obsidian, js-blocks, js-misc] from `pr-environments/staging/1111111111111111111111111111111111111111/RockWeb-staging-1111111.zip`.'
             )
+        }
+    }
+
+    Context 'partial-layer reuse' {
+        It 'skips .NET and untouched JS shards when only Obsidian.Blocks changed' {
+            $store = New-ListingStore -Artifact @(New-Artifact -Slug 'staging' -Digit '1' -DaysAgo 0)
+            $source = New-ChangeSource @{ ('1' * 40) = @("M`tRock.JavaScript.Obsidian.Blocks/src/Cms/htmlContentDetail.obs") }
+
+            $result = Invoke-Plan -Store $store -GetChange $source
+
+            $result.Plan.mode | Should -Be 'build'
+            $result.Plan.build_dotnet | Should -Be 'false'
+            $result.Plan.build_js_obsidian | Should -Be 'false'
+            $result.Plan.build_js_blocks | Should -Be 'true'
+            $result.Plan.build_js_misc | Should -Be 'false'
+            $result.Plan.reuse_base_object_path | Should -Be 'pr-environments/staging/1111111111111111111111111111111111111111/RockWeb-staging-1111111.zip'
+        }
+
+        It 'runs a full build when a workflow or build script changes' {
+            $store = New-ListingStore -Artifact @(New-Artifact -Slug 'staging' -Digit '1' -DaysAgo 0)
+            $source = New-ChangeSource @{ ('1' * 40) = @("M`t.github/workflows/pr-test-artifact.yml") }
+
+            $result = Invoke-Plan -Store $store -GetChange $source
+
+            $result.Plan.mode | Should -Be 'build'
+            $result.Plan.build_dotnet | Should -Be 'true'
+            $result.Plan.build_js_obsidian | Should -Be 'true'
+            $result.Plan.build_js_blocks | Should -Be 'true'
+            $result.Plan.build_js_misc | Should -Be 'true'
+            $result.Plan.reuse_base_object_path | Should -Be ''
         }
     }
 

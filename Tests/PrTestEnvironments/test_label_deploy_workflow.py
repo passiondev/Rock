@@ -41,7 +41,8 @@ class LabelTriggeredDeployWorkflowTests(unittest.TestCase):
         # same action, and its behaviour is asserted once in
         # test_local_composite_actions.py rather
         # than once per producer. What stays here is what this workflow chooses.
-        self.assertIn("attempts: '120'", text)
+        self.assertIn("attempts: '360'", text)
+        self.assertIn("interval-seconds: '5'", text)
         self.assertIn("artifactGcsPath", text)
         self.assertIn("staging.connect.passion.team", text)
         self.assertNotIn("sshpass", text)

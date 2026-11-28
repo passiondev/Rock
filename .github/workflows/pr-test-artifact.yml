@@ -25,8 +25,8 @@ name: PR Test Environment Artifact
         type: string
       force_build:
         description: >-
-          Build even when an artifact already in the bucket could be repackaged.
-          pr-test-deploy.yml sets it from the rock:full-build label.
+          Build even when an artifact already in the bucket could be repackaged
+          or partially reused. pr-test-deploy.yml sets it from the rock:full-build label.
         required: false
         default: false
         type: boolean
@@ -72,7 +72,7 @@ name: PR Test Environment Artifact
         required: false
         type: string
       force_build:
-        description: Build even when an artifact already in the bucket could be repackaged.
+        description: Build even when an artifact already in the bucket could be repackaged or partially reused.
         required: false
         default: false
         type: boolean
@@ -88,16 +88,8 @@ permissions:
   pull-requests: read
 
 jobs:
-  # Most changes are Lava, markup and theme assets the build copies into the
-  # artifact untouched. This looks for an artifact already in the bucket that
-  # differs from this commit in such files alone; finding one, the repackage job
-  # swaps them into a copy of it and the half-hour build is skipped. Rules and
-  # reasoning: .github/scripts/artifact-paths.json and Get-ArtifactPlan.ps1.
-  #
-  # A plan it cannot make costs a build, never the deploy. The step's own
-  # continue-on-error covers the script; this one covers the job around it -- a
-  # failed checkout or sign-in, or a hung listing that runs out the timeout --
-  # so the run still concludes success once the package job has built.
+  # Decides between build-free repackage, partial-layer reuse, or full build.
+  # A plan it cannot make costs a full build, never a failed deploy.
   plan:
     name: Decide whether to build
     runs-on: ubuntu-latest
@@ -111,23 +103,28 @@ jobs:
       mode: ${{ steps.plan.outputs.mode }}
       base_sha: ${{ steps.plan.outputs.base_sha }}
       base_object_path: ${{ steps.plan.outputs.base_object_path }}
+      build_dotnet: ${{ steps.plan.outputs.build_dotnet }}
+      build_js_obsidian: ${{ steps.plan.outputs.build_js_obsidian }}
+      build_js_blocks: ${{ steps.plan.outputs.build_js_blocks }}
+      build_js_misc: ${{ steps.plan.outputs.build_js_misc }}
+      reuse_base_object_path: ${{ steps.plan.outputs.reuse_base_object_path }}
 
     steps:
-      # The target's own rules and scripts, so a change to either is judged by
-      # the version that will ship it. Both are build-class paths, so a commit
-      # that changes them always builds.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.head_sha || github.sha }}
           fetch-depth: 1
+          sparse-checkout: |
+            .github/actions
+            .github/scripts
+            Rock.Frontend.Styles/src/themes
+          sparse-checkout-cone-mode: false
 
       - name: Open a Google Cloud session
         uses: ./.github/actions/gcp-session
         with:
           credentials-json: ${{ secrets.GCP_SA_KEY }}
 
-      # Anything but an explicit repackage sends the package job in, so a
-      # failure here is not allowed to fail the run.
       - name: Look for an artifact to repackage
         id: plan
         continue-on-error: true
@@ -135,15 +132,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORCE_BUILD: ${{ inputs.force_build }}
         run: |
-          # A commit from before artifact reuse has no plan to run, and builds. So
-          # does one from before artifact_gcs_destination: the repackage job runs
-          # the target's own scripts, and the uploads after it take their
-          # destination from Write-ArtifactOutput's -Bucket, so a repackage of
-          # it would have nowhere to go. One check covers both, because -Bucket
-          # arrived after the plan script. It asks the function rather than
-          # searching the text, so a comment naming the parameter cannot pass
-          # for it, and the path needs its ./ or Import-Module reads it as a
-          # module name, fails, and every run builds.
           $record = './.github/scripts/ArtifactRecord.psm1'
           $writer = if (Test-Path $record) { Import-Module $record -Force; Get-Command Write-ArtifactOutput -ErrorAction SilentlyContinue }
           if (-not ($writer -and $writer.Parameters.ContainsKey('Bucket'))) {
@@ -153,9 +141,7 @@ jobs:
           ./.github/scripts/Get-ArtifactPlan.ps1 -TargetSha $env:HEAD_SHA -ArtifactSlug $env:ARTIFACT_SLUG `
             -Bucket $env:PR_TEST_GCS_BUCKET -Repository $env:GITHUB_REPOSITORY -ForceBuild:($env:FORCE_BUILD -eq 'true')
 
-  # The zip a build would have made, from the base the plan found plus the files
-  # that changed since. Fails rather than falling back: rerun with force_build,
-  # or add the rock:full-build label, to build instead.
+  # Build-free repackage when only Lava/markup/assets changed.
   repackage:
     name: Repackage RockWeb without a build
     needs: plan
@@ -179,10 +165,6 @@ jobs:
       artifact_sha256: ${{ steps.artifact-hash.outputs.sha256 }}
 
     steps:
-      # Before the checkout, which is when it is read. The build's text files
-      # carry CRLF: it checks out on a Windows runner, whose Git for Windows has
-      # autocrlf on system-wide -- its own "Setup Git CRLF" step comes after its
-      # checkout. A patched file needs the same endings as its neighbours.
       - name: Setup Git CRLF
         run: git config --global core.autocrlf true
 
@@ -203,22 +185,12 @@ jobs:
             -TargetSha $env:HEAD_SHA -Bucket $env:PR_TEST_GCS_BUCKET -ArtifactSlug $env:ARTIFACT_SLUG `
             -PrNumber $env:PR_NUMBER -HostName $env:HOST_NAME
 
-      # The uploads' destination comes from the target's own script, and one
-      # from before artifact_gcs_destination writes the other outputs and not
-      # that. The plan builds such a target rather than choosing this job, so
-      # this is the net under that check: the upload would refuse the empty
-      # destination anyway, and this says why before anything is uploaded.
       - name: Refuse a repackage that names no upload destination
         if: steps.repackage.outputs.artifact_gcs_destination == ''
         run: |
           Write-Host "::error::The New-RepackagedArtifact.ps1 in $env:HEAD_SHA predates artifact_gcs_destination, so its zip has nowhere to go. Rerun with force_build, or add the rock:full-build label, to build instead."
           exit 1
 
-      # The hash the deploy hands the VM, taken here from the zip this job is
-      # about to upload rather than read from the record, which sits in the
-      # bucket beside it. In the workflow and not in the packaging script, because
-      # the repackage job runs its target's own script and a target from before
-      # this would write no hash at all.
       - name: Record the zip's hash for the deploy
         id: artifact-hash
         env:
@@ -236,30 +208,407 @@ jobs:
             pr-test-artifact.json
           retention-days: 14
 
-      # Into the folder Get-ArtifactAddress names, with the bucket in front, as
-      # the repackage step handed it on: the deploy's object path comes from
-      # the same address, so where the zip lands and where the deploy looks
-      # cannot drift apart.
       - name: Upload package zip to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: ${{ steps.repackage.outputs.artifact_name }}
           destination: ${{ steps.repackage.outputs.artifact_gcs_destination }}
+          gzip: false
+          process_gcloudignore: false
 
       - name: Upload package metadata to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: pr-test-artifact.json
           destination: ${{ steps.repackage.outputs.artifact_gcs_destination }}
+          process_gcloudignore: false
 
-  # !cancelled(): a failed plan job would otherwise skip this too, and a plan it
-  # could not make is meant to cost a build.
-  package:
-    name: Build and package RockWeb
+  # Cross-platform .NET Framework 4.7.2 build on ubuntu-latest using .NET 9 SDK
+  # + Microsoft.NETFramework.ReferenceAssemblies.net472 (zero Windows runners).
+  dotnet:
+    name: Build .NET (net472 on Ubuntu)
     needs: plan
-    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' }}
-    runs-on: windows-latest
-    timeout-minutes: 90
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' && needs.plan.outputs.build_dotnet != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Setup Git CRLF
+        run: git config --global core.autocrlf true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Check out the build scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .artifact-scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Cache built .NET RockWeb Bin outputs
+        id: dotnet-out
+        uses: actions/cache@v4
+        with:
+          path: |
+            RockWeb/Bin
+            RockWeb/path/app.ConnectionStrings.config
+            dotnet-meta.txt
+          key: dotnet-bin-v1-${{ runner.os }}-${{ hashFiles('Rock.sln', 'Directory.Build.props', 'NuGet.Config', 'RockWeb/packages.config', 'RockWeb/Bin/*.dll.refresh', 'DotLiquid/**', 'Rock/**', 'Rock.AI.*/**', 'Rock.Blocks/**', 'Rock.Checkr/**', 'Rock.Common/**', 'Rock.Common.Web/**', 'Rock.DownhillCss/**', 'Rock.Enums/**', 'Rock.Lava/**', 'Rock.Lava.Fluid/**', 'Rock.Lava.Shared/**', 'Rock.Mailgun/**', 'Rock.Migrations/**', 'Rock.NCOA/**', 'Rock.NMI/**', 'Rock.Oidc/**', 'Rock.PayFlowPro/**', 'Rock.Rest/**', 'Rock.Security.Authentication.Auth0/**', 'Rock.SendGrid/**', 'Rock.Slingshot/**', 'Rock.Slingshot.Model/**', 'Rock.StatementGenerator/**', 'Rock.Update/**', 'Rock.Version/**', 'Rock.ViewModels/**', 'Rock.WebStartup/**', '!**/bin/**', '!**/obj/**') }}
+
+      - name: Setup .NET SDK
+        if: steps.dotnet-out.outputs.cache-hit != 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Build Rock Projects (net472)
+        if: steps.dotnet-out.outputs.cache-hit != 'true'
+        run: ./.artifact-scripts/.github/scripts/Invoke-RockDotNetBuild.ps1
+
+      - name: Record refresh counts
+        if: steps.dotnet-out.outputs.cache-hit != 'true'
+        run: |
+          @("RESOLVED_REFRESH_COUNT=$env:RESOLVED_REFRESH_COUNT", "UNRESOLVED_REFRESH_COUNT=$env:UNRESOLVED_REFRESH_COUNT") |
+            Set-Content dotnet-meta.txt
+
+      - name: Upload built RockWeb Bin
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer-dotnet-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            RockWeb/Bin
+            RockWeb/path/app.ConnectionStrings.config
+            dotnet-meta.txt
+
+  # Parallel JS shard 1: Rock.JavaScript (parallel webpack + monaco), EditorJs,
+  # and Rock.Frontend.Styles (guarded on lockfile for 18.4.1 compatibility).
+  js-misc:
+    name: Build JS Misc & Styles (Ubuntu)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' && needs.plan.outputs.build_js_misc != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Setup Git CRLF
+        run: git config --global core.autocrlf true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Check out the build scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .artifact-scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Compute npm cache dir
+        id: npm-cache-dir
+        run: |
+          $dir = (npm config get cache).Trim()
+          "dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Cache npm download folder (misc)
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npmcache-misc-${{ runner.os }}-${{ hashFiles('Rock.JavaScript/package-lock.json', 'Rock.JavaScript.EditorJs/package-lock.json', 'Rock.Frontend.Styles/package-lock.json') }}
+          restore-keys: |
+            npmcache-misc-${{ runner.os }}-
+
+      - name: Cache Rock.JavaScript build outputs
+        id: jsout-js
+        uses: actions/cache@v4
+        with:
+          path: |
+            RockWeb/Scripts/Rock/realtime.js
+            RockWeb/Scripts/Rock/realtime.js.map
+            RockWeb/Scripts/Rock/plyr.js
+            RockWeb/Scripts/Rock/plyr.js.map
+            RockWeb/Scripts/Rock/streamchat.js
+            RockWeb/Scripts/Rock/streamchat.js.map
+            RockWeb/Scripts/Rock/Monaco
+          key: jsout-javascript-${{ runner.os }}-${{ hashFiles('Rock.JavaScript/**', '!Rock.JavaScript/node_modules/**', '!Rock.JavaScript/**/.cache/**', '!Rock.JavaScript/bin/**', '!Rock.JavaScript/obj/**') }}
+
+      - name: Cache Rock.JavaScript.EditorJs build outputs
+        id: jsout-editorjs
+        uses: actions/cache@v4
+        with:
+          path: |
+            RockWeb/Scripts/Rock/UI/structuredcontenteditor
+          key: jsout-editorjs-${{ runner.os }}-${{ hashFiles('Rock.JavaScript.EditorJs/**', '!Rock.JavaScript.EditorJs/node_modules/**', '!Rock.JavaScript.EditorJs/**/.cache/**', '!Rock.JavaScript.EditorJs/bin/**', '!Rock.JavaScript.EditorJs/obj/**') }}
+
+      - name: Cache Rock.Frontend.Styles build outputs
+        id: jsout-styles
+        if: hashFiles('Rock.Frontend.Styles/package-lock.json') != ''
+        uses: actions/cache@v4
+        with:
+          path: |
+            Rock.Frontend.Styles/dist
+            RockWeb/Styles/styles-v2
+            RockWeb/Themes/NextGenCheckin
+            RockWeb/Themes/RockManagerNextGen
+            RockWeb/Themes/RockNextGen
+          key: jsout-styles-themes-${{ runner.os }}-${{ hashFiles('Rock.Frontend.Styles/**', '!Rock.Frontend.Styles/node_modules/**', '!Rock.Frontend.Styles/dist/**', '!Rock.Frontend.Styles/obj/**') }}
+
+      - name: Build Rock.JavaScript, EditorJs & Rock.Frontend.Styles
+        env:
+          NPM_CACHE_DIR: ${{ steps.npm-cache-dir.outputs.dir }}
+          HIT_JS: ${{ steps.jsout-js.outputs.cache-hit }}
+          HIT_ED: ${{ steps.jsout-editorjs.outputs.cache-hit }}
+          HIT_STYLES: ${{ steps.jsout-styles.outputs.cache-hit }}
+        run: |
+          ./.artifact-scripts/.github/scripts/Invoke-RockJsBuild.ps1 -Package misc -NpmCacheDir $env:NPM_CACHE_DIR `
+            -SkipJavaScript:($env:HIT_JS -eq 'true') -SkipEditorJs:($env:HIT_ED -eq 'true') -SkipStyles:($env:HIT_STYLES -eq 'true')
+
+      - name: Upload JS misc & styles outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer-js-misc-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            RockWeb/Scripts/Rock/realtime.js
+            RockWeb/Scripts/Rock/realtime.js.map
+            RockWeb/Scripts/Rock/plyr.js
+            RockWeb/Scripts/Rock/plyr.js.map
+            RockWeb/Scripts/Rock/streamchat.js
+            RockWeb/Scripts/Rock/streamchat.js.map
+            RockWeb/Scripts/Rock/Monaco
+            RockWeb/Scripts/Rock/UI/structuredcontenteditor
+            RockWeb/Styles/styles-v2
+            RockWeb/Themes/NextGenCheckin
+            RockWeb/Themes/RockManagerNextGen
+            RockWeb/Themes/RockNextGen
+
+  # Parallel JS shard 2: Rock.JavaScript.Obsidian (parallel build-core + rollup-mt).
+  js-obsidian:
+    name: Build Obsidian Framework (Ubuntu)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' && needs.plan.outputs.build_js_obsidian != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Setup Git CRLF
+        run: git config --global core.autocrlf true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Check out the build scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .artifact-scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Compute npm cache dir
+        id: npm-cache-dir
+        run: |
+          $dir = (npm config get cache).Trim()
+          "dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Cache npm download folder (obsidian)
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npmcache-obsidian-${{ runner.os }}-${{ hashFiles('Rock.JavaScript.Obsidian/package-lock.json') }}
+          restore-keys: |
+            npmcache-obsidian-${{ runner.os }}-
+
+      - name: Cache Rock.JavaScript.Obsidian build outputs
+        id: jsout-obsidian
+        uses: actions/cache@v4
+        with:
+          path: |
+            Rock.JavaScript.Obsidian/dist
+            RockWeb/Obsidian
+            !RockWeb/Obsidian/Blocks
+          key: jsout-obsidian-${{ runner.os }}-${{ hashFiles('Rock.JavaScript.Obsidian/**', '!Rock.JavaScript.Obsidian/node_modules/**', '!Rock.JavaScript.Obsidian/dist/**', '!Rock.JavaScript.Obsidian/**/.cache/**', '!Rock.JavaScript.Obsidian/coverage/**', '!Rock.JavaScript.Obsidian/bin/**', '!Rock.JavaScript.Obsidian/obj/**') }}
+
+      - name: Build Rock.JavaScript.Obsidian
+        if: steps.jsout-obsidian.outputs.cache-hit != 'true'
+        env:
+          NPM_CACHE_DIR: ${{ steps.npm-cache-dir.outputs.dir }}
+        run: ./.artifact-scripts/.github/scripts/Invoke-RockJsBuild.ps1 -Package obsidian -NpmCacheDir $env:NPM_CACHE_DIR
+
+      - name: Upload Obsidian outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer-js-obsidian-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            RockWeb/Obsidian
+            !RockWeb/Obsidian/Blocks
+
+  # Parallel JS shard 3: Rock.JavaScript.Obsidian.Blocks starts at T=0 without
+  # waiting for Obsidian/dist (Babel strips types; @Obsidian/* is external).
+  js-blocks:
+    name: Build Obsidian Blocks (Ubuntu)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' && needs.plan.outputs.build_js_blocks != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Setup Git CRLF
+        run: git config --global core.autocrlf true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Check out the build scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .artifact-scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Compute npm cache dir
+        id: npm-cache-dir
+        run: |
+          $dir = (npm config get cache).Trim()
+          "dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Cache npm download folder (blocks)
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npmcache-blocks-${{ runner.os }}-${{ hashFiles('Rock.JavaScript.Obsidian.Blocks/package-lock.json') }}
+          restore-keys: |
+            npmcache-blocks-${{ runner.os }}-
+
+      - name: Cache Rock.JavaScript.Obsidian.Blocks build outputs
+        id: jsout-blocks
+        uses: actions/cache@v4
+        with:
+          path: |
+            Rock.JavaScript.Obsidian.Blocks/dist
+            RockWeb/Obsidian/Blocks
+          key: jsout-blocks-${{ runner.os }}-${{ hashFiles('Rock.JavaScript.Obsidian.Blocks/**', '!Rock.JavaScript.Obsidian.Blocks/node_modules/**', '!Rock.JavaScript.Obsidian.Blocks/dist/**', '!Rock.JavaScript.Obsidian.Blocks/**/.cache/**', '!Rock.JavaScript.Obsidian.Blocks/coverage/**', '!Rock.JavaScript.Obsidian.Blocks/bin/**', '!Rock.JavaScript.Obsidian.Blocks/obj/**', 'Rock.JavaScript.Obsidian/Build/**') }}
+
+      - name: Build Rock.JavaScript.Obsidian.Blocks
+        if: steps.jsout-blocks.outputs.cache-hit != 'true'
+        env:
+          NPM_CACHE_DIR: ${{ steps.npm-cache-dir.outputs.dir }}
+        run: ./.artifact-scripts/.github/scripts/Invoke-RockJsBuild.ps1 -Package blocks -NpmCacheDir $env:NPM_CACHE_DIR
+
+      - name: Upload Obsidian Blocks outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: layer-js-blocks-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            RockWeb/Obsidian/Blocks
+
+  # Parallel vue-tsc typecheck gate with MaxConcurrency=4 (2.82x faster than
+  # upstream's Math.floor(4/3) = 1) so TS errors still block broken artifacts
+  # without sitting on the rollup critical path.
+  js-typecheck:
+    name: Typecheck Obsidian & Blocks (Ubuntu)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' && (needs.plan.outputs.build_js_obsidian != 'false' || needs.plan.outputs.build_js_blocks != 'false') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Setup Git CRLF
+        run: git config --global core.autocrlf true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Check out the build scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .artifact-scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Compute npm cache dir
+        id: npm-cache-dir
+        run: |
+          $dir = (npm config get cache).Trim()
+          "dir=$dir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Cache npm download folder (typecheck)
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npmcache-typecheck-${{ runner.os }}-${{ hashFiles('Rock.JavaScript.Obsidian/package-lock.json', 'Rock.JavaScript.Obsidian.Blocks/package-lock.json') }}
+          restore-keys: |
+            npmcache-typecheck-${{ runner.os }}-
+
+      - name: Cache Obsidian & Blocks typecheck stamp
+        id: typecheck-cache
+        uses: actions/cache@v4
+        with:
+          path: .typecheck-ok
+          key: jstypecheck-${{ runner.os }}-${{ hashFiles('Rock.JavaScript.Obsidian/**', '!Rock.JavaScript.Obsidian/node_modules/**', '!Rock.JavaScript.Obsidian/dist/**', 'Rock.JavaScript.Obsidian.Blocks/**', '!Rock.JavaScript.Obsidian.Blocks/node_modules/**', '!Rock.JavaScript.Obsidian.Blocks/dist/**') }}
+
+      - name: Run Obsidian & Blocks TypeScript typecheck
+        if: steps.typecheck-cache.outputs.cache-hit != 'true'
+        env:
+          NPM_CACHE_DIR: ${{ steps.npm-cache-dir.outputs.dir }}
+        run: |
+          ./.artifact-scripts/.github/scripts/Invoke-RockJsBuild.ps1 -Package typecheck -NpmCacheDir $env:NPM_CACHE_DIR -TypecheckConcurrency 4
+          Set-Content -Path .typecheck-ok -Value 'ok'
+
+  # Assembles committed RockWeb files + freshly built layers + any untouched
+  # layers reused from GCS, runs every verification gate, packages with fast
+  # zip, and publishes the artifact + SHA-256 outputs.
+  package:
+    name: Assemble and package RockWeb
+    needs: [plan, dotnet, js-misc, js-obsidian, js-blocks, js-typecheck]
+    if: ${{ !cancelled() && needs.plan.outputs.mode != 'repackage' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       PR_NUMBER: ${{ inputs.pr_number }}
       HEAD_SHA: ${{ inputs.head_sha || github.sha }}
@@ -275,502 +624,14 @@ jobs:
       artifact_sha256: ${{ steps.artifact-hash.outputs.sha256 }}
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.head_sha || github.sha }}
-          fetch-depth: 10
-
       - name: Setup Git CRLF
         run: git config --global core.autocrlf true
 
-      # The runner image moves Visual Studio between major versions (the install
-      # root went 2022 -> 18), so pinning the version folder silently rots. Only
-      # vswhere.exe has a stable location; ask it where MSBuild actually landed.
-      # Runs before the npm builds so a bad image fails in seconds, not minutes.
-      - name: Locate MSBuild
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (!(Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
-
-          $msbuild = & $vswhere -latest -products * `
-                       -requires Microsoft.Component.MSBuild `
-                       -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
-
-          if (-not $msbuild -or !(Test-Path $msbuild)) {
-            Write-Host "::error::Could not locate MSBuild.exe via vswhere"
-            & $vswhere -latest -products * -format value
-            exit 1
-          }
-
-          Write-Host "Using MSBuild: $msbuild"
-          & $msbuild -version
-          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Setup NuGet
-        uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v4
         with:
-          dotnet-version: "8.0.x"
+          ref: ${{ inputs.head_sha || github.sha }}
+          fetch-depth: 1
 
-      - name: Cache NuGet Packages
-        uses: actions/cache@v4
-        with:
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.sln', '**/packages.config') }}
-          path: ~/.nuget/packages
-          lookup-only: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18"
-
-      - name: Cache JavaScript Dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            Rock.JavaScript/node_modules
-            Rock.JavaScript.Obsidian/node_modules
-            Rock.JavaScript.Obsidian.Blocks/node_modules
-            Rock.JavaScript.EditorJs/node_modules
-            Rock.Frontend.Styles/node_modules
-          key: js-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            js-${{ runner.os }}-
-
-      - name: Install Rock.JavaScript Dependencies
-        working-directory: Rock.JavaScript
-        run: npm ci
-
-      - name: Build Rock.JavaScript
-        working-directory: Rock.JavaScript
-        run: npm run build
-
-      - name: Install Rock.JavaScript.EditorJs Dependencies
-        working-directory: Rock.JavaScript.EditorJs
-        run: npm ci
-
-      - name: Build Rock.JavaScript.EditorJs
-        working-directory: Rock.JavaScript.EditorJs
-        run: npm run build
-
-      - name: Install Rock.JavaScript.Obsidian Dependencies
-        working-directory: Rock.JavaScript.Obsidian
-        run: npm ci
-
-      - name: Build Rock.JavaScript.Obsidian
-        working-directory: Rock.JavaScript.Obsidian
-        run: npm run build
-
-      # The compiled .obs.js block files are NOT committed to the repo (0 tracked
-      # files under RockWeb/Obsidian/Blocks), so without this the artifact ships a
-      # site with no Obsidian blocks at all. Must run after Rock.JavaScript.Obsidian,
-      # which it imports its framework types from.
-      - name: Install Rock.JavaScript.Obsidian.Blocks Dependencies
-        working-directory: Rock.JavaScript.Obsidian.Blocks
-        run: npm ci
-
-      - name: Build Rock.JavaScript.Obsidian.Blocks
-        working-directory: Rock.JavaScript.Obsidian.Blocks
-        run: npm run build
-
-      # Same trap as the Obsidian blocks above, and it only appeared in v19. Under
-      # 18.4.1 the generated CSS under RockWeb/Styles/styles-v2/ was committed (178
-      # files). In 19.x that folder's .gitignore is '*' and the content is produced
-      # here instead, so without this step the artifact ships without
-      # styles-v2/icons/tabler-icon.css. That file is @import-ed by
-      # RockWeb/Styles/_rock-core.less, so Rock's LESS theme compile fails at startup
-      # and every page renders against whatever stale theme.css was already on disk.
-      #
-      # obsidian.config.json copies src/styles -> RockWeb/Styles and src/themes ->
-      # RockWeb/Themes, so this has to run before the packaging steps below.
-      #
-      # Guarded on the lockfile because Rock.Frontend.Styles does not exist on the
-      # 18.4.1 line, and this workflow still builds that branch for the pr-* fleet.
-      - name: Install Rock.Frontend.Styles Dependencies
-        if: hashFiles('Rock.Frontend.Styles/package-lock.json') != ''
-        working-directory: Rock.Frontend.Styles
-        run: npm ci
-
-      - name: Build Rock.Frontend.Styles
-        if: hashFiles('Rock.Frontend.Styles/package-lock.json') != ''
-        working-directory: Rock.Frontend.Styles
-        run: npm run build
-
-      - name: Move Plugins Folder
-        run: |
-          Move-Item RockWeb\Plugins C:\
-          Write-Output "Plugins moved"
-
-      - name: NuGet Restore
-        run: |
-          nuget restore -verbosity quiet -NonInteractive -Recursive Rock.sln
-
-          # The solution restore above only covers the .csproj projects, and
-          # those use PackageReference -- their packages land in the global
-          # cache under ~/.nuget/packages, never in a solution packages\ folder.
-          #
-          # RockWeb is a Web Site project, so it has no .csproj for the
-          # solution restore to walk. Its 93 packages are declared in
-          # RockWeb\packages.config, and the 84 *.dll.refresh pointers that
-          # accompany them are written in the packages.config convention:
-          # ..\packages\<Id>.<Version>\lib\<tfm>\<Name>.dll, relative to the
-          # web site root. Nothing creates that folder unless the config is
-          # restored explicitly with -PackagesDirectory, which is what Visual
-          # Studio does for a Web Site project. Without it the 20 pointers
-          # whose assemblies no project build happens to emit -- among them
-          # Google.Protobuf.dll, which Application_Start needs -- resolve to
-          # nothing and drop out of the artifact.
-          nuget restore RockWeb\packages.config -PackagesDirectory packages -verbosity quiet -NonInteractive
-
-      - name: Create Empty ConnectionStrings Config
-        run: New-Item -Path "RockWeb\path\app.ConnectionStrings.config" -ItemType File -Force
-
-      # Failure policy: anything the deployed site actually loads is FATAL, so a
-      # broken build can never be packaged and shipped as a green deploy. Test
-      # projects and plugin projects are advisory -- test assemblies are not
-      # served, and plugins are third-party/org-specific -- but every one of them
-      # is surfaced as a ::warning:: and listed in the job summary so a plugin
-      # silently dropping out of the artifact is visible rather than invisible.
-      - name: Build Rock Projects (Dependency Order)
-        timeout-minutes: 30
-        run: |
-          $msbuild = $env:MSBUILD_PATH
-          $advisoryFailures = @()
-
-          function Invoke-Build {
-            param(
-              [Parameter(Mandatory = $true)][string]$Project,
-              [Parameter(Mandatory = $false)][string[]]$ExtraArgs = @(),
-              [Parameter(Mandatory = $false)][switch]$Advisory
-            )
-
-            $name = Split-Path $Project -Leaf
-            Write-Host "::group::Building $name"
-            & $msbuild $Project /p:Configuration=Release /verbosity:minimal @ExtraArgs
-            $code = $LASTEXITCODE
-            Write-Host "::endgroup::"
-
-            if ($code -eq 0) { return }
-
-            if ($Advisory) {
-              Write-Host "::warning::$name failed to build (exit $code); continuing."
-              $script:advisoryFailures += $name
-              return
-            }
-
-            Write-Host "::error::$name failed to build (exit $code). This assembly is required by the deployed site."
-            exit $code
-          }
-
-          Invoke-Build -Project "DotLiquid\DotLiquid.csproj"
-
-          $coreProjects = @(
-            "Rock.Enums\Rock.Enums.csproj",
-            "Rock.Common\Rock.Common.csproj",
-            "Rock.Version\Rock.Version.csproj",
-            "Rock.ViewModels\Rock.ViewModels.csproj"
-          )
-          foreach ($project in $coreProjects) {
-            if (Test-Path $project) { Invoke-Build -Project $project }
-          }
-
-          Invoke-Build -Project "Rock\Rock.csproj" -ExtraArgs @("/m:4")
-
-          # Rock.Mandrill is excluded to keep this list identical to the one on
-          # passion-19.3.4, so the trunk cutover is a version bump and nothing else.
-          # It is not fixing a break here: on this branch Rock.Version/AssemblySharedInfo.cs
-          # still exists and Rock.Mandrill compiles. Rock 19 deletes that file (the version
-          # moves to Directory.Build.props) while leaving three .csproj files still
-          # <Compile Include>-ing it, and Rock.Mandrill is the only one this glob catches --
-          #   error CS2001: Source file 'Rock.Mandrill\..\Rock.Version\AssemblySharedInfo.cs'
-          #                 could not be found.
-          # Still unfixed on upstream develop as of 2026-08-17. Excluding rather than
-          # patching the .csproj on purpose: this file is ours and merges cleanly forever,
-          # whereas editing an upstream project file is a conflict on every future merge.
-          # Nothing is lost either way -- Rock.Mandrill is a single legacy SMTP transport
-          # that builds to its own bin\, is absent from RockWeb/Bin, and is referenced
-          # nowhere in RockWeb. If Rock ever ships it again, drop this pattern.
-          $excludePatterns = @("*RockWeb*", "*Rock.Client*", "*Rock.CodeGeneration*", "*Rock.RestClient*", "*Rock.Common.Tv*", "*Rock.Mandrill*")
-          $rockProjects = Get-ChildItem "Rock.*\*.csproj" -Recurse | Where-Object {
-            $include = $true
-            foreach ($pattern in $excludePatterns) {
-              if ($_.FullName -like $pattern) { $include = $false; break }
-            }
-            $include
-          }
-
-          foreach ($project in $rockProjects) {
-            # Test assemblies are never served by the site, so they stay advisory.
-            $isTestProject = $project.Name -like "*Tests*"
-            Invoke-Build -Project $project.FullName -ExtraArgs @("/m:4") -Advisory:$isTestProject
-          }
-
-          $pluginProjects = Get-ChildItem "C:\Plugins\**\*.csproj" -Recurse
-          $tempRefDir = Join-Path $env:TEMP "RockRefs"
-          if (!(Test-Path $tempRefDir)) { New-Item -ItemType Directory -Path $tempRefDir -Force }
-          Copy-Item "$PWD/Rock/bin/Release/Rock.dll" $tempRefDir -Force -ErrorAction SilentlyContinue
-          Copy-Item "$PWD/DotLiquid/bin/Release/DotLiquid.dll" $tempRefDir -Force -ErrorAction SilentlyContinue
-
-          foreach ($project in $pluginProjects) {
-            Invoke-Build -Project $project.FullName -ExtraArgs @("/p:SolutionDir=$PWD\") -Advisory
-          }
-
-          if ($advisoryFailures.Count -gt 0) {
-            $lines = @("### Advisory build failures", "", "These did not fail the build, but their assemblies are missing from the artifact:", "")
-            $lines += $advisoryFailures | ForEach-Object { "- ``$_``" }
-            $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            Write-Host "$($advisoryFailures.Count) advisory failure(s): $($advisoryFailures -join ', ')"
-          }
-          else {
-            "### Build clean`n`nAll Rock, test, and plugin projects compiled." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          }
-
-      - name: Restore Plugins Folder
-        if: always()
-        run: |
-          if (Test-Path C:\Plugins) {
-            Move-Item C:\Plugins RockWeb\
-            Write-Output "Plugins restored"
-          }
-
-      - name: Ensure Assemblies in RockWeb Bin
-        run: |
-          if (!(Test-Path "RockWeb\bin")) { New-Item -ItemType Directory -Path "RockWeb\bin" -Force }
-
-          $releaseDirs = Get-ChildItem -Path "." -Directory -Recurse | Where-Object { $_.Name -eq "Release" }
-          foreach ($dir in $releaseDirs) {
-            $dllFiles = Get-ChildItem -Path $dir.FullName -Filter "*.dll" -ErrorAction SilentlyContinue
-            if ($dllFiles) {
-              Write-Host "Copying $($dllFiles.Count) DLLs from $($dir.FullName)"
-              $dllFiles | Copy-Item -Destination "RockWeb\bin\" -Force
-            }
-          }
-
-          $knownPaths = @("Rock\bin\Release", "DotLiquid\bin\Release", "SignNowSDK\bin\Release")
-          foreach ($path in $knownPaths) {
-            if (Test-Path $path) {
-              Get-ChildItem "$path\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "RockWeb\bin\" -Force
-              Write-Host "Copied DLLs from $path"
-            }
-          }
-
-          $totalDlls = (Get-ChildItem "RockWeb\bin\*.dll").Count
-          Write-Host "Total DLLs in RockWeb\bin: $totalDlls"
-
-      # RockWeb is a Web Site project, not a .csproj, so nothing in this job ever
-      # builds it -- the step above just sweeps every Release folder into
-      # RockWeb\bin. That covers assemblies some project emits as build output, but
-      # Rock also ships 84 *.dll.refresh pointers for packages no project
-      # references directly, and resolving those is what Visual Studio does on a
-      # developer's machine. Without this step they ride into the artifact as inert
-      # .refresh files and the assembly is simply absent.
-      #
-      # This is not hypothetical: Google.Protobuf.dll going missing exactly this
-      # way took staging and every PR environment down with a 500 at
-      # Application_Start. The build stayed green, because nothing here looked.
-      #
-      # Fill gaps only. A DLL a project actually built is the authoritative one and
-      # must win over the copy sitting in packages\.
-      #
-      # Deliberately NOT recursive, and deliberately limited to *.dll.refresh:
-      #
-      #   * RockWeb\Bin\roslyn\ holds 20 more pointers (csc.exe, vbc.exe, the
-      #     Microsoft.CodeAnalysis assemblies) for the compiler that web.config's
-      #     <system.codedom> uses to compile .ascx at run time. All 20 targets are
-      #     committed to git alongside their pointers, so checkout already supplies
-      #     that folder and resolving it would be a no-op. Verified file by file --
-      #     do not "fix" this by adding -Recurse.
-      #   * RockWeb\Bin\Microsoft.Extensions.Primitives.refresh is malformed
-      #     upstream: it omits the .dll before .refresh, and it points at version
-      #     2.0.0 while packages.config pins 8.0.0. The filter skips it rather than
-      #     creating an extensionless file, and it would report as permanently
-      #     unresolved if included, which would blunt the count below.
-      - name: Resolve .refresh assemblies into RockWeb bin
-        run: |
-          $copied = @()
-          $unresolved = @()
-          $alreadyBuilt = 0
-
-          # Written with mixed encodings across the repo -- some UTF-16LE, some
-          # UTF-8 with a BOM -- so read raw, drop NULs (covers a BOM-less UTF-16
-          # file being read as single bytes) and trim the BOM character itself.
-          $trimChars = [char[]]@(0xFEFF, 0x20, 0x09, 0x0D, 0x0A)
-
-          foreach ($refresh in Get-ChildItem "RockWeb\bin" -Filter "*.dll.refresh" -ErrorAction SilentlyContinue) {
-            $targetName = $refresh.Name -replace '\.refresh$', ''
-            $targetPath = Join-Path $refresh.DirectoryName $targetName
-            if (Test-Path $targetPath) { $alreadyBuilt++; continue }
-
-            $relative = ((Get-Content -Raw -Path $refresh.FullName) -replace "`0", '').Trim($trimChars)
-            if ([string]::IsNullOrWhiteSpace($relative)) {
-              $unresolved += "$targetName (empty .refresh)"
-              continue
-            }
-
-            # The pointer is relative to the web site root, so its leading
-            # ..\packages lands on the solution-level packages folder that
-            # nuget restore populates. The repo root and bin are tried as
-            # fallbacks so a differently-rooted pointer still resolves.
-            $resolved = $null
-            foreach ($base in @("RockWeb", ".", "RockWeb\bin")) {
-              $candidate = Join-Path $base $relative
-              if (Test-Path $candidate) { $resolved = (Resolve-Path $candidate).Path; break }
-            }
-
-            if ($null -eq $resolved) {
-              $unresolved += "$targetName -> $relative"
-              continue
-            }
-
-            Copy-Item -Path $resolved -Destination $targetPath -Force
-            $copied += $targetName
-          }
-
-          Write-Host "Already emitted by a project build: $alreadyBuilt"
-          Write-Host "Copied from packages\:             $($copied.Count)"
-          foreach ($name in $copied) { Write-Host "  + $name" }
-
-          if ($unresolved.Count -gt 0) {
-            Write-Host "::warning::$($unresolved.Count) .refresh pointer(s) did not resolve; those assemblies are absent from the artifact."
-            foreach ($name in $unresolved) { Write-Host "::warning::unresolved: $name" }
-          }
-
-          "UNRESOLVED_REFRESH_COUNT=$($unresolved.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "RESOLVED_REFRESH_COUNT=$($copied.Count)" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Cleanup tsconfig.json
-        run: |
-          if (Test-Path RockWeb\tsconfig.json) { Remove-Item RockWeb\tsconfig.json -Force }
-
-      # Gating on Rock.dll alone let artifacts ship that were missing Obsidian
-      # blocks, the REST API, or migrations -- each of which yields a site that
-      # boots and then fails at the first page load. Check everything RockWeb
-      # actually needs to serve a request.
-      - name: Verify Build Artifacts
-        run: |
-          $failures = @()
-
-          $essentialDlls = @(
-            "Rock.dll",
-            "Rock.Common.dll",
-            "Rock.Enums.dll",
-            "Rock.ViewModels.dll",
-            "Rock.Blocks.dll",
-            "Rock.Rest.dll",
-            "Rock.Migrations.dll",
-            "Rock.WebStartup.dll",
-            "DotLiquid.dll",
-
-            # Not a Rock assembly, and the only third-party one gated here.
-            # Application_Start loads it through the Google/Firebase stack, so when
-            # it is missing IIS returns a 500 on every request and Rock's own error
-            # page cannot render either -- a double fault that hides the cause.
-            # It reaches bin only via .refresh resolution, so it is the canary for
-            # that step regressing.
-            "Google.Protobuf.dll"
-          )
-          foreach ($dll in $essentialDlls) {
-            if (!(Test-Path "RockWeb\bin\$dll")) { $failures += "missing assembly: $dll" }
-          }
-
-          # Obsidian block JS is built, never committed, so an artifact with zero
-          # .obs.js files means the Rock.JavaScript.Obsidian.Blocks build silently
-          # produced nothing and every Obsidian block on the site would be blank.
-          $obsidianBlocks = @(Get-ChildItem "RockWeb\Obsidian\Blocks" -Recurse -Filter "*.obs.js" -ErrorAction SilentlyContinue)
-          if ($obsidianBlocks.Count -eq 0) {
-            $failures += "no compiled Obsidian blocks found under RockWeb\Obsidian\Blocks"
-          }
-
-          if (!(Test-Path "RockWeb\Obsidian\obsidian-core.js")) {
-            Write-Host "::warning::RockWeb\Obsidian\obsidian-core.js not found; Obsidian framework bundle may be missing."
-          }
-
-          # styles-v2 is committed on the 18.4.1 line and generated by
-          # Rock.Frontend.Styles on 19.x, so this check is deliberately unguarded --
-          # it has to hold either way, and staying unguarded is what makes it survive
-          # the next upgrade that moves a directory between the two.
-          #
-          # RockWeb\Styles\_rock-core.less imports styles-v2/icons/tabler-icon.css
-          # directly. When the file is absent, dotless fails the whole theme compile
-          # at Application_Start and IIS keeps serving whatever .css was there before
-          # -- with a 200, so no health check notices. That is exactly how the 19.3.4
-          # cutover put staging up with a styled login page and everything behind it
-          # unstyled: 430,153 bytes of 18.4.1 theme.css containing zero Tabler rules,
-          # against a database whose every IconCssClass had already been rewritten to
-          # Tabler by the icon migration.
-          $tablerIcons = "RockWeb\Styles\styles-v2\icons\tabler-icon.css"
-          if (!(Test-Path $tablerIcons)) {
-            $failures += "missing $tablerIcons -- _rock-core.less imports it, so every LESS theme will fail to compile and the site will silently serve stale CSS"
-          }
-          elseif ((Get-Item $tablerIcons).Length -lt 50KB) {
-            # Test-Path is satisfied by an empty file, and an empty icon sheet
-            # compiles cleanly -- it just renders every icon as nothing.
-            # Deliberately not naming one "correct" size: the sheet is 291,210 bytes as
-            # committed on 18.4.1, production serves 314,234, and the 19.x build generates
-            # 342,986. All three are healthy. 50KB separates any of them from a stub.
-            $failures += "$tablerIcons is only $((Get-Item $tablerIcons).Length) bytes; it is truncated or empty (a healthy sheet is 250KB-350KB depending on the Rock line)"
-          }
-
-          # A build that emits the one gated file and nothing else would pass the
-          # check above while still shipping a broken stylesheet set. What must NOT
-          # be used to detect that is the file count -- see below.
-          #
-          # On the 18.4.1 line RockWeb\Styles\styles-v2 holds 178 committed SCSS
-          # sources. On 19.x it holds 7 build outputs, because the 189 partials all
-          # compile into core.css and emit nothing of their own. There is no
-          # threshold that fits both, and picking one calibrated on the committed
-          # layout is not a conservative choice -- it blocked every staging deploy on
-          # 2026-08-19 against a build that was complete and correct.
-          #
-          # core.css is the honest signal. Every partial lands in it, so a compile
-          # that silently produced nothing leaves a stub rather than a 700 KB sheet,
-          # and that holds identically on both lines.
-          $stylesV2 = @(Get-ChildItem "RockWeb\Styles\styles-v2" -Recurse -File -ErrorAction SilentlyContinue)
-          $coreCss = "RockWeb\Styles\styles-v2\core.css"
-          if (!(Test-Path $coreCss)) {
-            $failures += "missing $coreCss -- the styles-v2 build emitted no core stylesheet, so every page renders unstyled"
-          }
-          else {
-            # 705,722 bytes on 18.4.1 and the same order of magnitude on 19.x. The
-            # floor sits far below that so a legitimate shrink never blocks a deploy,
-            # and far above the few hundred bytes a failed SCSS compile leaves.
-            $coreBytes = (Get-Item $coreCss).Length
-            if ($coreBytes -lt 100KB) {
-              $failures += "$coreCss is only $coreBytes bytes; the SCSS compile emitted a stub rather than the core stylesheet"
-            }
-          }
-
-          if ($failures.Count -gt 0) {
-            foreach ($failure in $failures) { Write-Host "::error::$failure" }
-            Write-Host "::error::Artifact is incomplete and will not be packaged."
-            exit 1
-          }
-
-          $dllCount = (Get-ChildItem "RockWeb\bin" -File -Filter "*.dll").Count
-          Write-Host "All essential assemblies present ✓"
-          Write-Host "Obsidian blocks compiled: $($obsidianBlocks.Count)"
-          Write-Host "styles-v2 files: $($stylesV2.Count)"
-          Write-Host "Total files in RockWeb: $((Get-ChildItem RockWeb -Recurse -File).Count)"
-          Write-Host "DLLs in bin folder: $dllCount"
-
-          @(
-            "### Artifact verification",
-            "",
-            "| Check | Result |",
-            "| --- | --- |",
-            "| Essential assemblies | $($essentialDlls.Count)/$($essentialDlls.Count) present |",
-            "| Compiled Obsidian blocks | $($obsidianBlocks.Count) |",
-            "| DLLs in ``RockWeb\bin`` | $dllCount |",
-            "| Assemblies resolved from ``.refresh`` | $env:RESOLVED_REFRESH_COUNT |",
-            "| Unresolved ``.refresh`` pointers | $env:UNRESOLVED_REFRESH_COUNT |"
-          ) -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-
-      # The zip's name and folder, and the record beside it, come from
-      # ArtifactRecord.psm1, the module the plan and the repackage use too. The
-      # target checked out above can predate it -- an older pull request head,
-      # or the commit production promotes -- and this job has to package every
-      # one of them, so the script comes from the commit this workflow file was
-      # read from instead, into a folder of its own beside the build's tree.
       - name: Check out the packaging scripts
         uses: actions/checkout@v4
         with:
@@ -780,13 +641,71 @@ jobs:
             .github/scripts
           sparse-checkout-cone-mode: false
 
+      - name: Open a Google Cloud session
+        uses: ./.github/actions/gcp-session
+        with:
+          credentials-json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Download built .NET layer
+        if: needs.plan.outputs.build_dotnet != 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: layer-dotnet-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+
+      - name: Download built JS misc & styles layer
+        if: needs.plan.outputs.build_js_misc != 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: layer-js-misc-${{ github.run_id }}-${{ github.run_attempt }}
+          path: RockWeb
+
+      - name: Download built Obsidian layer
+        if: needs.plan.outputs.build_js_obsidian != 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: layer-js-obsidian-${{ github.run_id }}-${{ github.run_attempt }}
+          path: RockWeb/Obsidian
+
+      - name: Download built Obsidian Blocks layer
+        if: needs.plan.outputs.build_js_blocks != 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: layer-js-blocks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: RockWeb/Obsidian/Blocks
+
+      - name: Restore untouched compiled layers from GCS base artifact
+        if: needs.plan.outputs.reuse_base_object_path != ''
+        env:
+          REUSE_BASE: ${{ needs.plan.outputs.reuse_base_object_path }}
+          BUILD_DOTNET: ${{ needs.plan.outputs.build_dotnet }}
+          BUILD_OBS: ${{ needs.plan.outputs.build_js_obsidian }}
+          BUILD_BLK: ${{ needs.plan.outputs.build_js_blocks }}
+          BUILD_MISC: ${{ needs.plan.outputs.build_js_misc }}
+        run: |
+          $layers = @()
+          if ($env:BUILD_DOTNET -eq 'false') { $layers += 'dotnet' }
+          if ($env:BUILD_OBS -eq 'false') { $layers += 'js-obsidian' }
+          if ($env:BUILD_BLK -eq 'false') { $layers += 'js-blocks' }
+          if ($env:BUILD_MISC -eq 'false') { $layers += 'js-misc' }
+          if ($layers.Count -gt 0) {
+            ./.artifact-scripts/.github/scripts/Restore-ReusableArtifactLayer.ps1 -BaseObjectPath $env:REUSE_BASE -Bucket $env:PR_TEST_GCS_BUCKET -Layer $layers
+          }
+
+      - name: Load refresh counts and cleanup tsconfig.json
+        run: |
+          if (Test-Path dotnet-meta.txt) { Get-Content dotnet-meta.txt | Out-File -FilePath $env:GITHUB_ENV -Append }
+          if (Test-Path RockWeb/tsconfig.json) { Remove-Item RockWeb/tsconfig.json -Force }
+
+      - name: Verify Build Artifacts
+        run: ./.artifact-scripts/.github/scripts/Test-RockWebArtifact.ps1 -RockWebPath RockWeb
+
       - name: Package RockWeb zip and metadata
         id: package-metadata
         run: |
           ./.artifact-scripts/.github/scripts/New-PackagedArtifact.ps1 -TargetSha $env:HEAD_SHA -ArtifactSlug $env:ARTIFACT_SLUG `
             -Bucket $env:PR_TEST_GCS_BUCKET -PrNumber $env:PR_NUMBER -HostName $env:HOST_NAME
 
-      # The hash the deploy hands the VM. See the same step in the repackage job.
       - name: Record the zip's hash for the deploy
         id: artifact-hash
         env:
@@ -804,30 +723,24 @@ jobs:
             pr-test-artifact.json
           retention-days: 14
 
-      - name: Open a Google Cloud session
-        uses: ./.github/actions/gcp-session
-        with:
-          credentials-json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Ensure Cloud Storage bucket exists
+      - name: Ensure Cloud Storage Bucket Exists
         run: |
-          gsutil ls gs://$env:PR_TEST_GCS_BUCKET *> $null
+          gsutil ls -b gs://$env:PR_TEST_GCS_BUCKET 2>$null
           if ($LASTEXITCODE -ne 0) {
             gsutil mb -p ${{ secrets.GCP_PROJECT_ID }} gs://$env:PR_TEST_GCS_BUCKET
           }
 
-      # Into the folder Get-ArtifactAddress names, with the bucket in front, as
-      # the packaging step handed it on: the deploy's object path comes from
-      # the same address, so where the zip lands and where the deploy looks
-      # cannot drift apart.
       - name: Upload package zip to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: ${{ steps.package-metadata.outputs.artifact_name }}
           destination: ${{ steps.package-metadata.outputs.artifact_gcs_destination }}
+          gzip: false
+          process_gcloudignore: false
 
       - name: Upload package metadata to Cloud Storage
         uses: google-github-actions/upload-cloud-storage@v2
         with:
           path: pr-test-artifact.json
           destination: ${{ steps.package-metadata.outputs.artifact_gcs_destination }}
+          process_gcloudignore: false

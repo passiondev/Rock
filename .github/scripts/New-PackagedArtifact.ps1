@@ -49,15 +49,47 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 Import-Module (Join-Path $PSScriptRoot 'ArtifactRecord.psm1') -Force
 
 $address = Get-ArtifactAddress -Slug $ArtifactSlug -Sha $TargetSha
+$destPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $address.Name))
+$rockWebPath = (Resolve-Path -LiteralPath 'RockWeb').Path
+
+if (Test-Path -LiteralPath $destPath) {
+    Remove-Item -LiteralPath $destPath -Force
+}
 
 # The contents of RockWeb rather than the directory, so web.config is at the
-# zip's root, where the deploy expands it into the site.
-Compress-Archive -Path (Join-Path 'RockWeb' '*') -DestinationPath $address.Name -Force
-$hash = (Get-FileHash -Path $address.Name -Algorithm SHA256).Hash
+# zip's root, where the deploy expands it into the site. Prefer multi-threaded
+# 7z or native zip (-1) over PowerShell's Compress-Archive (~3-10x faster on
+# 5,100+ files), with .NET ZipFile Fastest as the universal fallback.
+Push-Location $rockWebPath
+try {
+    if (Get-Command 7z -ErrorAction SilentlyContinue) {
+        & 7z a -tzip -mx=1 -mmt=on -bd -bso0 $destPath '.'
+        if ($LASTEXITCODE -ne 0) { throw "7z failed (exit $LASTEXITCODE)" }
+    }
+    elseif (Get-Command zip -ErrorAction SilentlyContinue) {
+        & zip -qr -1 $destPath '.'
+        if ($LASTEXITCODE -ne 0) { throw "zip failed (exit $LASTEXITCODE)" }
+    }
+    else {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $rockWebPath,
+            $destPath,
+            [System.IO.Compression.CompressionLevel]::Fastest,
+            $false
+        )
+    }
+}
+finally {
+    Pop-Location
+}
+
+$hash = (Get-FileHash -Path $destPath -Algorithm SHA256).Hash
 
 $record = New-ArtifactRecord -Address $address -Bucket $Bucket -PrNumber $PrNumber -HostName $HostName -Sha256 $hash
 Write-ArtifactRecord -Record $record -Path $address.RecordName

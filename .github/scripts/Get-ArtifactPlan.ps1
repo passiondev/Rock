@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-    Decides whether pr-test-artifact.yml has to build, or can repackage an artifact
-    it already has.
+    Decides whether pr-test-artifact.yml has to build, can partially reuse
+    untouched compiled layers from GCS, or can repackage an artifact it already
+    has without compiling anything.
 
 .DESCRIPTION
     Beside the workflow rather than inline in it, so the Pester suite can run the
@@ -10,16 +11,17 @@
     git rather than calling them; the script body builds the real ones and
     reports what it decided.
 
-    A full build is about half an hour on a Windows runner, and most changes to
-    this site are Lava, markup and theme assets the build copies into the artifact
-    untouched. For those, an artifact already in the bucket holds exactly the
-    compiled output a new build would produce, and New-RepackagedArtifact.ps1 can
-    swap the changed files into a copy of it in a few minutes.
+    Three tiers of reuse:
+      1. Repackage (mode=repackage): only patch/ignore files changed -- no build.
+      2. Partial-layer build (mode=build with reuse_base_object_path set): only a
+         strict subset of build layers (dotnet, js-obsidian, js-blocks, js-misc)
+         changed -- rebuild only dirty layers and extract untouched compiled
+         layers from the verified GCS base zip.
+      3. Full build (mode=build, all build_* = true): force_build, empty bucket,
+         unknown/workflow path changed, or all 4 layers changed.
 
-    The plan looks for such a base: an artifact whose commit differs from the
-    target only in paths artifact-paths.json classes as patch or ignore. Finding
-    none, or failing to look, it says build. It never fails the run -- a plan it
-    cannot make costs a build, not a deploy.
+    It never fails the run -- a plan it cannot make costs a full build, not a
+    failed deploy.
 
 .PARAMETER TargetSha
     The commit this run packages. Must be checked out.
@@ -34,10 +36,12 @@
     owner/name, for asking GitHub which pull requests a commit came from.
 
 .PARAMETER ForceBuild
-    Skip the search and build. The force_build input, or the rock:full-build label.
+    Skip the search and run a full build. The force_build input, or the
+    rock:full-build label.
 
 .OUTPUTS
-    Writes mode (build or repackage), base_sha and base_object_path to
+    Writes mode, base_sha, base_object_path, build_dotnet, build_js_obsidian,
+    build_js_blocks, build_js_misc, and reuse_base_object_path to
     GITHUB_OUTPUT, and what it considered to the step summary.
 #>
 [CmdletBinding()]
@@ -55,22 +59,6 @@ function Get-ArtifactBaseCandidate {
     <#
         .SYNOPSIS
         Orders the artifacts worth diffing against, most promising first.
-
-        .DESCRIPTION
-        Each candidate costs a fetch and a tree diff, so this offers a handful
-        rather than the whole bucket, newest first within each tier:
-
-          1. the target commit itself -- production promoting what staging built
-             needs no patch at all. Staging's copy first, because that is the zip
-             staging ran; any other slug's after it.
-          2. this slug's newest artifact -- the next push to the same pull request
-          3. the newest artifact of each related slug, in the order given -- the
-             pull requests a trunk commit came from, as GitHub reports them
-          4. staging's newest artifact -- most branches start from the trunk
-
-        A commit is offered once, at its first tier. Every artifact of one commit
-        holds the same compiled output whatever slug built it: nothing in the
-        build reads the slug, the host name or the pull request number.
     #>
     [CmdletBinding()]
     param(
@@ -103,19 +91,8 @@ function Get-ArtifactBaseCandidate {
 function Select-ArtifactBase {
     <#
         .SYNOPSIS
-        Picks the first candidate a repackage can start from.
-
-        .DESCRIPTION
-        GetChange is called with each candidate's commit and returns the
-        name-status lines between it and the target. It is a parameter so the
-        decision can be tested without a repository; the script body hands in
-        the git calls. RuleSet is artifact-paths.json, parsed.
-
-        Returns Base (the chosen candidate, or $null to build), Change (its
-        classified difference) and Rejected (each candidate passed over, with
-        the reason, so the run log says why a build happened). With no base,
-        Change is the difference from the nearest candidate that could be
-        diffed: a build ships server-owned files too, and is warned about them.
+        Picks the first candidate a repackage can start from, and records the
+        best partial-layer reuse candidate when a build is needed.
     #>
     [CmdletBinding()]
     param(
@@ -125,13 +102,14 @@ function Select-ArtifactBase {
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$GeneratedThemeName
     )
 
+    $allLayers = @('dotnet', 'js-obsidian', 'js-blocks', 'js-misc')
     $rejected = New-Object System.Collections.Generic.List[object]
     $nearestChange = @()
     $isNearestKnown = $false
+    $bestPartialBase = $null
+    $bestPartialDirty = $null
 
     foreach ($possibleBase in $Candidate) {
-        # A commit GitHub no longer serves -- the old head of a force-pushed
-        # branch -- makes this candidate unusable, not the search.
         try {
             $lines = @(& $GetChange $possibleBase.Sha)
         }
@@ -151,13 +129,23 @@ function Select-ArtifactBase {
 
         $compiled = @($change | Where-Object { $_.Class -eq 'build' })
         if ($compiled.Count -gt 0) {
-            # The first few are enough to say why; a merge of the trunk can
-            # differ by thousands of paths.
             $named = @($compiled | Select-Object -First 3 | ForEach-Object { $_.Path }) -join ', '
             $rejected.Add([pscustomobject]@{
                 Candidate = $possibleBase
                 Reason = "$($compiled.Count) path(s) need a build: $named"
             })
+
+            # Evaluate partial-layer reuse eligibility for this candidate.
+            $dirtyLayers = @($compiled | ForEach-Object {
+                if ($_.PSObject.Properties['Layer'] -and $_.Layer) { $_.Layer } else { 'all' }
+            } | Sort-Object -Unique)
+
+            if (-not ($dirtyLayers -contains 'all') -and $dirtyLayers.Count -lt $allLayers.Count) {
+                if ($null -eq $bestPartialBase -or $dirtyLayers.Count -lt $bestPartialDirty.Count) {
+                    $bestPartialBase = $possibleBase
+                    $bestPartialDirty = $dirtyLayers
+                }
+            }
             continue
         }
 
@@ -165,6 +153,8 @@ function Select-ArtifactBase {
             Base = $possibleBase
             Change = $change
             Rejected = $rejected.ToArray()
+            PartialBase = $null
+            DirtyLayers = @()
         }
     }
 
@@ -172,19 +162,12 @@ function Select-ArtifactBase {
         Base = $null
         Change = $nearestChange
         Rejected = $rejected.ToArray()
+        PartialBase = $bestPartialBase
+        DirtyLayers = if ($null -ne $bestPartialDirty) { $bestPartialDirty } else { $allLayers }
     }
 }
 
 function Write-ArtifactPlan {
-    <#
-        .SYNOPSIS
-        Hands the plan to the workflow, and the reasons for it to the run's summary.
-
-        .DESCRIPTION
-        mode, base_sha and base_object_path go to GITHUB_OUTPUT, where the
-        repackage and package jobs branch on them. The summary is where someone
-        asking why a run built, or what it patched, finds the answer.
-    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Plan,
@@ -199,30 +182,6 @@ function Write-ArtifactPlan {
 }
 
 function Invoke-ArtifactPlan {
-    <#
-        .SYNOPSIS
-        Makes the plan: build, or repackage which artifact, and the summary that says why.
-
-        .DESCRIPTION
-        Everything the plan asks of the world is a parameter, so the Pester
-        suite can run the whole of it -- an empty bucket, a listing that fails,
-        a GitHub that will not answer -- with none of them there. The script
-        body hands in the real ones.
-
-        Store is an artifact store (see New-GsutilArtifactStore in
-        ArtifactRecord.psm1); only its List is used here. GetRelatedPulls is
-        called with the target commit and returns the numbers of the pull
-        requests it came from, throwing when it cannot say. GetChange is called
-        with a candidate's commit and returns the name-status lines between it
-        and the target. GetGeneratedThemeName returns the generated theme names
-        in the target's tree. RuleSetPath is artifact-paths.json.
-
-        Returns Plan -- mode, base_sha and base_object_path, as
-        Write-ArtifactPlan writes them -- and Summary, the lines of the step
-        summary. It does not throw. A plan it cannot make is a build, and the
-        summary says why: a half-hour build is the worst that a wrong answer
-        here is allowed to cost.
-    #>
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
@@ -236,9 +195,16 @@ function Invoke-ArtifactPlan {
         [switch]$ForceBuild
     )
 
-    # What a forced run reports, and the fallback: a plan this cannot make
-    # costs a build, never a failed deploy.
-    $buildPlan = [ordered]@{ mode = 'build'; base_sha = ''; base_object_path = '' }
+    $buildPlan = [ordered]@{
+        mode = 'build'
+        base_sha = ''
+        base_object_path = ''
+        build_dotnet = 'true'
+        build_js_obsidian = 'true'
+        build_js_blocks = 'true'
+        build_js_misc = 'true'
+        reuse_base_object_path = ''
+    }
     $summary = New-Object System.Collections.Generic.List[string]
     $summary.Add('### Artifact plan')
     $summary.Add('')
@@ -252,15 +218,8 @@ function Invoke-ArtifactPlan {
     try {
         $ruleSet = Get-Content -Raw -Path $RuleSetPath | ConvertFrom-Json
         $themes = @(& $GetGeneratedThemeName)
-
-        # An empty bucket lists nothing, and is a first build. A bucket that
-        # cannot be listed throws, and is caught below as a search that failed.
         $artifact = @(& $Store.List)
 
-        # A merge to the trunk carries the code its pull request was last
-        # deployed with, so that pull request's artifact is the natural base.
-        # Not knowing costs only that tier, so a failed lookup is not worth a
-        # build.
         $related = @()
         try {
             $related = @(& $GetRelatedPulls $TargetSha)
@@ -278,13 +237,35 @@ function Invoke-ArtifactPlan {
         }
 
         if ($null -eq $selection.Base) {
-            $summary.Add("Building: none of $($candidate.Count) candidate artifact(s) differs from $TargetSha in files alone.")
+            if ($null -ne $selection.PartialBase) {
+                $dirty = @($selection.DirtyLayers)
+                $plan = [ordered]@{
+                    mode = 'build'
+                    base_sha = ''
+                    base_object_path = ''
+                    build_dotnet = if ($dirty -contains 'dotnet') { 'true' } else { 'false' }
+                    build_js_obsidian = if ($dirty -contains 'js-obsidian') { 'true' } else { 'false' }
+                    build_js_blocks = if ($dirty -contains 'js-blocks') { 'true' } else { 'false' }
+                    build_js_misc = if ($dirty -contains 'js-misc') { 'true' } else { 'false' }
+                    reuse_base_object_path = $selection.PartialBase.ObjectPath
+                }
+                $reused = @(@('dotnet', 'js-obsidian', 'js-blocks', 'js-misc') | Where-Object { $dirty -notcontains $_ })
+                $summary.Add("Partial build: rebuilding [$($dirty -join ', ')]; reusing [$($reused -join ', ')] from ``$($selection.PartialBase.ObjectPath)``.")
+            }
+            else {
+                $summary.Add("Building: none of $($candidate.Count) candidate artifact(s) differs from $TargetSha in files alone.")
+            }
         }
         else {
             $plan = [ordered]@{
                 mode = 'repackage'
                 base_sha = $selection.Base.Sha
                 base_object_path = $selection.Base.ObjectPath
+                build_dotnet = 'false'
+                build_js_obsidian = 'false'
+                build_js_blocks = 'false'
+                build_js_misc = 'false'
+                reuse_base_object_path = ''
             }
 
             $patched = @($selection.Change | Where-Object { $_.Class -eq 'patch' })
@@ -295,9 +276,6 @@ function Invoke-ArtifactPlan {
             }
         }
 
-        # Whichever way this run goes: a build ships the file as surely as a
-        # patch does, and the deploy keeps the server's copy either way. What it
-        # then does with it is Deploy-RockEnvironment.ps1's call.
         foreach ($item in @($selection.Change | Where-Object { $_.IsServerOwned })) {
             $message = "$($item.Path) changed, but the deploy treats it as server-owned, so the server's copy may win. See the server-owned lists in Deployment/PrTestEnvironments/Deploy-RockEnvironment.ps1."
             Write-Host "::warning::$message"
@@ -316,9 +294,6 @@ function Invoke-ArtifactPlan {
 Import-Module (Join-Path $PSScriptRoot 'ArtifactPaths.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ArtifactRecord.psm1') -Force
 
-# Which pull requests GitHub says the target came from. A nonzero exit is
-# thrown, so the plan can tell a lookup that failed from a commit that came
-# from none. Reads $Repository when called, from this script's scope.
 $getRelatedPulls = {
     param($Sha)
     $numbers = @(gh api "repos/$Repository/commits/$Sha/pulls" --jq '.[].number' 2>$null)
