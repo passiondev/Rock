@@ -78,6 +78,10 @@ SHARED_HELPERS = {
         f"{DEPLOYMENT}/Deploy-PrEnvironment.ps1",
         f"{DEPLOYMENT}/Deploy-RockEnvironment.ps1",
     ],
+    "Move-DirectoryWithRetry": [
+        f"{DEPLOYMENT}/Deploy-PrEnvironment.ps1",
+        f"{DEPLOYMENT}/Deploy-RockEnvironment.ps1",
+    ],
     "Add-DeployDefenderExclusions": [
         f"{DEPLOYMENT}/Deploy-PrEnvironment.ps1",
         f"{DEPLOYMENT}/Deploy-RockEnvironment.ps1",

@@ -15,7 +15,7 @@ BeforeAll {
     $script:PrDeployScript = Get-RepositoryPath 'Deployment/PrTestEnvironments/Deploy-PrEnvironment.ps1'
 
     . (Import-ScriptFunction -Path $script:RockDeployScript -Name `
-            'Expand-ArtifactArchive', 'Remove-DirectoryFast', 'Add-DeployDefenderExclusions', `
+            'Expand-ArtifactArchive', 'Remove-DirectoryFast', 'Move-DirectoryWithRetry', 'Add-DeployDefenderExclusions', `
             'Copy-GcsObjectToFile' `
         -Supplied 'Get-GcsAccessToken')
 }
@@ -90,6 +90,27 @@ Describe 'Remove-DirectoryFast' {
 
         { Remove-DirectoryFast -Path $root -Async } | Should -Not -Throw
         Test-Path $root | Should -BeFalse
+    }
+}
+
+Describe 'Move-DirectoryWithRetry' {
+    It 'moves a directory and its contents cleanly' {
+        $src = Join-Path $TestDrive ('mvsrc-' + [guid]::NewGuid().ToString('n'))
+        $dst = Join-Path $TestDrive ('mvdst-' + [guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $src -Force | Out-Null
+        Set-Content -Path (Join-Path $src 'file.txt') -Value 'ok'
+
+        { Move-DirectoryWithRetry -SourcePath $src -DestinationPath $dst } | Should -Not -Throw
+
+        Test-Path $src | Should -BeFalse
+        Test-Path (Join-Path $dst 'file.txt') | Should -BeTrue
+    }
+
+    It 'throws after MaxAttempts when source does not exist' {
+        $missing = Join-Path $TestDrive ('mvmissing-' + [guid]::NewGuid().ToString('n'))
+        $dst = Join-Path $TestDrive ('mvdst-fail-' + [guid]::NewGuid().ToString('n'))
+
+        { Move-DirectoryWithRetry -SourcePath $missing -DestinationPath $dst -MaxAttempts 2 -DelaySeconds 0 } | Should -Throw
     }
 }
 

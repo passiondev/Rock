@@ -678,6 +678,28 @@ function Remove-DirectoryFast {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
+function Move-DirectoryWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [Parameter(Mandatory = $false)][int]$MaxAttempts = 15,
+        [Parameter(Mandatory = $false)][int]$DelaySeconds = 1
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Move-Item -LiteralPath $SourcePath -Destination $DestinationPath -ErrorAction Stop
+            return
+        }
+        catch {
+            if ($attempt -ge $MaxAttempts) {
+                throw
+            }
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+}
+
 function Add-DeployDefenderExclusions {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Paths
@@ -1124,7 +1146,9 @@ function Stop-EnvironmentAppPool {
     param([Parameter(Mandatory = $true)][string]$Name)
 
     if (Test-Path "IIS:\AppPools\$Name") {
+        $wasRunning = $false
         if ((Get-WebAppPoolState -Name $Name).Value -ne "Stopped") {
+            $wasRunning = $true
             Stop-WebAppPool -Name $Name
         }
         # Give the worker process time to release file handles on Rock's
@@ -1132,6 +1156,10 @@ function Stop-EnvironmentAppPool {
         for ($i = 0; $i -lt 30; $i++) {
             if ((Get-WebAppPoolState -Name $Name).Value -eq "Stopped") { break }
             Start-Sleep -Seconds 1
+        }
+        if ($wasRunning) {
+            # Even after IIS reports Stopped, w3wp.exe can briefly hold OS directory handles.
+            Start-Sleep -Seconds 2
         }
     }
 }
@@ -2537,9 +2565,9 @@ function Invoke-DedicatedSiteReplace {
     $previousSitePath = ''
     if (Test-Path -LiteralPath $SitePath) {
         $previousSitePath = "$SitePath.removing-$([guid]::NewGuid().ToString('n').Substring(0, 8))"
-        Move-Item -Path $SitePath -Destination $previousSitePath
+        Move-DirectoryWithRetry -SourcePath $SitePath -DestinationPath $previousSitePath
     }
-    Move-Item -Path $ExtractPath -Destination $SitePath
+    Move-DirectoryWithRetry -SourcePath $ExtractPath -DestinationPath $SitePath
     if (![string]::IsNullOrWhiteSpace($previousSitePath)) {
         Remove-DirectoryFast -Path $previousSitePath -Async
     }

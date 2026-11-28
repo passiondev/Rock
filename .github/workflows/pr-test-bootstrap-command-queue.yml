@@ -151,7 +151,7 @@ jobs:
             try {
               [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
               `$sevenZipMsi = Join-Path `$env:TEMP '7z2409-x64.msi'
-              Invoke-WebRequest -UseBasicParsing -Uri 'https://www.7-zip.org/a/7z2409-x64.msi' -OutFile `$sevenZipMsi
+              Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/ip7z/7zip/releases/download/24.09/7z2409-x64.msi' -OutFile `$sevenZipMsi
               Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', `$sevenZipMsi, '/qn', '/norestart') -Wait | Out-Null
               Remove-Item -LiteralPath `$sevenZipMsi -Force -ErrorAction SilentlyContinue
             }
